@@ -69,9 +69,6 @@ class AdapterDriver(
         startHeartbeat()
         log("Heartbeat started before initialization (firmware stabilization)")
 
-        // Notify about configuration
-        messageHandler(AdapterConfigurationMessage(config))
-
         // Send initialization sequence
         val initMessages = MessageSerializer.generateInitSequence(config)
         initMessagesCount = initMessages.size

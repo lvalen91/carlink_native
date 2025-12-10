@@ -288,6 +288,13 @@ object KnownDevices {
 
 /**
  * Adapter configuration for protocol initialization.
+ *
+ * Note on nullable configuration options:
+ * - null = not configured by user, command will NOT be sent to adapter
+ * - non-null = user explicitly configured, command WILL be sent to adapter
+ *
+ * This allows the adapter to retain its current settings for unconfigured options,
+ * since the adapter firmware persists most settings through power cycles.
  */
 data class AdapterConfig(
     var width: Int = 1920,
@@ -301,7 +308,8 @@ data class AdapterConfig(
     val nightMode: Boolean = false,
     val boxName: String = "carlink",
     val mediaDelay: Int = 300,
-    val audioTransferMode: Boolean = false,
+    /** Audio transfer mode: null=not configured, true=bluetooth, false=adapter (USB audio) */
+    val audioTransferMode: Boolean? = null,
     val wifiType: String = "5ghz",
     val micType: String = "os",
     val oemIconVisible: Boolean = true,

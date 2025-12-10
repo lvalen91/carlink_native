@@ -29,9 +29,6 @@ import com.carlink.protocol.TouchAction
 import com.carlink.protocol.UnpluggedMessage
 import com.carlink.protocol.VideoDataMessage
 import com.carlink.protocol.VideoStreamingSignal
-import com.carlink.ui.settings.AdapterStatusMonitor
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import com.carlink.usb.UsbDeviceWrapper
 import com.carlink.util.AppExecutors
 import com.carlink.util.LogCallback
@@ -103,8 +100,6 @@ class CarlinkManager(
         fun onLogMessage(message: String)
 
         fun onHostUIPressed()
-
-        fun onMessageReceived(message: Message)
     }
 
     // Coroutine scope for async operations
@@ -571,9 +566,6 @@ class CarlinkManager(
     }
 
     private fun handleMessage(message: Message) {
-        // Forward to callback
-        callback?.onMessageReceived(message)
-
         when (message) {
             is PluggedMessage -> {
                 clearPairTimeout()
@@ -943,13 +935,6 @@ class CarlinkManager(
      * skipping the 20-byte video header (width, height, flags, length, unknown).
      */
     private fun createVideoProcessor(): UsbDeviceWrapper.VideoDataProcessor {
-        // Get status monitor singleton to update video resolution info
-        val statusMonitor = AdapterStatusMonitor.getInstance()
-
-        // Throttle status updates to reduce overhead (update every ~500ms)
-        var lastStatusUpdateTime = 0L
-        val statusUpdateIntervalMs = 500L
-
         return object : UsbDeviceWrapper.VideoDataProcessor {
             override fun processVideoDirect(
                 payloadLength: Int,
@@ -981,30 +966,7 @@ class CarlinkManager(
 
                 renderer.processDataDirect(payloadLength, 20) { buffer, offset ->
                     // Read USB data directly into the ring buffer
-                    val bytesRead = readCallback(buffer, offset, payloadLength)
-
-                    // Extract width/height from video header for status monitor (throttled)
-                    // Video header format: width(4) + height(4) + flags(4) + length(4) + unknown(4) = 20 bytes
-                    val now = System.currentTimeMillis()
-                    if (bytesRead >= 8 && (now - lastStatusUpdateTime) >= statusUpdateIntervalMs) {
-                        lastStatusUpdateTime = now
-                        try {
-                            val headerBuffer = ByteBuffer.wrap(buffer, offset, 8)
-                            headerBuffer.order(ByteOrder.LITTLE_ENDIAN)
-                            val width = headerBuffer.int
-                            val height = headerBuffer.int
-                            if (width > 0 && height > 0) {
-                                // Create a VideoDataMessage to update status monitor
-                                val header = com.carlink.protocol.MessageHeader(payloadLength, com.carlink.protocol.MessageType.VIDEO_DATA)
-                                val videoMessage = VideoDataMessage(header, width, height, 0, payloadLength - 20, 0, null)
-                                statusMonitor.processMessage(videoMessage)
-                            }
-                        } catch (e: Exception) {
-                            // Ignore header parsing errors - video still plays
-                        }
-                    }
-
-                    bytesRead
+                    readCallback(buffer, offset, payloadLength)
                 }
             }
         }

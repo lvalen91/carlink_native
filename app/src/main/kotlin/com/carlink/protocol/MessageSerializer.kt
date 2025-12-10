@@ -334,14 +334,19 @@ oemIconLabel = ${config.boxName}
             }
         messages.add(serializeCommand(micCommand))
 
-        // Audio transfer mode
-        val audioTransferCommand =
-            if (config.audioTransferMode) {
-                CommandMapping.AUDIO_TRANSFER_ON
-            } else {
-                CommandMapping.AUDIO_TRANSFER_OFF
-            }
-        messages.add(serializeCommand(audioTransferCommand))
+        // Audio transfer mode - only send if user has explicitly configured it
+        // null = not configured, adapter retains current setting
+        // true = bluetooth (AUDIO_TRANSFER_ON)
+        // false = adapter/USB (AUDIO_TRANSFER_OFF)
+        config.audioTransferMode?.let { audioTransferEnabled ->
+            val audioTransferCommand =
+                if (audioTransferEnabled) {
+                    CommandMapping.AUDIO_TRANSFER_ON
+                } else {
+                    CommandMapping.AUDIO_TRANSFER_OFF
+                }
+            messages.add(serializeCommand(audioTransferCommand))
+        }
 
         // Android work mode (if enabled)
         if (config.androidWorkMode) {

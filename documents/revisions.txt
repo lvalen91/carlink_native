@@ -25,3 +25,5 @@
 [11] :: Video code rewrite and lint corrections
 [12] :: More Video Code testing
 [13] :: Video Frame message not being recovered properly. Corrected for stable Video. PUSHED: 08DEC25 3:57PM
+[14] :: Removed Status page
+[15] :: Adapter Config page Testing. PUSHED: 9DEC25 11:05AM

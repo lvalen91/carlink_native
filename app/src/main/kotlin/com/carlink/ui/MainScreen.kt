@@ -53,7 +53,6 @@ import com.carlink.logging.logInfo
 import com.carlink.protocol.MessageSerializer
 import com.carlink.protocol.MultiTouchAction
 import com.carlink.ui.components.VideoSurface
-import com.carlink.ui.settings.AdapterStatusMonitor
 import com.carlink.ui.components.rememberVideoSurfaceState
 import com.carlink.ui.theme.AutomotiveDimens
 import kotlinx.coroutines.launch
@@ -86,9 +85,6 @@ fun MainScreen(
     var state by remember { mutableStateOf(CarlinkManager.State.DISCONNECTED) }
     var isResetting by remember { mutableStateOf(false) }
     val surfaceState = rememberVideoSurfaceState()
-
-    // Get status monitor singleton to forward messages for status card updates
-    val statusMonitor = remember { AdapterStatusMonitor.getInstance() }
 
     // Log state changes for debugging
     LaunchedEffect(state) {
@@ -131,11 +127,6 @@ fun MainScreen(
                             // Open settings overlay - video continues playing
                             // (MainScreen stays in composition with overlay architecture)
                             onNavigateToSettings()
-                        }
-
-                        override fun onMessageReceived(message: com.carlink.protocol.Message) {
-                            // Forward messages to status monitor for status card updates
-                            statusMonitor.processMessage(message)
                         }
                     },
             )

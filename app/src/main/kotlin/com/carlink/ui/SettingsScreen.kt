@@ -44,18 +44,19 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.DisplaySettings
-import androidx.compose.material.icons.filled.Factory
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.PhoneDisabled
 import androidx.compose.material.icons.filled.PowerOff
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.SaveAlt
-import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SettingsInputComponent
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Usb
-import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideoSettings
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -64,7 +65,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
@@ -103,15 +103,10 @@ import com.carlink.logging.LogPreset
 import com.carlink.logging.LoggingPreferences
 import com.carlink.logging.apply
 import com.carlink.logging.logInfo
-import com.carlink.ui.settings.AdapterStatusInfo
-import com.carlink.ui.settings.AdapterStatusMonitor
+import com.carlink.ui.settings.AdapterConfigPreference
+import com.carlink.ui.settings.AudioSourceConfig
 import com.carlink.ui.settings.ImmersivePreference
-import com.carlink.ui.settings.PhoneConnectionInfo
-import com.carlink.ui.settings.PhoneConnectionStatus
-import com.carlink.ui.settings.PhoneConnectionType
-import com.carlink.ui.settings.PhonePlatform
 import com.carlink.ui.settings.SettingsTab
-import com.carlink.ui.settings.VideoStreamInfo
 import com.carlink.ui.theme.AutomotiveDimens
 import kotlinx.coroutines.launch
 import java.io.File
@@ -138,7 +133,7 @@ fun SettingsScreen(
     fileLogManager: FileLogManager?,
     onNavigateBack: () -> Unit,
 ) {
-    var selectedTab by remember { mutableStateOf(SettingsTab.STATUS) }
+    var selectedTab by remember { mutableStateOf(SettingsTab.CONTROL) }
     val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
 
@@ -161,12 +156,6 @@ fun SettingsScreen(
                 "Unknown"
             }
         }
-
-    // Initialize status monitor
-    val statusMonitor = remember { AdapterStatusMonitor.getInstance() }
-    LaunchedEffect(carlinkManager) {
-        statusMonitor.startMonitoring(carlinkManager)
-    }
 
     // Get view for haptic feedback - Matches Flutter HapticFeedback.lightImpact()
     val view = LocalView.current
@@ -263,342 +252,11 @@ fun SettingsScreen(
                     .weight(1f),
         ) {
             when (selectedTab) {
-                SettingsTab.STATUS -> StatusTabContent(statusMonitor)
                 SettingsTab.CONTROL -> ControlTabContent(carlinkManager)
                 SettingsTab.LOGS -> LogsTabContent(context, fileLogManager)
             }
         }
         }
-    }
-}
-
-// ==================== STATUS TAB ====================
-// Matches Flutter: status_tab_content.dart
-
-/**
- * Status Tab - Real-time adapter status display from protocol messages
- * Shows: Adapter Status, Phone Connection, Video Stream, Manufacturer Info
- * Matches Flutter status_tab_content.dart
- */
-@Composable
-private fun StatusTabContent(statusMonitor: AdapterStatusMonitor) {
-    val adapterStatus by statusMonitor.currentStatus.collectAsStateWithLifecycle()
-    val colorScheme = MaterialTheme.colorScheme
-
-    // Centered scrollable content with max width constraint
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.TopCenter,
-    ) {
-        Column(
-            modifier =
-                Modifier
-                    .widthIn(max = 900.dp)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            // Adapter Status Card (full width) - Matches Flutter _buildAdapterStatusCard
-            AdapterStatusCard(adapterStatus, colorScheme)
-
-            // Two cards side by side
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                // Phone Connection Card - Matches Flutter _buildPhoneConnectionCard
-                PhoneConnectionCard(
-                    modifier = Modifier.weight(1f),
-                    phoneConnection = adapterStatus.phoneConnection,
-                    colorScheme = colorScheme,
-                )
-
-                // Video Stream Card - Matches Flutter _buildVideoStreamCard
-                VideoStreamCard(
-                    modifier = Modifier.weight(1f),
-                    videoStream = adapterStatus.videoStream,
-                    colorScheme = colorScheme,
-                )
-            }
-
-            // Manufacturer Info Card (conditionally shown) - Matches Flutter _buildManufacturerInfoCard
-            if (adapterStatus.manufacturerInfo != null) {
-                ManufacturerInfoCard(
-                    manufacturerInfo = adapterStatus.manufacturerInfo!!,
-                    colorScheme = colorScheme,
-                )
-            }
-        }
-    }
-}
-
-/**
- * Adapter Status Card - Shows phase, firmware, BT/WiFi names
- * Matches Flutter _buildAdapterStatusCard
- */
-@Composable
-private fun AdapterStatusCard(
-    adapterStatus: AdapterStatusInfo,
-    colorScheme: ColorScheme,
-) {
-    val phaseColor = adapterStatus.phase.getColor(colorScheme)
-
-    StatusInfoCard(
-        title = "Adapter Status",
-        icon = Icons.Default.SystemUpdate,
-        iconColor = phaseColor,
-        statusText = adapterStatus.phase.displayName,
-        statusColor = phaseColor,
-    ) {
-        StatusDetailRow(
-            label = "Firmware Version",
-            value = adapterStatus.firmwareVersion ?: "- - -",
-            hasValue = adapterStatus.firmwareVersion != null,
-        )
-        StatusDetailRow(
-            label = "BT Name",
-            value = adapterStatus.bluetoothDeviceName ?: "- - -",
-            hasValue = adapterStatus.bluetoothDeviceName != null,
-        )
-        StatusDetailRow(
-            label = "WiFi Name",
-            value = adapterStatus.wifiDeviceName ?: "- - -",
-            hasValue = adapterStatus.wifiDeviceName != null,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Message type annotation - matches Flutter exactly
-        Text(
-            text = "Message Types: 0x03, 0xCC, 0x0D, 0x0E, 0x07, 0x16, 0x19, 0x3E8, 0x3EA",
-            style = MaterialTheme.typography.labelSmall,
-            color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-        )
-    }
-}
-
-/**
- * Phone Connection Card - Shows platform, connection type, BT MAC
- * Matches Flutter _buildPhoneConnectionCard
- */
-@Composable
-private fun PhoneConnectionCard(
-    modifier: Modifier = Modifier,
-    phoneConnection: PhoneConnectionInfo,
-    colorScheme: ColorScheme,
-) {
-    val statusColor = phoneConnection.displayColor(colorScheme)
-
-    StatusInfoCard(
-        modifier = modifier,
-        title = "Phone Connection",
-        icon = phoneConnection.displayIcon,
-        iconColor = statusColor,
-        statusText = phoneConnection.status.displayName,
-        statusColor = statusColor,
-    ) {
-        StatusDetailRow(
-            label = "Platform",
-            value = phoneConnection.platformDisplay,
-            hasValue = phoneConnection.platform != PhonePlatform.UNKNOWN,
-        )
-        StatusDetailRow(
-            label = "Connection Type",
-            value = phoneConnection.connectionTypeDisplay,
-            hasValue = phoneConnection.connectionType != PhoneConnectionType.UNKNOWN,
-        )
-        StatusDetailRow(
-            label = "BT MAC Address",
-            value = phoneConnection.connectedPhoneMacDisplay,
-            hasValue = phoneConnection.connectedPhoneMacAddress != null,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Message type annotation - matches Flutter
-        Text(
-            text = "Message Types: 0x02, 0x04, 0x23, 0x24",
-            style = MaterialTheme.typography.labelSmall,
-            color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-        )
-    }
-}
-
-/**
- * Video Stream Card - Shows resolution, FPS, codec
- * Matches Flutter _buildVideoStreamCard
- */
-@Composable
-private fun VideoStreamCard(
-    modifier: Modifier = Modifier,
-    videoStream: VideoStreamInfo?,
-    colorScheme: ColorScheme,
-) {
-    val hasVideo = videoStream != null && (videoStream.receivedWidth != null || videoStream.width != null)
-    val statusColor = if (hasVideo) colorScheme.primary else colorScheme.onSurfaceVariant
-
-    StatusInfoCard(
-        modifier = modifier,
-        title = "Video Stream",
-        icon = Icons.Default.Videocam,
-        iconColor = statusColor,
-        statusText = if (hasVideo) "Streaming" else "Inactive", // Matches Flutter exactly
-        statusColor = statusColor,
-    ) {
-        StatusDetailRow(
-            label = "Resolution",
-            value = videoStream?.receivedResolutionDisplay ?: "- - -",
-            hasValue = videoStream?.receivedWidth != null,
-        )
-        StatusDetailRow(
-            label = "Frame Rate",
-            value = videoStream?.frameRateDisplay ?: "- - -",
-            hasValue = videoStream?.frameRate != null,
-        )
-        StatusDetailRow(
-            label = "Codec",
-            value = videoStream?.codecDisplay ?: "- - -",
-            hasValue = videoStream?.codec != null,
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Message type annotation - matches Flutter exactly
-        Text(
-            text = "Message Types: 0x06, Internal Config",
-            style = MaterialTheme.typography.labelSmall,
-            color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-        )
-    }
-}
-
-/**
- * Manufacturer Info Card - Shows hardware version, serial number
- * Matches Flutter _buildManufacturerInfoCard
- */
-@Composable
-private fun ManufacturerInfoCard(
-    manufacturerInfo: Map<String, Any>,
-    colorScheme: ColorScheme,
-) {
-    StatusInfoCard(
-        title = "Manufacturer Info",
-        icon = Icons.Default.Factory,
-        iconColor = colorScheme.secondary,
-        statusText = "Available",
-        statusColor = colorScheme.secondary,
-    ) {
-        StatusDetailRow(
-            label = "Hardware Version",
-            value = manufacturerInfo["a"]?.toString() ?: "- - -",
-            hasValue = manufacturerInfo.containsKey("a"),
-        )
-        StatusDetailRow(
-            label = "Serial Number",
-            value = manufacturerInfo["b"]?.toString() ?: "- - -",
-            hasValue = manufacturerInfo.containsKey("b"),
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Message type annotation - matches Flutter
-        Text(
-            text = "Message Types: 0x14",
-            style = MaterialTheme.typography.labelSmall,
-            color = colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-        )
-    }
-}
-
-/**
- * Material 3 Status Info Card - matches Flutter implementation
- * Features: icon + title header, colored status text, detail rows
- */
-@Composable
-private fun StatusInfoCard(
-    title: String,
-    icon: ImageVector,
-    iconColor: Color,
-    statusText: String,
-    statusColor: Color,
-    modifier: Modifier = Modifier,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-    ) {
-        Column(
-            modifier = Modifier.padding(24.dp),
-        ) {
-            // Header row with icon and title
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = iconColor,
-                    modifier = Modifier.size(24.dp),
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Status text
-            Text(
-                text = statusText,
-                style =
-                    MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.SemiBold,
-                    ),
-                color = statusColor,
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Detail rows
-            content()
-        }
-    }
-}
-
-/**
- * Material 3 detail row for status cards
- */
-@Composable
-private fun StatusDetailRow(
-    label: String,
-    value: String,
-    hasValue: Boolean = true,
-) {
-    val colorScheme = MaterialTheme.colorScheme
-
-    Row(
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(vertical = 2.dp),
-    ) {
-        Text(
-            text = "$label: ",
-            style = MaterialTheme.typography.bodyMedium,
-            color = colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = value,
-            style =
-                MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = if (hasValue) FontWeight.SemiBold else FontWeight.Normal,
-                ),
-            color = if (hasValue) colorScheme.onSurface else colorScheme.onSurfaceVariant,
-        )
     }
 }
 
@@ -633,6 +291,10 @@ private fun ControlTabContent(carlinkManager: CarlinkManager) {
     val immersivePreference = remember { ImmersivePreference.getInstance(context) }
     val isImmersiveEnabled by immersivePreference.isEnabledFlow.collectAsStateWithLifecycle(initialValue = false)
     var showRestartDialog by remember { mutableStateOf(false) }
+
+    // Adapter configuration preference
+    val adapterConfigPreference = remember { AdapterConfigPreference.getInstance(context) }
+    var showAdapterConfigDialog by remember { mutableStateOf(false) }
 
     // Centered scrollable content with max width constraint
     Box(
@@ -723,49 +385,81 @@ private fun ControlTabContent(carlinkManager: CarlinkManager) {
                 }
             }
 
-            // Display Control Card - Matches Flutter _buildDisplayControlCard
-            ControlCard(
-                title = "Display Control",
-                icon = Icons.Default.DisplaySettings, // Matches Flutter Icons.display_settings
+            // Two cards side by side (Display Control + Adapter Configuration)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // Immersive Mode Toggle - Matches Flutter SwitchListTile exactly
-                // Using Row instead of ListItem to avoid dark background
-                Row(
-                    modifier =
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                // Display Control Card - Matches Flutter _buildDisplayControlCard
+                ControlCard(
+                    modifier = Modifier.weight(1f),
+                    title = "Display Control",
+                    icon = Icons.Default.DisplaySettings,
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "Immersive Fullscreen Mode",
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        // Dynamic subtitle matching Flutter exactly
-                        Text(
-                            text =
-                                if (isImmersiveEnabled) {
-                                    "Immersive Mode, Active"
-                                } else {
-                                    "AAOS System UI restricting render area"
-                                },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colorScheme.onSurfaceVariant,
+                    // Immersive Mode Toggle
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Immersive Fullscreen",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text =
+                                    if (isImmersiveEnabled) {
+                                        "Active"
+                                    } else {
+                                        "System UI managed"
+                                    },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Switch(
+                            checked = isImmersiveEnabled,
+                            enabled = !isProcessing,
+                            onCheckedChange = { enabled ->
+                                showRestartDialog = true
+                            },
                         )
                     }
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Switch(
-                        checked = isImmersiveEnabled,
-                        enabled = !isProcessing,
-                        onCheckedChange = { enabled ->
-                            showRestartDialog = true
-                        },
-                    )
+                }
+
+                // Adapter Configuration Card
+                ControlCard(
+                    modifier = Modifier.weight(1f),
+                    title = "Adapter Configuration",
+                    icon = Icons.Default.SettingsInputComponent,
+                ) {
+                    // Configure button
+                    FilledTonalButton(
+                        onClick = { showAdapterConfigDialog = true },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Configure", style = MaterialTheme.typography.titleMedium)
+                    }
                 }
             }
         }
+    }
+
+    // Adapter Configuration Dialog
+    if (showAdapterConfigDialog) {
+        AdapterConfigurationDialog(
+            adapterConfigPreference = adapterConfigPreference,
+            onDismiss = { showAdapterConfigDialog = false },
+        )
     }
 
     // Restart Required Dialog - Matches Flutter _handleImmersiveModeToggle exactly
@@ -969,6 +663,305 @@ private fun ControlButton(
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(label, style = MaterialTheme.typography.titleMedium)
             }
+        }
+    }
+}
+
+// ==================== ADAPTER CONFIGURATION DIALOG ====================
+
+/**
+ * Adapter Configuration Dialog
+ *
+ * Scrollable popup dialog for configuring adapter initialization settings.
+ * Designed to be extensible - new configuration options can be easily added.
+ *
+ * Structure:
+ * - Header with icon and title
+ * - Scrollable content with configuration options
+ * - Footer with Save/Default/Cancel buttons
+ */
+@Composable
+private fun AdapterConfigurationDialog(
+    adapterConfigPreference: AdapterConfigPreference,
+    onDismiss: () -> Unit,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+    val scope = rememberCoroutineScope()
+
+    // Load saved audio source from preferences
+    val savedAudioSource by adapterConfigPreference.audioSourceFlow.collectAsStateWithLifecycle(
+        initialValue = AudioSourceConfig.NOT_CONFIGURED
+    )
+
+    // Local state for editing - allows cancel without saving
+    var selectedAudioSource by remember { mutableStateOf(savedAudioSource) }
+
+    // Sync local state when saved value loads (for initial load)
+    LaunchedEffect(savedAudioSource) {
+        selectedAudioSource = savedAudioSource
+    }
+
+    // Track if any changes were made
+    val hasChanges = selectedAudioSource != savedAudioSource
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = MaterialTheme.shapes.extraLarge,
+            color = colorScheme.surfaceContainerHigh,
+            tonalElevation = 6.dp,
+            modifier = Modifier.widthIn(max = 500.dp),
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+            ) {
+                // Header with icon and title
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SettingsInputComponent,
+                        contentDescription = null,
+                        tint = colorScheme.primary,
+                        modifier = Modifier.size(28.dp),
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text(
+                        text = "Adapter Configuration",
+                        style = MaterialTheme.typography.headlineSmall.copy(
+                            fontWeight = FontWeight.Bold,
+                        ),
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Subtitle
+                Text(
+                    text = "Changes apply on next adapter connection",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colorScheme.onSurfaceVariant,
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Scrollable content area for configuration options
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    // Audio Source Configuration Option
+                    ConfigurationOptionCard(
+                        title = "Audio Source",
+                        description = "Select how audio is routed from your phone",
+                        icon = Icons.Default.VolumeUp,
+                    ) {
+                        // Audio source selection buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            // Bluetooth button
+                            AudioSourceButton(
+                                label = "Bluetooth",
+                                icon = Icons.Default.Bluetooth,
+                                isSelected = selectedAudioSource == AudioSourceConfig.BLUETOOTH,
+                                onClick = { selectedAudioSource = AudioSourceConfig.BLUETOOTH },
+                                modifier = Modifier.weight(1f),
+                            )
+
+                            // Adapter button
+                            AudioSourceButton(
+                                label = "Adapter",
+                                icon = Icons.Default.Usb,
+                                isSelected = selectedAudioSource == AudioSourceConfig.ADAPTER,
+                                onClick = { selectedAudioSource = AudioSourceConfig.ADAPTER },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+
+                        // Current selection indicator
+                        if (selectedAudioSource != AudioSourceConfig.NOT_CONFIGURED) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = when (selectedAudioSource) {
+                                    AudioSourceConfig.BLUETOOTH -> "Audio via phone Bluetooth to car stereo"
+                                    AudioSourceConfig.ADAPTER -> "Audio via USB through this app"
+                                    else -> ""
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colorScheme.primary,
+                            )
+                        }
+                    }
+
+                    // Future configuration options can be added here:
+                    // ConfigurationOptionCard(
+                    //     title = "WiFi Band",
+                    //     description = "Select preferred WiFi frequency",
+                    //     icon = Icons.Default.Wifi,
+                    // ) { ... }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Footer with action buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    // Cancel button
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Cancel")
+                    }
+
+                    // Default button
+                    TextButton(
+                        onClick = {
+                            scope.launch {
+                                adapterConfigPreference.resetToDefaults()
+                                onDismiss()
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("Default")
+                    }
+
+                    // Save button
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                adapterConfigPreference.setAudioSource(selectedAudioSource)
+                                onDismiss()
+                            }
+                        },
+                        modifier = Modifier.weight(1.5f),
+                        enabled = hasChanges,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Save")
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Configuration Option Card - Container for a single configuration option
+ *
+ * Provides consistent styling for configuration options in the dialog.
+ * Designed to be reusable for future configuration options.
+ */
+@Composable
+private fun ConfigurationOptionCard(
+    title: String,
+    description: String,
+    icon: ImageVector,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = colorScheme.surfaceContainerHighest,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+        ) {
+            // Header row with icon and title
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = colorScheme.primary,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Description
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Option content
+            content()
+        }
+    }
+}
+
+/**
+ * Audio Source Selection Button
+ *
+ * Toggle button with visual indicator for selected state.
+ */
+@Composable
+private fun AudioSourceButton(
+    label: String,
+    icon: ImageVector,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+
+    Surface(
+        onClick = onClick,
+        modifier = modifier.height(72.dp),
+        shape = MaterialTheme.shapes.medium,
+        color = if (isSelected) colorScheme.primaryContainer else colorScheme.surfaceContainer,
+        border = BorderStroke(
+            width = if (isSelected) 2.dp else 1.dp,
+            color = if (isSelected) colorScheme.primary else colorScheme.outline,
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp),
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge.copy(
+                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                ),
+                color = if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

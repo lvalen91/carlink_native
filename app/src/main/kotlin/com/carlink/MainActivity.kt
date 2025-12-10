@@ -46,6 +46,7 @@ import com.carlink.protocol.KnownDevices
 import com.carlink.util.IconAssets
 import com.carlink.ui.MainScreen
 import com.carlink.ui.SettingsScreen
+import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.ImmersivePreference
 import com.carlink.ui.theme.CarlinkTheme
 import kotlinx.coroutines.runBlocking
@@ -236,6 +237,12 @@ class MainActivity : ComponentActivity() {
         val (icon120, icon180, icon256) = IconAssets.loadIcons(this)
         val iconsLoaded = icon120 != null && icon180 != null && icon256 != null
 
+        // Load user-configured adapter settings
+        // These are optional - only configured settings are sent to the adapter
+        val userConfig = runBlocking {
+            AdapterConfigPreference.getInstance(this@MainActivity).getUserConfig()
+        }
+
         val config =
             AdapterConfig(
                 width = evenWidth,
@@ -245,6 +252,8 @@ class MainActivity : ComponentActivity() {
                 icon120Data = icon120,
                 icon180Data = icon180,
                 icon256Data = icon256,
+                // User-configured audio transfer mode (null if not configured)
+                audioTransferMode = userConfig.audioTransferMode,
             )
 
         logInfo(
@@ -255,6 +264,10 @@ class MainActivity : ComponentActivity() {
         )
         logInfo("Display config: ${config.width}x${config.height}@${config.fps}fps, ${config.dpi}dpi", tag = "MAIN")
         logInfo("Icons loaded: $iconsLoaded (120: ${icon120?.size ?: 0}B, 180: ${icon180?.size ?: 0}B, 256: ${icon256?.size ?: 0}B)", tag = "MAIN")
+        logInfo(
+            "[ADAPTER_CONFIG] User config: audioTransferMode=${userConfig.audioTransferMode?.let { if (it) "bluetooth" else "adapter" } ?: "not configured"}",
+            tag = "MAIN"
+        )
 
         carlinkManager = CarlinkManager(this, config)
     }

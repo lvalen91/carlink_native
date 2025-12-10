@@ -63,22 +63,10 @@ object MessageParser {
             MessageType.AUDIO_DATA -> parseAudioData(header, payload)
             MessageType.VIDEO_DATA -> parseVideoData(header, payload)
             MessageType.MEDIA_DATA -> parseMediaData(header, payload)
-            MessageType.BLUETOOTH_ADDRESS -> parseStringMessage(header, payload) { BluetoothAddressMessage(header, it) }
-            MessageType.BLUETOOTH_DEVICE_NAME -> parseStringMessage(header, payload) { BluetoothDeviceNameMessage(header, it) }
-            MessageType.BLUETOOTH_PIN -> parseStringMessage(header, payload) { BluetoothPinMessage(header, it) }
-            MessageType.MANUFACTURER_INFO -> parseManufacturerInfo(header, payload)
-            MessageType.SOFTWARE_VERSION -> parseStringMessage(header, payload) { SoftwareVersionMessage(header, it) }
             MessageType.COMMAND -> parseCommand(header, payload)
             MessageType.PLUGGED -> parsePlugged(header, payload)
             MessageType.UNPLUGGED -> UnpluggedMessage(header)
-            MessageType.WIFI_DEVICE_NAME -> parseStringMessage(header, payload) { WifiDeviceNameMessage(header, it) }
-            MessageType.HI_CAR_LINK -> parseStringMessage(header, payload) { HiCarLinkMessage(header, it) }
-            MessageType.BLUETOOTH_PAIRED_LIST -> parseStringMessage(header, payload) { BluetoothPairedListMessage(header, it) }
-            MessageType.NETWORK_MAC_ADDRESS -> parseStringMessage(header, payload) { NetworkMacAddressMessage(header, it) }
-            MessageType.NETWORK_MAC_ADDRESS_ALT -> parseStringMessage(header, payload) { NetworkMacAddressAltMessage(header, it) }
             MessageType.OPEN -> parseOpened(header, payload)
-            MessageType.BOX_SETTINGS -> parseBoxInfo(header, payload)
-            MessageType.PHASE -> parsePhase(header, payload)
             else -> UnknownMessage(header, payload)
         }
 
@@ -238,31 +226,6 @@ object MessageParser {
         return MediaDataMessage(header, mediaType, mediaPayload)
     }
 
-    private inline fun <T : Message> parseStringMessage(
-        header: MessageHeader,
-        payload: ByteArray?,
-        factory: (String) -> T,
-    ): Message {
-        val value =
-            payload?.let {
-                String(it, StandardCharsets.US_ASCII).trim('\u0000')
-            } ?: ""
-        return factory(value)
-    }
-
-    private fun parseManufacturerInfo(
-        header: MessageHeader,
-        payload: ByteArray?,
-    ): Message {
-        if (payload == null || payload.size < 8) {
-            return ManufacturerInfoMessage(header, 0, 0)
-        }
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
-        val a = buffer.int
-        val b = buffer.int
-        return ManufacturerInfoMessage(header, a, b)
-    }
-
     private fun parseCommand(
         header: MessageHeader,
         payload: ByteArray?,
@@ -314,34 +277,6 @@ object MessageParser {
             iBox = buffer.int,
             phoneMode = buffer.int,
         )
-    }
-
-    private fun parseBoxInfo(
-        header: MessageHeader,
-        payload: ByteArray?,
-    ): Message {
-        if (payload == null) {
-            return BoxInfoMessage(header, emptyMap())
-        }
-        return try {
-            val jsonString = String(payload, StandardCharsets.UTF_8).trim('\u0000')
-            val json = JSONObject(jsonString)
-            val settings = json.keys().asSequence().associateWith { json.get(it) }
-            BoxInfoMessage(header, settings)
-        } catch (e: Exception) {
-            BoxInfoMessage(header, emptyMap())
-        }
-    }
-
-    private fun parsePhase(
-        header: MessageHeader,
-        payload: ByteArray?,
-    ): Message {
-        if (payload == null || payload.size < 4) {
-            return PhaseMessage(header, 0)
-        }
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
-        return PhaseMessage(header, buffer.int)
     }
 }
 
@@ -446,107 +381,6 @@ class MediaDataMessage(
 }
 
 /**
- * Manufacturer info message.
- */
-class ManufacturerInfoMessage(
-    header: MessageHeader,
-    val a: Int,
-    val b: Int,
-) : Message(header) {
-    override fun toString(): String = "ManufacturerInfo(a=$a, b=$b)"
-}
-
-/**
- * Software version message.
- */
-class SoftwareVersionMessage(
-    header: MessageHeader,
-    val version: String,
-) : Message(header) {
-    override fun toString(): String = "SoftwareVersion($version)"
-}
-
-/**
- * Bluetooth address message.
- */
-class BluetoothAddressMessage(
-    header: MessageHeader,
-    val address: String,
-) : Message(header) {
-    override fun toString(): String = "BluetoothAddress($address)"
-}
-
-/**
- * Bluetooth PIN message.
- */
-class BluetoothPinMessage(
-    header: MessageHeader,
-    val pin: String,
-) : Message(header) {
-    override fun toString(): String = "BluetoothPIN($pin)"
-}
-
-/**
- * Bluetooth device name message.
- */
-class BluetoothDeviceNameMessage(
-    header: MessageHeader,
-    val name: String,
-) : Message(header) {
-    override fun toString(): String = "BluetoothDeviceName($name)"
-}
-
-/**
- * WiFi device name message.
- */
-class WifiDeviceNameMessage(
-    header: MessageHeader,
-    val name: String,
-) : Message(header) {
-    override fun toString(): String = "WifiDeviceName($name)"
-}
-
-/**
- * HiCar link message.
- */
-class HiCarLinkMessage(
-    header: MessageHeader,
-    val link: String,
-) : Message(header) {
-    override fun toString(): String = "HiCarLink($link)"
-}
-
-/**
- * Bluetooth paired list message.
- */
-class BluetoothPairedListMessage(
-    header: MessageHeader,
-    val data: String,
-) : Message(header) {
-    override fun toString(): String = "BluetoothPairedList($data)"
-}
-
-/**
- * Network MAC address message.
- */
-class NetworkMacAddressMessage(
-    header: MessageHeader,
-    val macAddress: String,
-) : Message(header) {
-    override fun toString(): String = "NetworkMacAddress($macAddress)"
-}
-
-/**
- * Network MAC address (alternate) message.
- */
-class NetworkMacAddressAltMessage(
-    header: MessageHeader,
-    val macAddress: String,
-) : Message(header) {
-    override fun toString(): String = "NetworkMacAddressAlt($macAddress)"
-}
-
-/**
  * Opened response message.
  */
 class OpenedMessage(
@@ -560,35 +394,6 @@ class OpenedMessage(
     val phoneMode: Int,
 ) : Message(header) {
     override fun toString(): String = "Opened(${width}x$height@${fps}fps, format=$format, packetMax=$packetMax)"
-}
-
-/**
- * Box info/settings message.
- */
-class BoxInfoMessage(
-    header: MessageHeader,
-    val settings: Map<String, Any>,
-) : Message(header) {
-    override fun toString(): String = "BoxInfo(settings=$settings)"
-}
-
-/**
- * Phase message.
- */
-class PhaseMessage(
-    header: MessageHeader,
-    val phase: Int,
-) : Message(header) {
-    override fun toString(): String = "Phase($phase)"
-}
-
-/**
- * Adapter configuration message (synthetic, not from protocol).
- */
-class AdapterConfigurationMessage(
-    val config: AdapterConfig,
-) : Message(MessageHeader(0, MessageType.UNKNOWN)) {
-    override fun toString(): String = "AdapterConfiguration(${config.width}x${config.height}@${config.fps}fps)"
 }
 
 /**
