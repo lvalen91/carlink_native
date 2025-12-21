@@ -5,6 +5,7 @@ import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.util.Log
 import androidx.media.MediaBrowserServiceCompat
+import com.carlink.BuildConfig
 
 private const val TAG = "CARLINK_BROWSER"
 
@@ -49,14 +50,14 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
 
     override fun onCreate() {
         super.onCreate()
-        Log.d(TAG, "[BROWSER_SERVICE] onCreate")
+        if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] onCreate")
 
         // Set the session token so AAOS can control playback
         mediaSessionToken?.let { token ->
             setSessionToken(token)
-            Log.d(TAG, "[BROWSER_SERVICE] Session token set")
+            if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] Session token set")
         } ?: run {
-            Log.w(TAG, "[BROWSER_SERVICE] No session token available yet")
+            if (BuildConfig.DEBUG) Log.w(TAG, "[BROWSER_SERVICE] No session token available yet")
         }
     }
 
@@ -74,23 +75,25 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
         clientUid: Int,
         rootHints: Bundle?,
     ): BrowserRoot? {
-        Log.d(TAG, "[BROWSER_SERVICE] onGetRoot from: $clientPackageName (uid=$clientUid)")
+        if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] onGetRoot from: $clientPackageName (uid=$clientUid)")
 
         // Log AAOS root hints for debugging
-        rootHints?.let { hints ->
-            val maxRootChildren =
-                hints.getInt(
-                    "android.media.browse.CONTENT_STYLE_SUPPORTED",
-                    -1,
-                )
-            Log.d(TAG, "[BROWSER_SERVICE] Root hints - maxChildren: $maxRootChildren")
+        if (BuildConfig.DEBUG) {
+            rootHints?.let { hints ->
+                val maxRootChildren =
+                    hints.getInt(
+                        "android.media.browse.CONTENT_STYLE_SUPPORTED",
+                        -1,
+                    )
+                Log.d(TAG, "[BROWSER_SERVICE] Root hints - maxChildren: $maxRootChildren")
+            }
         }
 
         // Update session token if available (may have been set after onCreate)
         if (sessionToken == null) {
             mediaSessionToken?.let { token ->
                 setSessionToken(token)
-                Log.d(TAG, "[BROWSER_SERVICE] Session token set in onGetRoot")
+                if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] Session token set in onGetRoot")
             }
         }
 
@@ -109,7 +112,7 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
         parentId: String,
         result: Result<MutableList<MediaBrowserCompat.MediaItem>>,
     ) {
-        Log.d(TAG, "[BROWSER_SERVICE] onLoadChildren for: $parentId")
+        if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] onLoadChildren for: $parentId")
 
         // Return empty list - no browsable content
         // AAOS will still show us as a media source, just without browse capability
@@ -117,7 +120,7 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
     }
 
     override fun onDestroy() {
-        Log.d(TAG, "[BROWSER_SERVICE] onDestroy")
+        if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] onDestroy")
         super.onDestroy()
     }
 }

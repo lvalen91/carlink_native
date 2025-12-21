@@ -6,6 +6,7 @@ import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
+import com.carlink.BuildConfig
 import com.carlink.util.LogCallback
 
 private const val TAG = "CARLINK_MEDIA"
@@ -340,7 +341,9 @@ class MediaSessionManager(
         }
 
     private fun log(message: String) {
-        Log.d(TAG, message)
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, message)
+        }
         logCallback.log(message)
     }
 }

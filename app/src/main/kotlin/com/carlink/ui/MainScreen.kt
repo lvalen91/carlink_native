@@ -199,7 +199,7 @@ fun MainScreen(
                 ) {
                     // Projection icon - Matches Flutter Image.asset("assets/projection_icon.png")
                     Image(
-                        painter = painterResource(id = R.drawable.projection_icon),
+                        painter = painterResource(id = R.mipmap.ic_launcher_foreground),
                         contentDescription = "Carlink",
                         modifier = Modifier.height(220.dp),
                     )

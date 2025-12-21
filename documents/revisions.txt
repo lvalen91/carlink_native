@@ -28,3 +28,8 @@
 [14] :: Removed Status page
 [15] :: Adapter Config page Testing. PUSHED: 9DEC25 11:05AM
 [16] :: Video Frame Interval Change. Replaced Timer with coroutine Job. PUSHED: 10DEC25 11:50AM
+[17] :: Navigation Audio Testing
+[18] :: PlatformDetector was not used correctly, Fixed. Should now detected the hardware decoder and use it.
+[19] :: Static Analysis warning fixes. Moved Mic from Timer to Coroutine. Though Coroutine uses a shared pool, so too many timers can cause issues.
+[20]: runBlocking ANR Risk and lateinit Crash fixed. carlinkManager nullable, the receiver needed null-safe access
+[21] :: Microphone Code reverted back. Timer works while coroutine does not for mic.

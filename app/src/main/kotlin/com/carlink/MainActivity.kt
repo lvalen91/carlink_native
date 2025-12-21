@@ -36,7 +36,9 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.carlink.logging.FileLogManager
+import com.carlink.logging.LogPreset
 import com.carlink.logging.Logger
+import com.carlink.logging.apply
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
 import com.carlink.util.AudioDebugLogger
@@ -49,7 +51,6 @@ import com.carlink.ui.SettingsScreen
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.ImmersivePreference
 import com.carlink.ui.theme.CarlinkTheme
-import kotlinx.coroutines.runBlocking
 
 /**
  * Main Activity - Entry Point for Carlink Native
@@ -63,7 +64,9 @@ import kotlinx.coroutines.runBlocking
  * Ported from: example/lib/main.dart
  */
 class MainActivity : ComponentActivity() {
-    private lateinit var carlinkManager: CarlinkManager
+    // Nullable to prevent UninitializedPropertyAccessException if Activity
+    // is destroyed before initialization completes (e.g., low memory kill)
+    private var carlinkManager: CarlinkManager? = null
     private var fileLogManager: FileLogManager? = null
     private var isImmersiveModeEnabled: Boolean = false
 
@@ -102,8 +105,8 @@ class MainActivity : ComponentActivity() {
                                 "PID=0x${it.productId.toString(16)} path=${it.deviceName}",
                             tag = "MAIN"
                         )
-                        // Notify CarlinkManager of the detachment
-                        carlinkManager.onUsbDeviceDetached()
+                        // Notify CarlinkManager of the detachment (null-safe)
+                        carlinkManager?.onUsbDeviceDetached()
                     }
                 }
             }
@@ -138,11 +141,14 @@ class MainActivity : ComponentActivity() {
         registerUsbDetachReceiver()
 
         // Set up Compose UI
+        // carlinkManager is guaranteed non-null here since initializeCarlinkManager()
+        // completed synchronously above. Use !! with confidence.
+        val manager = carlinkManager!!
         setContent {
             CarlinkTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     CarlinkApp(
-                        carlinkManager = carlinkManager,
+                        carlinkManager = manager,
                         fileLogManager = fileLogManager,
                         isImmersiveMode = isImmersiveModeEnabled,
                     )
@@ -165,8 +171,8 @@ class MainActivity : ComponentActivity() {
         // Unregister USB detachment receiver
         unregisterUsbDetachReceiver()
 
-        // Release resources
-        carlinkManager.release()
+        // Release resources (null-safe in case Activity destroyed before init completed)
+        carlinkManager?.release()
         fileLogManager?.release()
 
         logInfo("MainActivity destroyed", tag = "MAIN")
@@ -190,6 +196,13 @@ class MainActivity : ComponentActivity() {
         Logger.setDebugLoggingEnabled(isDebugBuild)
         VideoDebugLogger.setDebugEnabled(isDebugBuild)
         AudioDebugLogger.setDebugEnabled(isDebugBuild)
+
+        // Apply default log preset based on build type
+        // Release: SILENT (errors only) - user can override via settings
+        // Debug: NORMAL (standard logging)
+        if (!isDebugBuild) {
+            LogPreset.SILENT.apply()
+        }
 
         logInfo("Carlink Native starting - version $appVersion", tag = "MAIN")
         logInfo("[LOGGING] Debug logging: ${if (isDebugBuild) "ENABLED" else "DISABLED (release build)"}", tag = "MAIN")
@@ -237,11 +250,9 @@ class MainActivity : ComponentActivity() {
         val (icon120, icon180, icon256) = IconAssets.loadIcons(this)
         val iconsLoaded = icon120 != null && icon180 != null && icon256 != null
 
-        // Load user-configured adapter settings
+        // Load user-configured adapter settings from sync cache (instant, no I/O blocking)
         // These are optional - only configured settings are sent to the adapter
-        val userConfig = runBlocking {
-            AdapterConfigPreference.getInstance(this@MainActivity).getUserConfig()
-        }
+        val userConfig = AdapterConfigPreference.getInstance(this).getUserConfigSync()
 
         val config =
             AdapterConfig(
@@ -290,15 +301,13 @@ class MainActivity : ComponentActivity() {
 
     /**
      * Loads immersive mode preference and applies it if enabled.
+     * Uses synchronous SharedPreferences cache to avoid ANR.
      * Matches Flutter: main.dart lines 50-57
      */
     private fun loadAndApplyImmersiveMode() {
-        // Read preference synchronously at startup (before UI is rendered)
+        // Read preference from sync cache (instant, no I/O blocking)
         // This ensures the viewport is correctly sized before the first build
-        isImmersiveModeEnabled =
-            runBlocking {
-                ImmersivePreference.getInstance(this@MainActivity).isEnabled()
-            }
+        isImmersiveModeEnabled = ImmersivePreference.getInstance(this).isEnabledSync()
 
         if (isImmersiveModeEnabled) {
             applyImmersiveMode()

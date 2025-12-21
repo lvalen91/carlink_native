@@ -1,6 +1,7 @@
 package com.carlink.util;
 
 import android.util.Log;
+import java.util.Locale;
 
 /**
  * Video Pipeline Debug Logger
@@ -75,7 +76,7 @@ public class VideoDebugLogger {
      * Enable/disable individual logging stages.
      */
     public static void setStageEnabled(String stage, boolean enabled) {
-        switch (stage.toUpperCase()) {
+        switch (stage.toUpperCase(Locale.ROOT)) {
             case "USB":
                 usbEnabled = enabled;
                 break;
@@ -393,7 +394,7 @@ public class VideoDebugLogger {
      * Get summary of frame counts for debugging.
      */
     public static String getFrameCountSummary() {
-        return String.format("USB:%d, RingW:%d, RingR:%d, CodecIn:%d, CodecOut:%d",
+        return String.format(Locale.US, "USB:%d, RingW:%d, RingR:%d, CodecIn:%d, CodecOut:%d",
                 usbFrameCount, ringWriteCount, ringReadCount, codecInputCount, codecOutputCount);
     }
 

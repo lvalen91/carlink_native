@@ -6,6 +6,7 @@ import android.media.MediaCodecList
 import android.os.Build
 import android.util.Log
 import android.view.WindowManager
+import com.carlink.BuildConfig
 
 /**
  * PlatformDetector - Detects hardware platform characteristics for configuration selection.
@@ -35,7 +36,8 @@ object PlatformDetector {
      * @property isIntel True if CPU architecture is x86 or x86_64
      * @property isGmAaos True if device is GM AAOS (Harman_Samsung manufacturer or gminfo product)
      * @property cpuArch Primary CPU ABI (e.g., "arm64-v8a", "x86_64")
-     * @property hasIntelCodec True if OMX.Intel.hw_vd.h264 decoder is available
+     * @property hasIntelCodec True if an Intel video codec is available
+     * @property hardwareH264DecoderName The detected hardware H.264 decoder name (any vendor)
      * @property nativeSampleRate Device's native audio output sample rate in Hz
      * @property manufacturer Device manufacturer string
      * @property product Device product string
@@ -49,6 +51,7 @@ object PlatformDetector {
         val isGmAaos: Boolean,
         val cpuArch: String,
         val hasIntelCodec: Boolean,
+        val hardwareH264DecoderName: String? = null,
         val nativeSampleRate: Int,
         val manufacturer: String,
         val product: String,
@@ -78,8 +81,8 @@ object PlatformDetector {
 
         override fun toString(): String =
             "PlatformInfo(arch=$cpuArch, intel=$isIntel, gm=$isGmAaos, " +
-                "intelCodec=$hasIntelCodec, nativeRate=${nativeSampleRate}Hz, " +
-                "mfr=$manufacturer, product=$product, device=$device)"
+                "hwDecoder=${hardwareH264DecoderName ?: "software"}, " +
+                "nativeRate=${nativeSampleRate}Hz, mfr=$manufacturer, product=$product, device=$device)"
     }
 
     /**
@@ -99,7 +102,8 @@ object PlatformDetector {
         val hardware = Build.HARDWARE ?: ""
 
         val isGmAaos = detectGmAaos(manufacturer, product, device)
-        val hasIntelCodec = detectIntelCodec()
+        val (hasHardwareCodec, hardwareH264DecoderName) = detectHardwareH264Decoder()
+        val hasIntelCodec = hardwareH264DecoderName?.contains("Intel", ignoreCase = true) == true
         val nativeSampleRate = detectNativeSampleRate(context)
 
         // Detect Intel Broxton/Apollo Lake platform (used in gminfo37)
@@ -117,6 +121,7 @@ object PlatformDetector {
                 isGmAaos = isGmAaos,
                 cpuArch = cpuArch,
                 hasIntelCodec = hasIntelCodec,
+                hardwareH264DecoderName = hardwareH264DecoderName,
                 nativeSampleRate = nativeSampleRate,
                 manufacturer = manufacturer,
                 product = product,
@@ -126,10 +131,13 @@ object PlatformDetector {
                 displayHeight = displayHeight,
             )
 
-        Log.i(TAG, "[PLATFORM] Detected: $info")
-        Log.i(TAG, "[PLATFORM] Intel MediaCodec fixes: ${info.requiresIntelMediaCodecFixes()}")
-        Log.i(TAG, "[PLATFORM] GM AAOS audio fixes: ${info.requiresGmAaosAudioFixes()}")
-        Log.i(TAG, "[PLATFORM] Broxton platform: $isBroxton, Display: ${displayWidth}x${displayHeight}")
+        if (BuildConfig.DEBUG) {
+            Log.i(TAG, "[PLATFORM] Detected: $info")
+            Log.i(TAG, "[PLATFORM] Hardware H.264 decoder: ${hardwareH264DecoderName ?: "none (software fallback)"}")
+            Log.i(TAG, "[PLATFORM] Intel-specific fixes: ${info.requiresIntelMediaCodecFixes()}")
+            Log.i(TAG, "[PLATFORM] GM AAOS audio fixes: ${info.requiresGmAaosAudioFixes()}")
+            Log.i(TAG, "[PLATFORM] Broxton platform: $isBroxton, Display: ${displayWidth}x${displayHeight}")
+        }
 
         return info
     }
@@ -151,7 +159,7 @@ object PlatformDetector {
                 Pair(0, 0)
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to detect display resolution: ${e.message}")
+            if (BuildConfig.DEBUG) Log.w(TAG, "Failed to detect display resolution: ${e.message}")
             Pair(0, 0)
         }
 
@@ -164,7 +172,7 @@ object PlatformDetector {
         try {
             Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to detect CPU architecture: ${e.message}")
+            if (BuildConfig.DEBUG) Log.w(TAG, "Failed to detect CPU architecture: ${e.message}")
             "unknown"
         }
 
@@ -186,25 +194,30 @@ object PlatformDetector {
             device.startsWith("gminfo", ignoreCase = true)
 
     /**
-     * Detect if Intel hardware video decoder is available.
+     * Detect the best available hardware H.264 decoder.
      *
-     * Searches for OMX.Intel.hw_vd.h264 or similar Intel H.264 decoders.
-     *
-     * Reference: https://developer.android.com/reference/android/media/MediaCodecList
+     * @return Pair of (isHardwareDecoder, codecName)
      */
-    private fun detectIntelCodec(): Boolean =
+    private fun detectHardwareH264Decoder(): Pair<Boolean, String?> =
         try {
             val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-            codecList.codecInfos.any { info ->
+            val hwDecoder = codecList.codecInfos.firstOrNull { info ->
                 !info.isEncoder &&
-                    info.name.contains("Intel", ignoreCase = true) &&
+                    info.isHardwareAccelerated &&
                     info.supportedTypes.any { type ->
                         type.equals("video/avc", ignoreCase = true)
                     }
             }
+            if (hwDecoder != null) {
+                if (BuildConfig.DEBUG) Log.i(TAG, "[PLATFORM] Found hardware H.264 decoder: ${hwDecoder.name}")
+                Pair(true, hwDecoder.name)
+            } else {
+                if (BuildConfig.DEBUG) Log.i(TAG, "[PLATFORM] No hardware H.264 decoder found")
+                Pair(false, null)
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to detect Intel codec: ${e.message}")
-            false
+            if (BuildConfig.DEBUG) Log.w(TAG, "Failed to detect hardware codec: ${e.message}")
+            Pair(false, null)
         }
 
     /**
@@ -223,7 +236,7 @@ object PlatformDetector {
                 ?.toIntOrNull()
                 ?: DEFAULT_SAMPLE_RATE
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to detect native sample rate: ${e.message}")
+            if (BuildConfig.DEBUG) Log.w(TAG, "Failed to detect native sample rate: ${e.message}")
             DEFAULT_SAMPLE_RATE
         }
 

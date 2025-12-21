@@ -3,6 +3,7 @@ package com.carlink.usb
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.util.Log
+import com.carlink.BuildConfig
 import com.carlink.util.LogCallback
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -328,7 +329,9 @@ class BulkTransferManager(
     }
 
     private fun log(message: String) {
-        Log.d(TAG, message)
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, message)
+        }
         logCallback.log(message)
     }
 }

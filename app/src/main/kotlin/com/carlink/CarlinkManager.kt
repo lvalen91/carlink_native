@@ -232,9 +232,14 @@ class CarlinkManager(
                 "bufferMult=${audioConfig.bufferMultiplier}x, prefill=${audioConfig.prefillThresholdMs}ms",
             tag = Logger.Tags.AUDIO
         )
+        logInfo(
+            "[PLATFORM] Using VideoDecoder: ${platformInfo.hardwareH264DecoderName ?: "generic (createDecoderByType)"}",
+            tag = Logger.Tags.VIDEO
+        )
 
         // Initialize H264 renderer with Surface for direct HWC rendering
         // Surface comes from SurfaceView - no GPU composition overhead
+        // Pass platform-detected codec name for optimal hardware decoder selection
         h264Renderer =
             H264Renderer(
                 context,
@@ -243,6 +248,7 @@ class CarlinkManager(
                 surface,
                 logCallback,
                 executors,
+                platformInfo.hardwareH264DecoderName,
             )
 
         // Set keyframe callback - after codec reset, we need to request a new IDR frame
@@ -677,28 +683,62 @@ class CarlinkManager(
     }
 
     private fun handleAudioCommand(command: AudioCommand) {
+        logDebug("[AUDIO_CMD] Received audio command: ${command.name} (id=${command.id})", tag = Logger.Tags.AUDIO)
+
         when (command) {
+            AudioCommand.AUDIO_NAVI_START -> {
+                logInfo("[AUDIO_CMD] Navigation audio START command received", tag = Logger.Tags.AUDIO)
+                // Nav audio data will start arriving - track is created on first packet
+            }
+
+            AudioCommand.AUDIO_NAVI_STOP -> {
+                logInfo("[AUDIO_CMD] Navigation audio STOP command received", tag = Logger.Tags.AUDIO)
+                audioManager?.stopNavTrack()
+            }
+
             AudioCommand.AUDIO_SIRI_START -> {
-                logInfo("Siri started - enabling microphone", tag = Logger.Tags.MIC)
+                logInfo("[AUDIO_CMD] Siri started - enabling microphone", tag = Logger.Tags.MIC)
                 startMicrophoneCapture(decodeType = 5, audioType = 3)
             }
 
             AudioCommand.AUDIO_PHONECALL_START -> {
-                logInfo("Phone call started - enabling microphone", tag = Logger.Tags.MIC)
+                logInfo("[AUDIO_CMD] Phone call started - enabling microphone", tag = Logger.Tags.MIC)
                 startMicrophoneCapture(decodeType = 5, audioType = 3)
             }
 
             AudioCommand.AUDIO_SIRI_STOP -> {
-                logInfo("Siri stopped - disabling microphone", tag = Logger.Tags.MIC)
+                logInfo("[AUDIO_CMD] Siri stopped - disabling microphone", tag = Logger.Tags.MIC)
                 stopMicrophoneCapture()
+                audioManager?.stopVoiceTrack()
             }
 
             AudioCommand.AUDIO_PHONECALL_STOP -> {
-                logInfo("Phone call stopped - disabling microphone", tag = Logger.Tags.MIC)
+                logInfo("[AUDIO_CMD] Phone call stopped - disabling microphone", tag = Logger.Tags.MIC)
                 stopMicrophoneCapture()
+                audioManager?.stopCallTrack()
             }
 
-            else -> {}
+            AudioCommand.AUDIO_MEDIA_START -> {
+                logDebug("[AUDIO_CMD] Media audio START command received", tag = Logger.Tags.AUDIO)
+                // Media audio data will start arriving - track is created on first packet
+            }
+
+            AudioCommand.AUDIO_MEDIA_STOP -> {
+                logDebug("[AUDIO_CMD] Media audio STOP command received", tag = Logger.Tags.AUDIO)
+                // Media track typically stays active, but log for debugging
+            }
+
+            AudioCommand.AUDIO_OUTPUT_START -> {
+                logDebug("[AUDIO_CMD] Audio output START command received", tag = Logger.Tags.AUDIO)
+            }
+
+            AudioCommand.AUDIO_OUTPUT_STOP -> {
+                logDebug("[AUDIO_CMD] Audio output STOP command received", tag = Logger.Tags.AUDIO)
+            }
+
+            else -> {
+                logDebug("[AUDIO_CMD] Unhandled audio command: ${command.name}", tag = Logger.Tags.AUDIO)
+            }
         }
     }
 

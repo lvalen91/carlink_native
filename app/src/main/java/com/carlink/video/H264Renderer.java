@@ -105,6 +105,10 @@ public class H264Renderer {
 
     private PacketRingByteBuffer ringBuffer;
 
+    // Preferred hardware decoder name (detected by PlatformDetector)
+    // e.g., "OMX.Intel.hw_vd.h264" for GM gminfo37
+    private final String preferredDecoderName;
+
     // Safe optimization parameters - no aggressive frame skipping during startup
     // ADB analysis: gminfo37 display is 2400x960@60.001434fps, VSYNC period = 16.666268ms
     private static final int TARGET_FPS = 60; // 2400x960@60fps target
@@ -254,13 +258,16 @@ public class H264Renderer {
      * @param surface Surface from SurfaceView for direct HWC rendering
      * @param logCallback Callback for logging messages
      * @param executors Thread pool for codec operations
+     * @param preferredDecoderName Optional preferred decoder name from PlatformDetector
+     *                             (e.g., "OMX.Intel.hw_vd.h264" for GM gminfo37)
      */
-    public H264Renderer(Context context, int width, int height, Surface surface, LogCallback logCallback, AppExecutors executors) {
+    public H264Renderer(Context context, int width, int height, Surface surface, LogCallback logCallback, AppExecutors executors, String preferredDecoderName) {
         this.width = width;
         this.height = height;
         this.surface = surface;
         this.logCallback = logCallback;
         this.executors = executors;
+        this.preferredDecoderName = preferredDecoderName;
 
         // Optimize buffer size for 6GB RAM system and 2400x960@60fps target
         // Calculate optimal buffer: ~2-3 seconds of 4K video = 32MB for safety margin
@@ -572,19 +579,25 @@ public class H264Renderer {
     private void initCodec(int width, int height, Surface surface) throws Exception {
         log("init media codec - Resolution: " + width + "x" + height);
 
-        // Simplified codec selection - avoid startup delays during CarPlay handshake
+        // Codec selection using PlatformDetector-provided decoder name
+        // This ensures we use the correct codec for the platform (e.g., OMX.Intel.hw_vd.h264 for gminfo37)
         MediaCodec codec = null;
         String codecName = null;
 
-        try {
-            // Try Intel Quick Sync decoder first (known to work on GM gminfo3.7)
-            codec = MediaCodec.createByCodecName("OMX.Intel.VideoDecoder.AVC");
-            codecName = "OMX.Intel.VideoDecoder.AVC (Intel Quick Sync)";
-            log("Using Intel hardware decoder: " + codecName);
-        } catch (Exception e) {
-            log("Intel decoder not available, trying generic hardware decoder");
+        // Try preferred decoder first (from PlatformDetector)
+        if (preferredDecoderName != null && !preferredDecoderName.isEmpty()) {
             try {
-                // Fallback to generic hardware decoder (simple and reliable)
+                codec = MediaCodec.createByCodecName(preferredDecoderName);
+                codecName = preferredDecoderName;
+                log("Using platform-detected decoder: " + codecName);
+            } catch (Exception e) {
+                log("Preferred decoder '" + preferredDecoderName + "' not available: " + e.getMessage());
+            }
+        }
+
+        // Fallback to generic hardware decoder if preferred not available
+        if (codec == null) {
+            try {
                 codec = MediaCodec.createDecoderByType("video/avc");
                 codecName = codec.getName();
                 log("Using generic decoder: " + codecName);

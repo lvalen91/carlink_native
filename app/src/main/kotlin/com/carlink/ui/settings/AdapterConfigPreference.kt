@@ -61,16 +61,23 @@ enum class AudioSourceConfig {
  * - Adapter firmware retains most settings through power cycles
  *
  * Storage:
- * - Uses DataStore Preferences for persistence
+ * - Uses DataStore Preferences for persistence with SharedPreferences sync cache
+ * - Sync Cache: SharedPreferences for instant startup reads (avoids ANR)
  * - Preferences survive app restarts
  * - Applied during AdapterConfig creation in MainActivity
  *
+ * ANR Prevention:
+ * Uses SharedPreferences as a synchronous cache per Android Developer guidance.
+ * DataStore I/O can block the main thread causing ANR if read synchronously.
+ * SharedPreferences provides instant cached reads at startup while DataStore
+ * remains the source of truth for Flow-based observation.
+ *
  * Extensibility:
  * - New configuration options can be added by:
- *   1. Adding a preference key
- *   2. Adding getter/setter methods
+ *   1. Adding a preference key (both DataStore and sync cache)
+ *   2. Adding getter/setter methods (update sync cache in setter)
  *   3. Adding Flow for UI observation
- *   4. Updating applyToConfig() method
+ *   4. Updating getUserConfigSync() and getUserConfig() methods
  */
 @Suppress("StaticFieldLeak") // Uses applicationContext, not Activity context - no leak
 class AdapterConfigPreference private constructor(
@@ -93,12 +100,25 @@ class AdapterConfigPreference private constructor(
         private val KEY_AUDIO_SOURCE_CONFIGURED = booleanPreferencesKey("audio_source_configured")
         private val KEY_AUDIO_SOURCE_BLUETOOTH = booleanPreferencesKey("audio_source_bluetooth")
 
+        // SharedPreferences keys for sync cache (ANR prevention)
+        private const val SYNC_CACHE_PREFS_NAME = "carlink_adapter_config_sync_cache"
+        private const val SYNC_CACHE_KEY_AUDIO_CONFIGURED = "audio_source_configured"
+        private const val SYNC_CACHE_KEY_AUDIO_BLUETOOTH = "audio_source_bluetooth"
+
         // Add future configuration keys here:
         // private val KEY_WIFI_BAND = stringPreferencesKey("wifi_band")
         // private val KEY_MIC_SOURCE = stringPreferencesKey("mic_source")
     }
 
     private val dataStore = appContext.adapterConfigDataStore
+
+    // SharedPreferences sync cache for instant startup reads
+    // Per Android Developer guidance: use SharedPreferences for synchronous access
+    // to avoid blocking main thread with DataStore I/O
+    private val syncCache = appContext.getSharedPreferences(
+        SYNC_CACHE_PREFS_NAME,
+        Context.MODE_PRIVATE
+    )
 
     // ==================== Audio Source ====================
 
@@ -117,7 +137,24 @@ class AdapterConfigPreference private constructor(
         }
 
     /**
+     * Get current audio source configuration synchronously.
+     * Uses SharedPreferences cache to avoid ANR.
+     *
+     * This is safe to call from the main thread during Activity.onCreate().
+     */
+    fun getAudioSourceSync(): AudioSourceConfig {
+        val isConfigured = syncCache.getBoolean(SYNC_CACHE_KEY_AUDIO_CONFIGURED, false)
+        if (!isConfigured) {
+            return AudioSourceConfig.NOT_CONFIGURED
+        }
+        val isBluetooth = syncCache.getBoolean(SYNC_CACHE_KEY_AUDIO_BLUETOOTH, false)
+        return if (isBluetooth) AudioSourceConfig.BLUETOOTH else AudioSourceConfig.ADAPTER
+    }
+
+    /**
      * Get current audio source configuration.
+     *
+     * Note: Prefer getAudioSourceSync() for startup reads to avoid ANR.
      */
     suspend fun getAudioSource(): AudioSourceConfig {
         return try {
@@ -137,9 +174,11 @@ class AdapterConfigPreference private constructor(
 
     /**
      * Set audio source configuration.
+     * Updates both DataStore and sync cache atomically.
      */
     suspend fun setAudioSource(config: AudioSourceConfig) {
         try {
+            // Update DataStore (source of truth)
             dataStore.edit { preferences ->
                 when (config) {
                     AudioSourceConfig.NOT_CONFIGURED -> {
@@ -156,7 +195,24 @@ class AdapterConfigPreference private constructor(
                     }
                 }
             }
-            logInfo("Audio source preference saved: $config", tag = "AdapterConfig")
+            // Update sync cache for instant reads on next startup
+            syncCache.edit().apply {
+                when (config) {
+                    AudioSourceConfig.NOT_CONFIGURED -> {
+                        putBoolean(SYNC_CACHE_KEY_AUDIO_CONFIGURED, false)
+                        remove(SYNC_CACHE_KEY_AUDIO_BLUETOOTH)
+                    }
+                    AudioSourceConfig.BLUETOOTH -> {
+                        putBoolean(SYNC_CACHE_KEY_AUDIO_CONFIGURED, true)
+                        putBoolean(SYNC_CACHE_KEY_AUDIO_BLUETOOTH, true)
+                    }
+                    AudioSourceConfig.ADAPTER -> {
+                        putBoolean(SYNC_CACHE_KEY_AUDIO_CONFIGURED, true)
+                        putBoolean(SYNC_CACHE_KEY_AUDIO_BLUETOOTH, false)
+                    }
+                }
+            }.apply()
+            logInfo("Audio source preference saved: $config (sync cache updated)", tag = "AdapterConfig")
         } catch (e: Exception) {
             logError("Failed to save audio source preference: $e", tag = "AdapterConfig")
             throw e
@@ -186,8 +242,28 @@ class AdapterConfigPreference private constructor(
     }
 
     /**
+     * Get all user-configured settings synchronously.
+     * Uses SharedPreferences cache to avoid ANR.
+     * Only returns values that the user has explicitly configured.
+     *
+     * This is safe to call from the main thread during Activity.onCreate().
+     */
+    fun getUserConfigSync(): UserConfig {
+        val audioSource = getAudioSourceSync()
+        return UserConfig(
+            audioTransferMode = when (audioSource) {
+                AudioSourceConfig.NOT_CONFIGURED -> null
+                AudioSourceConfig.BLUETOOTH -> true
+                AudioSourceConfig.ADAPTER -> false
+            }
+        )
+    }
+
+    /**
      * Get all user-configured settings as a single object.
      * Only returns values that the user has explicitly configured.
+     *
+     * Note: Prefer getUserConfigSync() for startup reads to avoid ANR.
      */
     suspend fun getUserConfig(): UserConfig {
         val audioSource = getAudioSource()
@@ -202,15 +278,23 @@ class AdapterConfigPreference private constructor(
 
     /**
      * Reset all configuration to defaults (not configured).
+     * Clears both DataStore and sync cache.
      */
     suspend fun resetToDefaults() {
         try {
+            // Clear DataStore
             dataStore.edit { preferences ->
                 preferences.remove(KEY_AUDIO_SOURCE_CONFIGURED)
                 preferences.remove(KEY_AUDIO_SOURCE_BLUETOOTH)
                 // Add future keys to clear here
             }
-            logInfo("Adapter config preferences reset to defaults", tag = "AdapterConfig")
+            // Clear sync cache
+            syncCache.edit().apply {
+                remove(SYNC_CACHE_KEY_AUDIO_CONFIGURED)
+                remove(SYNC_CACHE_KEY_AUDIO_BLUETOOTH)
+                // Add future keys to clear here
+            }.apply()
+            logInfo("Adapter config preferences reset to defaults (sync cache cleared)", tag = "AdapterConfig")
         } catch (e: Exception) {
             logError("Failed to reset adapter config preferences: $e", tag = "AdapterConfig")
             throw e

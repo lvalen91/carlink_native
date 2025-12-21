@@ -6,6 +6,7 @@ import android.media.AudioTrack
 import android.os.Build
 import android.os.Process
 import android.util.Log
+import com.carlink.BuildConfig
 import com.carlink.platform.AudioConfig
 import com.carlink.util.AudioDebugLogger
 import com.carlink.util.LogCallback
@@ -293,18 +294,34 @@ class DualStreamAudioManager(
                 headerSize + ((audioDataSize * 0.75).toInt() and 0x7FFFFFFE),
             )
 
-        for (pos in positions) {
+        // Collect sample values for debug logging
+        val sampleValues = StringBuilder()
+        var allMatch = true
+
+        for ((index, pos) in positions.withIndex()) {
             if (pos + 3 >= data.size) continue
+            val b0 = data[pos].toInt() and 0xFF
+            val b1 = data[pos + 1].toInt() and 0xFF
+            val b2 = data[pos + 2].toInt() and 0xFF
+            val b3 = data[pos + 3].toInt() and 0xFF
+
+            if (index > 0) sampleValues.append(" ")
+            sampleValues.append(String.format("%02X%02X%02X%02X", b0, b1, b2, b3))
+
             // Must be exactly 0xFFFF 0xFFFF (2 consecutive 16-bit samples = -1)
             if (data[pos] != 0xFF.toByte() ||
                 data[pos + 1] != 0xFF.toByte() ||
                 data[pos + 2] != 0xFF.toByte() ||
                 data[pos + 3] != 0xFF.toByte()
             ) {
-                return false // Any non-0xFFFF means it's warmup noise, not end marker
+                allMatch = false
             }
         }
-        return true
+
+        // Log pattern detection result
+        AudioDebugLogger.logNavPatternCheck("end_marker", allMatch, sampleValues.toString())
+
+        return allMatch
     }
 
     /**
@@ -332,6 +349,7 @@ class DualStreamAudioManager(
         // Sample 8 positions across the AUDIO DATA (after header)
         val sampleCount = 8
         var nearSilenceCount = 0
+        val sampleValues = StringBuilder()
 
         for (i in 0 until sampleCount) {
             val pos = headerSize + (((audioDataSize * i) / sampleCount) and 0x7FFFFFFE)
@@ -340,6 +358,9 @@ class DualStreamAudioManager(
             // Read 16-bit sample (little-endian)
             val sample = (data[pos].toInt() and 0xFF) or ((data[pos + 1].toInt() and 0xFF) shl 8)
             val signedSample = if (sample >= 32768) sample - 65536 else sample
+
+            if (i > 0) sampleValues.append(",")
+            sampleValues.append(signedSample)
 
             // Check for near-silence values: 0, -1, -2, -256, -257, -258, 1, 2
             // Note: -1 and -257 are already covered by the range -258..2
@@ -350,7 +371,12 @@ class DualStreamAudioManager(
 
         // If most samples are near-silence but not ALL 0xFFFF (checked by isNavEndMarker),
         // this is warmup noise
-        return nearSilenceCount >= 6 // 6 out of 8 samples are near-silence
+        val isWarmup = nearSilenceCount >= 6 // 6 out of 8 samples are near-silence
+
+        // Log pattern detection result
+        AudioDebugLogger.logNavPatternCheck("warmup_noise", isWarmup, "$nearSilenceCount/8 near-silence: [$sampleValues]")
+
+        return isWarmup
     }
 
     /**
@@ -361,6 +387,9 @@ class DualStreamAudioManager(
      */
     private fun flushNavBuffers() {
         synchronized(lock) {
+            // Capture buffer level before clearing for logging
+            val discardedMs = navBuffer?.fillLevelMs() ?: 0
+
             // Clear ring buffer first (fast, lock-free)
             navBuffer?.clear()
 
@@ -376,6 +405,7 @@ class DualStreamAudioManager(
             }
 
             navEndMarkersDetected++
+            AudioDebugLogger.logNavBufferFlush("end_marker", discardedMs)
             log("[AUDIO] Nav end marker detected, buffers flushed (total: $navEndMarkersDetected)")
         }
     }
@@ -407,7 +437,7 @@ class DualStreamAudioManager(
             // For non-navigation streams, just filter and count
             zeroPacketsFiltered++
             AudioDebugLogger.logUsbFiltered(audioType, zeroPacketsFiltered)
-            if (zeroPacketsFiltered == 1L || zeroPacketsFiltered % 100 == 0L) {
+            if (BuildConfig.DEBUG && (zeroPacketsFiltered == 1L || zeroPacketsFiltered % 100 == 0L)) {
                 Log.w(TAG, "[AUDIO_FILTER] Filtered $zeroPacketsFiltered zero-filled packets")
             }
             return 0 // Return 0 to indicate no bytes written (not an error)
@@ -416,7 +446,7 @@ class DualStreamAudioManager(
         writeCount++
 
         // DEBUG: Log every 500th packet with first bytes and buffer stats
-        if (writeCount % 500 == 1L) {
+        if (BuildConfig.DEBUG && writeCount % 500 == 1L) {
             val firstBytes =
                 data.take(16).joinToString(" ") { String.format(java.util.Locale.US, "%02X", it) }
             val bufferStats =
@@ -431,16 +461,18 @@ class DualStreamAudioManager(
         }
 
         // DEBUG: Log buffer stats every 10 seconds
-        val now = System.currentTimeMillis()
-        if (now - lastStatsLog > 10000) {
-            lastStatsLog = now
-            mediaBuffer?.let {
-                Log.i(
-                    TAG,
-                    "[AUDIO_STATS] mediaBuffer: fill=${it.fillLevelMs()}ms/${it.fillLevel() * 100}% " +
-                        "written=${it.totalBytesWritten} read=${it.totalBytesRead} " +
-                        "overflow=${it.overflowCount} underflow=${it.underflowCount}",
-                )
+        if (BuildConfig.DEBUG) {
+            val now = System.currentTimeMillis()
+            if (now - lastStatsLog > 10000) {
+                lastStatsLog = now
+                mediaBuffer?.let {
+                    Log.i(
+                        TAG,
+                        "[AUDIO_STATS] mediaBuffer: fill=${it.fillLevelMs()}ms/${it.fillLevel() * 100}% " +
+                            "written=${it.totalBytesWritten} read=${it.totalBytesRead} " +
+                            "overflow=${it.overflowCount} underflow=${it.underflowCount}",
+                    )
+                }
             }
         }
 
@@ -455,9 +487,14 @@ class DualStreamAudioManager(
 
             AudioStreamType.NAVIGATION -> {
                 // USAGE_ASSISTANCE_NAVIGATION_GUIDANCE → CarAudioContext.NAVIGATION
+                val bufferLevelMs = navBuffer?.fillLevelMs() ?: 0
+
                 // Check for end marker FIRST (before ensuring track)
+                // Use safe time calculation (navStartTime may be 0 before track created)
+                val preTrackTimeSinceStart = if (navStartTime > 0) System.currentTimeMillis() - navStartTime else 0L
                 if (isNavEndMarker(data)) {
                     // End marker detected - flush buffers to prevent stale data playback
+                    AudioDebugLogger.logNavEndMarker(preTrackTimeSinceStart, bufferLevelMs)
                     flushNavBuffers()
                     consecutiveNavZeroPackets = 0
                     return 0 // Don't write marker to buffer
@@ -471,6 +508,7 @@ class DualStreamAudioManager(
                     zeroPacketsFiltered++
                     if (consecutiveNavZeroPackets >= navZeroFlushThreshold) {
                         // Multiple consecutive zero packets - flush buffer to prevent noise
+                        AudioDebugLogger.logNavZeroFlush(consecutiveNavZeroPackets, bufferLevelMs)
                         flushNavBuffers()
                         log(
                             "[AUDIO_FILTER] Nav buffer flushed after $consecutiveNavZeroPackets consecutive " +
@@ -484,19 +522,29 @@ class DualStreamAudioManager(
                 // Valid audio - reset consecutive zero counter
                 consecutiveNavZeroPackets = 0
 
+                // Ensure track exists (creates track and sets navStartTime on first call)
                 ensureNavTrack(decodeType)
 
-                // Skip warmup noise in first ~250ms after stream start
+                // Calculate time since start AFTER track is ensured (navStartTime now valid)
                 val timeSinceStart = System.currentTimeMillis() - navStartTime
+
+                // Skip warmup noise in first ~250ms after stream start
                 if (timeSinceStart < navWarmupSkipMs && isWarmupNoise(data)) {
                     navWarmupFramesSkipped++
+                    AudioDebugLogger.logNavWarmupSkip(timeSinceStart, "near-silence")
                     if (navWarmupFramesSkipped == 1L || navWarmupFramesSkipped % 10 == 0L) {
                         log("[AUDIO] Skipped nav warmup frame (${timeSinceStart}ms since start, total: $navWarmupFramesSkipped)")
                     }
                     return 0 // Don't write warmup noise to buffer
                 }
 
-                navBuffer?.write(data) ?: -1
+                // Write to nav buffer and log
+                val bytesWritten = navBuffer?.write(data) ?: -1
+                if (bytesWritten > 0) {
+                    navPackets++
+                    AudioDebugLogger.logNavBufferWrite(bytesWritten, navBuffer?.fillLevelMs() ?: 0, timeSinceStart)
+                }
+                bytesWritten
             }
 
             AudioStreamType.SIRI -> {
@@ -636,17 +684,32 @@ class DualStreamAudioManager(
      * sends stop command too quickly (observed in Sessions 1-2).
      */
     fun stopNavTrack() {
+        log("[NAV_STOP] stopNavTrack() called")
+
         synchronized(lock) {
+            val trackState = navTrack?.playState
+            val trackStateStr = when (trackState) {
+                AudioTrack.PLAYSTATE_PLAYING -> "PLAYING"
+                AudioTrack.PLAYSTATE_PAUSED -> "PAUSED"
+                AudioTrack.PLAYSTATE_STOPPED -> "STOPPED"
+                else -> "null/unknown($trackState)"
+            }
+            log("[NAV_STOP] Track state: $trackStateStr, navStarted=$navStarted, navStartTime=$navStartTime")
+
             navTrack?.let { track ->
                 if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
                     // Check minimum playback duration
                     val playDuration = System.currentTimeMillis() - navStartTime
                     val bufferLevel = navBuffer?.fillLevelMs() ?: 0
+                    val bytesRead = navBuffer?.totalBytesRead ?: 0
+
+                    log("[NAV_STOP] playDuration=${playDuration}ms, bufferLevel=${bufferLevel}ms, " +
+                        "bytesRead=$bytesRead, packets=$navPackets, underruns=$navUnderruns")
 
                     if (playDuration < minNavPlayDurationMs && bufferLevel > 50) {
                         log(
-                            "[AUDIO] Ignoring premature nav stop after ${playDuration}ms, " +
-                                "buffer has ${bufferLevel}ms data",
+                            "[NAV_STOP] Ignoring premature stop after ${playDuration}ms " +
+                                "(min=${minNavPlayDurationMs}ms), buffer has ${bufferLevel}ms data",
                         )
                         return
                     }
@@ -655,15 +718,25 @@ class DualStreamAudioManager(
                     // This is a secondary safeguard - primary flush happens on 0xFFFF end marker
                     track.pause()
                     track.flush()
+                    val discardedMs = navBuffer?.fillLevelMs() ?: 0
                     navBuffer?.clear()
+                    AudioDebugLogger.logNavBufferFlush("stop_command", discardedMs)
+                    AudioDebugLogger.logNavPromptEnd(playDuration, bytesRead, navUnderruns)
                     AudioDebugLogger.logStreamStop("NAV", playDuration, navPackets)
                     log(
-                        "[AUDIO] Nav track paused+flushed after ${playDuration}ms - " +
-                            "stream ended, AAOS will deprioritize NAVIGATION context",
+                        "[NAV_STOP] Nav track paused+flushed after ${playDuration}ms - " +
+                            "discarded=${discardedMs}ms, packets=$navPackets, underruns=$navUnderruns",
                     )
+                } else {
+                    log("[NAV_STOP] Track not playing, skipping pause (state=$trackStateStr)")
                 }
+            } ?: run {
+                log("[NAV_STOP] navTrack is null, nothing to stop")
             }
+
             navStarted = false
+            navPackets = 0 // Reset packet counter for next nav prompt
+            navUnderruns = 0 // Reset underrun counter for next nav prompt
         }
     }
 
@@ -885,11 +958,14 @@ class DualStreamAudioManager(
             navTrack?.let { track ->
                 if (track.playState == AudioTrack.PLAYSTATE_PAUSED && navFormat == format) {
                     // Flush any residual data before resuming (belt-and-suspenders with end marker flush)
+                    val discardedMs = navBuffer?.fillLevelMs() ?: 0
                     track.flush()
                     navBuffer?.clear()
                     track.play()
                     navStarted = false // Reset pre-fill for smooth resume
                     navStartTime = System.currentTimeMillis() // Track start time for min duration
+                    AudioDebugLogger.logNavBufferFlush("track_resume", discardedMs)
+                    AudioDebugLogger.logNavPromptStart(format.sampleRate, format.channelCount, 200)
                     log("[AUDIO] Resumed paused nav track with flush (same format ${format.sampleRate}Hz)")
                     return
                 }
@@ -915,6 +991,7 @@ class DualStreamAudioManager(
                 navTrack?.play()
                 navStartTime = System.currentTimeMillis() // Track start time for min duration
                 AudioDebugLogger.logStreamStart("NAV", format.sampleRate, format.channelCount, 200)
+                AudioDebugLogger.logNavPromptStart(format.sampleRate, format.channelCount, 200)
             }
         }
     }
@@ -1188,7 +1265,9 @@ class DualStreamAudioManager(
     }
 
     private fun log(message: String) {
-        Log.d(TAG, message)
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, message)
+        }
         logCallback.log(message)
     }
 
@@ -1311,6 +1390,8 @@ class DualStreamAudioManager(
                                         return@let
                                     }
                                     navStarted = true
+                                    val waitTimeMs = System.currentTimeMillis() - navStartTime
+                                    AudioDebugLogger.logNavPrefillComplete(currentNavFillMs, waitTimeMs)
                                     log("[AUDIO] Nav pre-fill complete: ${currentNavFillMs}ms buffered, starting playback")
                                 }
 
@@ -1335,6 +1416,9 @@ class DualStreamAudioManager(
                                             val written = track.write(navTempBuffer, 0, bytesRead)
                                             if (written < 0) {
                                                 handleTrackError("NAV", written)
+                                            } else {
+                                                // Log nav track writes (throttled - only when buffer is low)
+                                                AudioDebugLogger.logNavTrackWrite(written, buffer.fillLevelMs())
                                             }
                                             didWork = true
                                         }

@@ -9,6 +9,7 @@ import android.media.MediaRecorder
 import android.os.Process
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.carlink.BuildConfig
 import com.carlink.util.AudioDebugLogger
 import com.carlink.util.LogCallback
 import java.util.concurrent.atomic.AtomicBoolean
@@ -113,9 +114,9 @@ class MicrophoneCaptureManager(
     private var overrunCount: Int = 0
 
     // Buffer configuration
-    // Increased from 120ms to 500ms to prevent buffer overruns when Dart main thread is blocked
-    // (Session 6 analysis showed "Buffer overrun: wrote 0 of 640 bytes" due to Dart not reading fast enough)
-    private val bufferCapacityMs = 500 // 500ms ring buffer for jitter tolerance
+    // Increased from 120ms to 500ms to prevent buffer overruns when main thread is blocked
+    // (Session 6 analysis showed "Buffer overrun: wrote 0 of 640 bytes" due to not reading fast enough)
+    private val bufferCapacityMs = 500
     private val captureChunkMs = 20 // Read 20ms chunks from AudioRecord
 
     private val lock = Any()
@@ -362,7 +363,9 @@ class MicrophoneCaptureManager(
     }
 
     private fun log(message: String) {
-        Log.d(TAG, message)
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, message)
+        }
         logCallback.log(message)
     }
 

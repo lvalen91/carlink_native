@@ -1,6 +1,7 @@
 package com.carlink.util;
 
 import android.util.Log;
+import java.util.Locale;
 
 /**
  * Audio Pipeline Debug Logger
@@ -76,7 +77,10 @@ public class AudioDebugLogger {
             callPackets = 0;
             totalUnderruns = 0;
         }
-        Log.i(TAG, "[AUDIO_DEBUG] Debug logging " + (enabled ? "ENABLED" : "DISABLED"));
+        // Only log status in debug builds
+        if (com.carlink.BuildConfig.DEBUG) {
+            Log.i(TAG, "[AUDIO_DEBUG] Debug logging " + (enabled ? "ENABLED" : "DISABLED"));
+        }
     }
 
     /**
@@ -90,7 +94,7 @@ public class AudioDebugLogger {
      * Enable/disable individual logging stages.
      */
     public static void setStageEnabled(String stage, boolean enabled) {
-        switch (stage.toUpperCase()) {
+        switch (stage.toUpperCase(Locale.ROOT)) {
             case "USB":
                 usbEnabled = enabled;
                 break;
@@ -105,6 +109,12 @@ public class AudioDebugLogger {
                 break;
             case "PERF":
                 perfEnabled = enabled;
+                break;
+            case "NAV":
+                navEnabled = enabled;
+                break;
+            case "MIC":
+                micEnabled = enabled;
                 break;
         }
     }
@@ -381,7 +391,7 @@ public class AudioDebugLogger {
      * Get current statistics as formatted string.
      */
     public static String getStatsString() {
-        return String.format(
+        return String.format(Locale.US,
                 "USB: %d pkts | Buffer: W=%d R=%d | Track: %d writes | " +
                 "Streams: M=%d N=%d V=%d C=%d | Underruns: %d",
                 usbPacketCount, bufferWriteCount, bufferReadCount, trackWriteCount,
@@ -525,5 +535,206 @@ public class AudioDebugLogger {
      */
     public static void setMicEnabled(boolean enabled) {
         micEnabled = enabled;
+    }
+
+    // ==================== Navigation Audio Logging ====================
+
+    // Navigation-specific counters and state
+    private static long navPromptCount = 0;
+    private static long navEndMarkersDetected = 0;
+    private static long navWarmupFramesSkipped = 0;
+    private static long navZeroPacketsFlushed = 0;
+    private static long lastNavLogTime = 0;
+    private static long currentNavPromptStartTime = 0;
+    private static volatile boolean navEnabled = true;
+
+    /**
+     * Enable/disable navigation audio logging.
+     */
+    public static void setNavEnabled(boolean enabled) {
+        navEnabled = enabled;
+    }
+
+    /**
+     * Log navigation prompt start (called when nav audio stream begins).
+     *
+     * @param sampleRate Sample rate in Hz
+     * @param channels Number of channels
+     * @param bufferSizeMs Ring buffer size in ms
+     */
+    public static void logNavPromptStart(int sampleRate, int channels, int bufferSizeMs) {
+        if (!debugEnabled || !navEnabled) return;
+
+        navPromptCount++;
+        currentNavPromptStartTime = System.currentTimeMillis();
+        Log.i(TAG, String.format("[NAV_DEBUG] Prompt #%d STARTED: %dHz %dch buffer=%dms",
+                navPromptCount, sampleRate, channels, bufferSizeMs));
+    }
+
+    /**
+     * Log navigation prompt end (called when nav audio stream ends).
+     *
+     * @param durationMs How long the nav prompt played
+     * @param bytesPlayed Total bytes played
+     * @param underruns Number of underruns during playback
+     */
+    public static void logNavPromptEnd(long durationMs, long bytesPlayed, int underruns) {
+        if (!debugEnabled || !navEnabled) return;
+
+        Log.i(TAG, String.format("[NAV_DEBUG] Prompt #%d ENDED: duration=%dms bytes=%d underruns=%d",
+                navPromptCount, durationMs, bytesPlayed, underruns));
+    }
+
+    /**
+     * Log navigation end marker detection (solid 0xFFFF pattern).
+     *
+     * @param timeSincePromptStart Ms since nav prompt started
+     * @param bufferLevelMs Buffer level when marker detected
+     */
+    public static void logNavEndMarker(long timeSincePromptStart, int bufferLevelMs) {
+        if (!debugEnabled || !navEnabled) return;
+
+        navEndMarkersDetected++;
+        Log.i(TAG, String.format("[NAV_DEBUG] End marker #%d detected: %dms into prompt, buffer=%dms",
+                navEndMarkersDetected, timeSincePromptStart, bufferLevelMs));
+    }
+
+    /**
+     * Log navigation warmup frame skip (codec warmup noise filtered).
+     *
+     * @param timeSinceStart Ms since nav stream started
+     * @param patternDescription Brief description of detected pattern
+     */
+    public static void logNavWarmupSkip(long timeSinceStart, String patternDescription) {
+        if (!debugEnabled || !navEnabled) return;
+
+        navWarmupFramesSkipped++;
+        // Log first frame, then every 5th to reduce spam
+        if (navWarmupFramesSkipped == 1 || navWarmupFramesSkipped % 5 == 0) {
+            Log.d(TAG, String.format("[NAV_DEBUG] Warmup skip #%d: %dms since start, pattern=%s",
+                    navWarmupFramesSkipped, timeSinceStart, patternDescription));
+        }
+    }
+
+    /**
+     * Log navigation zero-packet flush (consecutive zeros caused buffer flush).
+     *
+     * @param consecutiveZeros Number of consecutive zero packets before flush
+     * @param bufferLevelMs Buffer level before flush
+     */
+    public static void logNavZeroFlush(int consecutiveZeros, int bufferLevelMs) {
+        if (!debugEnabled || !navEnabled) return;
+
+        navZeroPacketsFlushed++;
+        Log.w(TAG, String.format("[NAV_DEBUG] Zero flush #%d: %d consecutive zeros, buffer=%dms",
+                navZeroPacketsFlushed, consecutiveZeros, bufferLevelMs));
+    }
+
+    /**
+     * Log navigation buffer write operation.
+     *
+     * @param bytesWritten Bytes written to nav ring buffer
+     * @param fillLevelMs Buffer fill level after write
+     * @param timeSinceStart Ms since nav prompt started
+     */
+    public static void logNavBufferWrite(int bytesWritten, int fillLevelMs, long timeSinceStart) {
+        if (!debugEnabled || !navEnabled) return;
+
+        // Throttled logging - only every 100ms
+        long now = System.currentTimeMillis();
+        if (now - lastNavLogTime >= THROTTLE_INTERVAL_MS) {
+            lastNavLogTime = now;
+            Log.d(TAG, String.format("[NAV_DEBUG] Buffer write: %dB, fill=%dms, t+%dms",
+                    bytesWritten, fillLevelMs, timeSinceStart));
+        }
+    }
+
+    /**
+     * Log navigation AudioTrack write operation.
+     *
+     * @param bytesWritten Bytes written to AudioTrack
+     * @param bufferLevelMs Remaining buffer level after read
+     */
+    public static void logNavTrackWrite(int bytesWritten, int bufferLevelMs) {
+        if (!debugEnabled || !navEnabled) return;
+
+        // Only log when buffer is getting low (potential issue indicator)
+        if (bufferLevelMs < 80) {
+            Log.d(TAG, String.format("[NAV_DEBUG] Track write: %dB, buffer=%dms (LOW)",
+                    bytesWritten, bufferLevelMs));
+        }
+    }
+
+    /**
+     * Log navigation pre-fill completion.
+     *
+     * @param fillLevelMs Buffer level when pre-fill completed
+     * @param waitTimeMs How long pre-fill took
+     */
+    public static void logNavPrefillComplete(int fillLevelMs, long waitTimeMs) {
+        if (!debugEnabled || !navEnabled) return;
+
+        Log.i(TAG, String.format("[NAV_DEBUG] Pre-fill complete: %dms buffered, waited %dms",
+                fillLevelMs, waitTimeMs));
+    }
+
+    /**
+     * Log navigation buffer flush (manual flush, e.g., on track pause).
+     *
+     * @param reason Reason for flush (e.g., "end_marker", "stop_command", "zero_packets")
+     * @param discardedMs Amount of audio discarded in ms
+     */
+    public static void logNavBufferFlush(String reason, int discardedMs) {
+        if (!debugEnabled || !navEnabled) return;
+
+        Log.i(TAG, String.format("[NAV_DEBUG] Buffer flush: reason=%s, discarded=%dms",
+                reason, discardedMs));
+    }
+
+    /**
+     * Log navigation pattern detection details (for troubleshooting false positives).
+     *
+     * @param patternType Type of pattern ("end_marker", "warmup_noise", "zero_filled")
+     * @param detected Whether pattern was detected
+     * @param sampleValues Hex string of sample values checked
+     */
+    public static void logNavPatternCheck(String patternType, boolean detected, String sampleValues) {
+        if (!debugEnabled || !navEnabled) return;
+
+        // Only log detected patterns or first few non-detections for debugging
+        if (detected) {
+            Log.d(TAG, String.format("[NAV_DEBUG] Pattern %s DETECTED: samples=[%s]",
+                    patternType, sampleValues));
+        }
+    }
+
+    /**
+     * Get navigation debug statistics as formatted string.
+     */
+    public static String getNavStatsString() {
+        return String.format(Locale.US,
+                "Nav prompts=%d | End markers=%d | Warmup skipped=%d | Zero flushes=%d",
+                navPromptCount, navEndMarkersDetected, navWarmupFramesSkipped, navZeroPacketsFlushed);
+    }
+
+    /**
+     * Reset navigation counters.
+     */
+    public static void resetNavCounters() {
+        navPromptCount = 0;
+        navEndMarkersDetected = 0;
+        navWarmupFramesSkipped = 0;
+        navZeroPacketsFlushed = 0;
+        currentNavPromptStartTime = 0;
+        Log.i(TAG, "[NAV_DEBUG] Navigation counters reset");
+    }
+
+    /**
+     * Get time since current nav prompt started.
+     * @return Ms since prompt start, or 0 if no prompt active
+     */
+    public static long getTimeSinceNavPromptStart() {
+        if (currentNavPromptStartTime == 0) return 0;
+        return System.currentTimeMillis() - currentNavPromptStartTime;
     }
 }

@@ -5,6 +5,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Build
 import android.util.Log
+import com.carlink.BuildConfig
 import com.carlink.util.LogCallback
 
 private const val TAG = "CARLINK_AUDIO"
@@ -418,7 +419,9 @@ class AudioPlaybackManager(
     }
 
     private fun log(message: String) {
-        Log.d(TAG, message)
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, message)
+        }
         logCallback.log(message)
     }
 }
