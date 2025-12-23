@@ -19,7 +19,9 @@ import kotlinx.coroutines.flow.map
  * Controls how the app interacts with AAOS system bars (status bar and navigation bar)
  * during CarPlay/Android Auto projection.
  */
-enum class DisplayMode(val value: Int) {
+enum class DisplayMode(
+    val value: Int,
+) {
     /**
      * System UI Visible - Both status bar and navigation bar always visible.
      * AAOS manages display bounds. Recommended for proper GM infotainment integration.
@@ -37,15 +39,15 @@ enum class DisplayMode(val value: Int) {
      * Fullscreen Immersive - Both status bar and navigation bar are hidden.
      * Maximum projection area. Swipe from edge to temporarily reveal system bars.
      */
-    FULLSCREEN_IMMERSIVE(2);
+    FULLSCREEN_IMMERSIVE(2),
+    ;
 
     companion object {
         /**
          * Convert an integer value to DisplayMode.
          * Returns SYSTEM_UI_VISIBLE for unknown values (safe default).
          */
-        fun fromValue(value: Int): DisplayMode =
-            entries.find { it.value == value } ?: SYSTEM_UI_VISIBLE
+        fun fromValue(value: Int): DisplayMode = entries.find { it.value == value } ?: SYSTEM_UI_VISIBLE
     }
 }
 
@@ -119,10 +121,11 @@ class DisplayModePreference private constructor(
     private val dataStore = appContext.displayModeDataStore
 
     // SharedPreferences sync cache for instant startup reads
-    private val syncCache = appContext.getSharedPreferences(
-        SYNC_CACHE_PREFS_NAME,
-        Context.MODE_PRIVATE
-    )
+    private val syncCache =
+        appContext.getSharedPreferences(
+            SYNC_CACHE_PREFS_NAME,
+            Context.MODE_PRIVATE,
+        )
 
     init {
         // Perform migration from boolean to int on first access
@@ -141,25 +144,28 @@ class DisplayModePreference private constructor(
         // Check if old boolean preference exists
         if (syncCache.contains(SYNC_CACHE_KEY_ENABLED_LEGACY)) {
             val wasImmersive = syncCache.getBoolean(SYNC_CACHE_KEY_ENABLED_LEGACY, false)
-            val newMode = if (wasImmersive) {
-                DisplayMode.FULLSCREEN_IMMERSIVE
-            } else {
-                DisplayMode.SYSTEM_UI_VISIBLE
-            }
+            val newMode =
+                if (wasImmersive) {
+                    DisplayMode.FULLSCREEN_IMMERSIVE
+                } else {
+                    DisplayMode.SYSTEM_UI_VISIBLE
+                }
 
             // Write new value to sync cache
-            syncCache.edit()
+            syncCache
+                .edit()
                 .putInt(SYNC_CACHE_KEY_DISPLAY_MODE, newMode.value)
                 .putBoolean(SYNC_CACHE_KEY_MIGRATED, true)
                 .apply()
 
             logInfo(
                 "Migrated display mode preference: $wasImmersive -> ${newMode.name}",
-                tag = "DisplayModePreference"
+                tag = "DisplayModePreference",
             )
         } else {
             // No old preference, just mark as migrated with default
-            syncCache.edit()
+            syncCache
+                .edit()
                 .putInt(SYNC_CACHE_KEY_DISPLAY_MODE, DisplayMode.SYSTEM_UI_VISIBLE.value)
                 .putBoolean(SYNC_CACHE_KEY_MIGRATED, true)
                 .apply()
@@ -185,11 +191,10 @@ class DisplayModePreference private constructor(
      *
      * This is safe to call from the main thread during Activity.onCreate().
      */
-    fun getDisplayModeSync(): DisplayMode {
-        return DisplayMode.fromValue(
-            syncCache.getInt(SYNC_CACHE_KEY_DISPLAY_MODE, DisplayMode.SYSTEM_UI_VISIBLE.value)
+    fun getDisplayModeSync(): DisplayMode =
+        DisplayMode.fromValue(
+            syncCache.getInt(SYNC_CACHE_KEY_DISPLAY_MODE, DisplayMode.SYSTEM_UI_VISIBLE.value),
         )
-    }
 
     /**
      * Returns the current display mode.
@@ -221,7 +226,7 @@ class DisplayModePreference private constructor(
             syncCache.edit().putInt(SYNC_CACHE_KEY_DISPLAY_MODE, mode.value).apply()
             logInfo(
                 "Display mode preference saved: ${mode.name} (sync cache updated)",
-                tag = "DisplayModePreference"
+                tag = "DisplayModePreference",
             )
         } catch (e: Exception) {
             logError("Failed to save display mode preference: $e", tag = "DisplayModePreference")
@@ -239,9 +244,7 @@ class DisplayModePreference private constructor(
      */
     @Deprecated(
         message = "Use getDisplayModeSync() instead",
-        replaceWith = ReplaceWith("getDisplayModeSync() == DisplayMode.FULLSCREEN_IMMERSIVE")
+        replaceWith = ReplaceWith("getDisplayModeSync() == DisplayMode.FULLSCREEN_IMMERSIVE"),
     )
-    fun isImmersiveModeEnabled(): Boolean {
-        return getDisplayModeSync() == DisplayMode.FULLSCREEN_IMMERSIVE
-    }
+    fun isImmersiveModeEnabled(): Boolean = getDisplayModeSync() == DisplayMode.FULLSCREEN_IMMERSIVE
 }

@@ -305,13 +305,18 @@ data class AdapterConfig(
     val iBoxVersion: Int = 2,
     val packetMax: Int = 49152,
     val phoneWorkMode: Int = 2,
+    /** Night mode: false=light theme, true=dark theme for CarPlay display */
     val nightMode: Boolean = false,
     val boxName: String = "carlink",
     val mediaDelay: Int = 300,
-    /** Audio transfer mode: null=not configured, true=bluetooth, false=adapter (USB audio) */
-    val audioTransferMode: Boolean? = null,
+    /** Audio transfer mode: true=bluetooth, false=adapter (USB audio, default) */
+    val audioTransferMode: Boolean = false,
+    /** Sample rate for media audio: 44100 or 48000 Hz. Controls mediaSound in BoxSettings. */
+    val sampleRate: Int = 48000,
     val wifiType: String = "5ghz",
     val micType: String = "os",
+    /** Call quality: 0=normal, 1=clear, 2=HD. Sent in BoxSettings. */
+    val callQuality: Int = 2,
     val oemIconVisible: Boolean = true,
     val androidWorkMode: Boolean = false,
     val icon120Data: ByteArray? = null,

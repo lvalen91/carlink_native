@@ -142,6 +142,11 @@ public class H264Renderer {
     private long codecResetCount = 0;
     private long totalBytesProcessed = 0;
 
+    // Adaptive FPS detection - tracks actual stream frame rate
+    // Common rates: 30fps (some adapters), 60fps (CarPlay default), 25fps (PAL regions)
+    private int detectedTargetFps = 60; // Initial assumption, updated based on actual rate
+    private static final int[] COMMON_FPS_TARGETS = {25, 30, 50, 60}; // Standard video frame rates
+
     // Performance logging interval (30 seconds)
     private static final long PERF_LOG_INTERVAL_MS = 30000;
     private long lastPerfLogTime = 0;
@@ -1114,18 +1119,26 @@ public class H264Renderer {
             double avgFrameSize = totalFramesReceived > 0 ? (double) totalBytesProcessed / totalFramesReceived / 1024.0 : 0.0;
             double throughputMbps = (double) totalBytesProcessed * 8.0 / (timeDiff * 1000.0); // Mbps
 
+            // Adaptive FPS target detection - find closest common frame rate
+            // This prevents false warnings when adapter is configured for 30fps instead of 60fps
+            if (totalFramesReceived > 60) { // Need enough samples for reliable detection
+                detectedTargetFps = findClosestFpsTarget(fps);
+            }
+
             // Enhanced logging for Intel GPU performance analysis
-            String perfMsg = String.format(Locale.US, "[PERF] FPS: %.1f/60, Frames: R:%d/D:%d/Drop:%d, DropRate: %.1f%%, AvgSize: %.1fKB, Throughput: %.1fMbps, Resets: %d",
-                fps, totalFramesReceived, totalFramesDecoded, totalFramesDropped, dropRate, avgFrameSize, throughputMbps, codecResetCount);
+            String perfMsg = String.format(Locale.US, "[PERF] FPS: %.1f/%d, Frames: R:%d/D:%d/Drop:%d, DropRate: %.1f%%, AvgSize: %.1fKB, Throughput: %.1fMbps, Resets: %d",
+                fps, detectedTargetFps, totalFramesReceived, totalFramesDecoded, totalFramesDropped, dropRate, avgFrameSize, throughputMbps, codecResetCount);
 
             // Add Intel GPU specific metrics if available
             if (mCodec != null && mCodec.getName().contains("Intel")) {
                 perfMsg += " [Intel Quick Sync Active]";
             }
 
-            // Warning if performance is suboptimal for gminfo3.7 hardware (Intel HD Graphics 505)
-            if (fps < 55.0 && totalFramesReceived > 120) {
-                perfMsg += " [WARNING: Low FPS on Intel HD Graphics 505]";
+            // Warning only if FPS is significantly below detected target (< 90% of target)
+            // This avoids false alarms when adapter is configured for lower frame rates
+            double fpsThreshold = detectedTargetFps * 0.90;
+            if (fps < fpsThreshold && totalFramesReceived > 120) {
+                perfMsg += String.format(Locale.US, " [WARNING: FPS below %.0f%% of %dfps target]", 90.0, detectedTargetFps);
             }
 
             // Monitor frame lag for performance analysis (no aggressive action)
@@ -1163,5 +1176,27 @@ public class H264Renderer {
         }
 
         lastStatsTime = currentTime;
+    }
+
+    /**
+     * Finds the closest standard video frame rate target for the measured FPS.
+     * This enables adaptive performance monitoring that works correctly regardless
+     * of whether the adapter is configured for 30fps, 60fps, or other common rates.
+     *
+     * @param measuredFps The actual measured frames per second
+     * @return The closest common FPS target (25, 30, 50, or 60)
+     */
+    private int findClosestFpsTarget(double measuredFps) {
+        int closest = COMMON_FPS_TARGETS[0];
+        double minDiff = Math.abs(measuredFps - closest);
+
+        for (int target : COMMON_FPS_TARGETS) {
+            double diff = Math.abs(measuredFps - target);
+            if (diff < minDiff) {
+                minDiff = diff;
+                closest = target;
+            }
+        }
+        return closest;
     }
 }

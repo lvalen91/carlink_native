@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Animated Vector Drawable spinner for better hardware compatibility on AAOS.
+    Uses native Android animation system which has better GPU driver support
+    than Compose canvas-based animations on automotive platforms.
+-->
+<animated-vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt">
+
+    <aapt:attr name="android:drawable">
+        <vector
+            android:name="spinner_vector"
+            android:width="48dp"
+            android:height="48dp"
+            android:viewportWidth="48"
+            android:viewportHeight="48">
+
+            <!-- Spinner arc - partial circle that rotates -->
+            <group
+                android:name="spinner_group"
+                android:pivotX="24"
+                android:pivotY="24"
+                android:rotation="0">
+
+                <path
+                    android:name="spinner_path"
+                    android:pathData="M24,6 A18,18 0 1,1 6,24"
+                    android:strokeWidth="4"
+                    android:strokeColor="#6750A4"
+                    android:strokeLineCap="round"
+                    android:fillColor="#00000000" />
+            </group>
+        </vector>
+    </aapt:attr>
+
+    <!-- Rotation animation - continuous 360 degree spin -->
+    <target android:name="spinner_group">
+        <aapt:attr name="android:animation">
+            <set>
+                <objectAnimator
+                    android:propertyName="rotation"
+                    android:duration="1000"
+                    android:valueFrom="0"
+                    android:valueTo="360"
+                    android:interpolator="@android:interpolator/linear"
+                    android:repeatCount="infinite"
+                    android:repeatMode="restart" />
+            </set>
+        </aapt:attr>
+    </target>
+</animated-vector>

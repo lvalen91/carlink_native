@@ -62,11 +62,11 @@ object Logger {
         const val ERROR_RECOVERY = "ERROR_RECOVERY"
 
         // Video Pipeline Debug Tags (comprehensive video troubleshooting)
-        const val VIDEO_USB = "VIDEO_USB"           // USB receive layer
-        const val VIDEO_RING_BUFFER = "VIDEO_RING"  // Ring buffer operations
-        const val VIDEO_CODEC = "VIDEO_CODEC"       // MediaCodec operations
-        const val VIDEO_SURFACE = "VIDEO_SURFACE"   // Surface/rendering
-        const val VIDEO_PERF = "VIDEO_PERF"         // Performance metrics
+        const val VIDEO_USB = "VIDEO_USB" // USB receive layer
+        const val VIDEO_RING_BUFFER = "VIDEO_RING" // Ring buffer operations
+        const val VIDEO_CODEC = "VIDEO_CODEC" // MediaCodec operations
+        const val VIDEO_SURFACE = "VIDEO_SURFACE" // Surface/rendering
+        const val VIDEO_PERF = "VIDEO_PERF" // Performance metrics
     }
 
     /**

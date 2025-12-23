@@ -4,6 +4,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.view.HapticFeedbackConstants
 import android.widget.Toast
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -46,7 +47,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.filled.Bluetooth
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -54,26 +57,39 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.DisplaySettings
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Hd
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PhoneDisabled
+import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.PowerOff
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.SaveAlt
-import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsInputComponent
+import androidx.compose.material.icons.filled.SignalCellularAlt
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.VideoSettings
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import com.carlink.ui.components.LoadingSpinner
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
@@ -89,6 +105,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -106,8 +123,12 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.CarlinkManager
 import com.carlink.logging.FileLogManager
@@ -117,19 +138,14 @@ import com.carlink.logging.apply
 import com.carlink.logging.logInfo
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.AudioSourceConfig
+import com.carlink.ui.settings.CallQualityConfig
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.settings.DisplayModePreference
+import com.carlink.ui.settings.MicSourceConfig
+import com.carlink.ui.settings.SampleRateConfig
 import com.carlink.ui.settings.SettingsTab
+import com.carlink.ui.settings.WiFiBandConfig
 import com.carlink.ui.theme.AutomotiveDimens
-import androidx.activity.ComponentActivity
-import androidx.compose.runtime.DisposableEffect
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
-import androidx.compose.material.icons.filled.Fullscreen
-import androidx.compose.material.icons.filled.FullscreenExit
-import androidx.compose.material.icons.filled.Layers
-import androidx.compose.ui.text.style.TextAlign
 import kotlinx.coroutines.launch
 import java.io.File
 import java.text.SimpleDateFormat
@@ -195,89 +211,89 @@ fun SettingsScreen(
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.systemBars),
         ) {
-        // Left sidebar with NavigationRail
-        Column(
-            modifier = Modifier.fillMaxHeight(),
-        ) {
-            // Back button at top - Matches Flutter _buildBackButton with haptic feedback
-            Box(
-                modifier = Modifier.padding(vertical = 20.dp, horizontal = 12.dp),
+            // Left sidebar with NavigationRail
+            Column(
+                modifier = Modifier.fillMaxHeight(),
             ) {
-                FilledTonalIconButton(
-                    onClick = {
-                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        onNavigateBack()
-                    },
-                    modifier = Modifier.size(AutomotiveDimens.ButtonMinHeight),
+                // Back button at top - Matches Flutter _buildBackButton with haptic feedback
+                Box(
+                    modifier = Modifier.padding(vertical = 20.dp, horizontal = 12.dp),
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back",
-                        modifier = Modifier.size(AutomotiveDimens.IconSize),
-                    )
-                }
-            }
-
-            // NavigationRail with tabs - Expanded to fill available space
-            // Items centered vertically to match Flutter NavigationRail behavior
-            NavigationRail(
-                modifier = Modifier.weight(1f),
-                containerColor = colorScheme.surface,
-            ) {
-                Spacer(modifier = Modifier.weight(1f))
-                SettingsTab.visibleTabs.forEach { tab ->
-                    NavigationRailItem(
-                        selected = selectedTab == tab,
+                    FilledTonalIconButton(
                         onClick = {
                             view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                            selectedTab = tab
+                            onNavigateBack()
                         },
-                        icon = {
-                            Icon(
-                                imageVector = tab.icon,
-                                contentDescription = tab.title,
-                            )
-                        },
-                        label = { Text(tab.title) },
-                        modifier = Modifier.padding(vertical = 12.dp),
+                        modifier = Modifier.size(AutomotiveDimens.ButtonMinHeight),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            modifier = Modifier.size(AutomotiveDimens.IconSize),
+                        )
+                    }
+                }
+
+                // NavigationRail with tabs - Expanded to fill available space
+                // Items centered vertically to match Flutter NavigationRail behavior
+                NavigationRail(
+                    modifier = Modifier.weight(1f),
+                    containerColor = colorScheme.surface,
+                ) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    SettingsTab.visibleTabs.forEach { tab ->
+                        NavigationRailItem(
+                            selected = selectedTab == tab,
+                            onClick = {
+                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                selectedTab = tab
+                            },
+                            icon = {
+                                Icon(
+                                    imageVector = tab.icon,
+                                    contentDescription = tab.title,
+                                )
+                            },
+                            label = { Text(tab.title) },
+                            modifier = Modifier.padding(vertical = 12.dp),
+                        )
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                }
+
+                // App version at bottom - always visible after NavigationRail
+                Row(
+                    modifier = Modifier.padding(20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Version: ",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = if (appVersion.isEmpty()) "- - -" else appVersion,
+                        style =
+                            MaterialTheme.typography.bodySmall.copy(
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                        color = if (appVersion.isEmpty()) colorScheme.onSurfaceVariant else colorScheme.onSurface,
                     )
                 }
-                Spacer(modifier = Modifier.weight(1f))
             }
 
-            // App version at bottom - always visible after NavigationRail
-            Row(
-                modifier = Modifier.padding(20.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            // Tab content - fills remaining space
+            Box(
+                modifier =
+                    Modifier
+                        .fillMaxHeight()
+                        .weight(1f),
             ) {
-                Text(
-                    text = "Version: ",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = if (appVersion.isEmpty()) "- - -" else appVersion,
-                    style =
-                        MaterialTheme.typography.bodySmall.copy(
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                    color = if (appVersion.isEmpty()) colorScheme.onSurfaceVariant else colorScheme.onSurface,
-                )
+                when (selectedTab) {
+                    SettingsTab.CONTROL -> ControlTabContent(carlinkManager)
+                    SettingsTab.LOGS -> LogsTabContent(context, fileLogManager)
+                }
             }
-        }
-
-        // Tab content - fills remaining space
-        Box(
-            modifier =
-                Modifier
-                    .fillMaxHeight()
-                    .weight(1f),
-        ) {
-            when (selectedTab) {
-                SettingsTab.CONTROL -> ControlTabContent(carlinkManager)
-                SettingsTab.LOGS -> LogsTabContent(context, fileLogManager)
-            }
-        }
         }
     }
 }
@@ -312,7 +328,7 @@ private fun ControlTabContent(carlinkManager: CarlinkManager) {
     // Display mode preference
     val displayModePreference = remember { DisplayModePreference.getInstance(context) }
     val currentDisplayMode by displayModePreference.displayModeFlow.collectAsStateWithLifecycle(
-        initialValue = DisplayMode.SYSTEM_UI_VISIBLE
+        initialValue = DisplayMode.SYSTEM_UI_VISIBLE,
     )
     var showDisplayModeDialog by remember { mutableStateOf(false) }
 
@@ -433,21 +449,23 @@ private fun ControlTabContent(carlinkManager: CarlinkManager) {
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                     ) {
                         Icon(
-                            imageVector = when (currentDisplayMode) {
-                                DisplayMode.SYSTEM_UI_VISIBLE -> Icons.Default.FullscreenExit
-                                DisplayMode.STATUS_BAR_HIDDEN -> Icons.Default.Layers
-                                DisplayMode.FULLSCREEN_IMMERSIVE -> Icons.Default.Fullscreen
-                            },
+                            imageVector =
+                                when (currentDisplayMode) {
+                                    DisplayMode.SYSTEM_UI_VISIBLE -> Icons.Default.FullscreenExit
+                                    DisplayMode.STATUS_BAR_HIDDEN -> Icons.Default.Layers
+                                    DisplayMode.FULLSCREEN_IMMERSIVE -> Icons.Default.Fullscreen
+                                },
                             contentDescription = "Configure display mode",
                             modifier = Modifier.size(AutomotiveDimens.IconSize),
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = when (currentDisplayMode) {
-                                DisplayMode.SYSTEM_UI_VISIBLE -> "System UI"
-                                DisplayMode.STATUS_BAR_HIDDEN -> "Hide Status"
-                                DisplayMode.FULLSCREEN_IMMERSIVE -> "Fullscreen"
-                            },
+                            text =
+                                when (currentDisplayMode) {
+                                    DisplayMode.SYSTEM_UI_VISIBLE -> "System UI"
+                                    DisplayMode.STATUS_BAR_HIDDEN -> "Hide Status"
+                                    DisplayMode.FULLSCREEN_IMMERSIVE -> "Fullscreen"
+                                },
                             style = MaterialTheme.typography.titleMedium,
                             maxLines = 1,
                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -489,6 +507,7 @@ private fun ControlTabContent(carlinkManager: CarlinkManager) {
     if (showAdapterConfigDialog) {
         AdapterConfigurationDialog(
             adapterConfigPreference = adapterConfigPreference,
+            carlinkManager = carlinkManager,
             onDismiss = { showAdapterConfigDialog = false },
         )
     }
@@ -576,12 +595,6 @@ private fun ControlButton(
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
-    // Animated alpha for disabled state
-    val contentAlpha by animateFloatAsState(
-        targetValue = if (enabled && !isProcessing) 1f else 0.7f,
-        label = "buttonAlpha"
-    )
-
     when (severity) {
         ButtonSeverity.DESTRUCTIVE -> {
             Button(
@@ -603,12 +616,11 @@ private fun ControlButton(
                     transitionSpec = {
                         (fadeIn() + scaleIn()).togetherWith(fadeOut() + scaleOut())
                     },
-                    label = "iconTransition"
+                    label = "iconTransition",
                 ) { processing ->
                     if (processing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.5.dp,
+                        LoadingSpinner(
+                            size = 24.dp,
                             color = colorScheme.onError,
                         )
                     } else {
@@ -649,12 +661,11 @@ private fun ControlButton(
                     transitionSpec = {
                         (fadeIn() + scaleIn()).togetherWith(fadeOut() + scaleOut())
                     },
-                    label = "iconTransition"
+                    label = "iconTransition",
                 ) { processing ->
                     if (processing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.5.dp,
+                        LoadingSpinner(
+                            size = 24.dp,
                         )
                     } else {
                         Icon(
@@ -689,12 +700,11 @@ private fun ControlButton(
                     transitionSpec = {
                         (fadeIn() + scaleIn()).togetherWith(fadeOut() + scaleOut())
                     },
-                    label = "iconTransition"
+                    label = "iconTransition",
                 ) { processing ->
                     if (processing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.5.dp,
+                        LoadingSpinner(
+                            size = 24.dp,
                         )
                     } else {
                         Icon(
@@ -732,26 +742,51 @@ private fun ControlButton(
 @Composable
 private fun AdapterConfigurationDialog(
     adapterConfigPreference: AdapterConfigPreference,
+    carlinkManager: CarlinkManager?,
     onDismiss: () -> Unit,
 ) {
     val colorScheme = MaterialTheme.colorScheme
     val scope = rememberCoroutineScope()
 
-    // Load saved audio source from preferences
+    // Load saved values from preferences
     val savedAudioSource by adapterConfigPreference.audioSourceFlow.collectAsStateWithLifecycle(
-        initialValue = AudioSourceConfig.NOT_CONFIGURED
+        initialValue = AudioSourceConfig.DEFAULT,
+    )
+    val savedSampleRate by adapterConfigPreference.sampleRateFlow.collectAsStateWithLifecycle(
+        initialValue = SampleRateConfig.DEFAULT,
+    )
+    val savedMicSource by adapterConfigPreference.micSourceFlow.collectAsStateWithLifecycle(
+        initialValue = MicSourceConfig.DEFAULT,
+    )
+    val savedWifiBand by adapterConfigPreference.wifiBandFlow.collectAsStateWithLifecycle(
+        initialValue = WiFiBandConfig.DEFAULT,
+    )
+    val savedCallQuality by adapterConfigPreference.callQualityFlow.collectAsStateWithLifecycle(
+        initialValue = CallQualityConfig.DEFAULT,
     )
 
     // Local state for editing - allows cancel without saving
     var selectedAudioSource by remember { mutableStateOf(savedAudioSource) }
+    var selectedSampleRate by remember { mutableStateOf(savedSampleRate) }
+    var selectedMicSource by remember { mutableStateOf(savedMicSource) }
+    var selectedWifiBand by remember { mutableStateOf(savedWifiBand) }
+    var selectedCallQuality by remember { mutableStateOf(savedCallQuality) }
 
     // Sync local state when saved value loads (for initial load)
-    LaunchedEffect(savedAudioSource) {
-        selectedAudioSource = savedAudioSource
-    }
+    LaunchedEffect(savedAudioSource) { selectedAudioSource = savedAudioSource }
+    LaunchedEffect(savedSampleRate) { selectedSampleRate = savedSampleRate }
+    LaunchedEffect(savedMicSource) { selectedMicSource = savedMicSource }
+    LaunchedEffect(savedWifiBand) { selectedWifiBand = savedWifiBand }
+    LaunchedEffect(savedCallQuality) { selectedCallQuality = savedCallQuality }
 
     // Track if any changes were made
-    val hasChanges = selectedAudioSource != savedAudioSource
+    // All adapter configuration changes require app restart
+    val hasChanges =
+        selectedAudioSource != savedAudioSource ||
+            selectedSampleRate != savedSampleRate ||
+            selectedMicSource != savedMicSource ||
+            selectedWifiBand != savedWifiBand ||
+            selectedCallQuality != savedCallQuality
 
     // Responsive dialog width - 60% of container width, clamped between 320dp and 600dp
     val windowInfo = LocalWindowInfo.current
@@ -782,17 +817,18 @@ private fun AdapterConfigurationDialog(
                     Spacer(modifier = Modifier.width(16.dp))
                     Text(
                         text = "Adapter Configuration",
-                        style = MaterialTheme.typography.headlineSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                        ),
+                        style =
+                            MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                            ),
                     )
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // Subtitle
+                // Subtitle - all changes require restart
                 Text(
-                    text = "Changes apply on next adapter connection",
+                    text = "Changes require app restart to apply",
                     style = MaterialTheme.typography.bodyMedium,
                     color = colorScheme.onSurfaceVariant,
                 )
@@ -801,16 +837,17 @@ private fun AdapterConfigurationDialog(
 
                 // Scrollable content area for configuration options
                 Column(
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState()),
+                    modifier =
+                        Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     // Audio Source Configuration Option
                     ConfigurationOptionCard(
                         title = "Audio Source",
                         description = "Select how audio is routed from your phone",
-                        icon = Icons.Default.VolumeUp,
+                        icon = Icons.AutoMirrored.Filled.VolumeUp,
                     ) {
                         // Audio source selection buttons
                         Row(
@@ -837,26 +874,179 @@ private fun AdapterConfigurationDialog(
                         }
 
                         // Current selection indicator
-                        if (selectedAudioSource != AudioSourceConfig.NOT_CONFIGURED) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = when (selectedAudioSource) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                when (selectedAudioSource) {
                                     AudioSourceConfig.BLUETOOTH -> "Audio via phone Bluetooth to car stereo"
                                     AudioSourceConfig.ADAPTER -> "Audio via USB through this app"
-                                    else -> ""
                                 },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = colorScheme.primary,
-                            )
-                        }
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
                     }
 
-                    // Future configuration options can be added here:
-                    // ConfigurationOptionCard(
-                    //     title = "WiFi Band",
-                    //     description = "Select preferred WiFi frequency",
-                    //     icon = Icons.Default.Wifi,
-                    // ) { ... }
+                    // Sample Rate Configuration Option
+                    ConfigurationOptionCard(
+                        title = "Sample Rate",
+                        description = "Audio sample rate for media playback",
+                        icon = Icons.Default.GraphicEq,
+                    ) {
+                        // Sample rate selection buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            // 44.1kHz button
+                            AudioSourceButton(
+                                label = "44.1 kHz",
+                                icon = Icons.Default.MusicNote,
+                                isSelected = selectedSampleRate == SampleRateConfig.RATE_44100,
+                                onClick = { selectedSampleRate = SampleRateConfig.RATE_44100 },
+                                modifier = Modifier.weight(1f),
+                            )
+
+                            // 48kHz button
+                            AudioSourceButton(
+                                label = "48 kHz",
+                                icon = Icons.Default.HighQuality,
+                                isSelected = selectedSampleRate == SampleRateConfig.RATE_48000,
+                                onClick = { selectedSampleRate = SampleRateConfig.RATE_48000 },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+
+                        // Current selection indicator
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                when (selectedSampleRate) {
+                                    SampleRateConfig.RATE_44100 -> "CD quality (44.1kHz)"
+                                    SampleRateConfig.RATE_48000 -> "Professional quality (48kHz)"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
+                    }
+
+                    // Microphone Source Configuration
+                    ConfigurationOptionCard(
+                        title = "Microphone Source",
+                        description = "Select which microphone to use for voice input",
+                        icon = Icons.Default.Mic,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            AudioSourceButton(
+                                label = "App",
+                                icon = Icons.Default.SettingsInputComponent,
+                                isSelected = selectedMicSource == MicSourceConfig.APP,
+                                onClick = { selectedMicSource = MicSourceConfig.APP },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "Phone",
+                                icon = Icons.Default.PhoneAndroid,
+                                isSelected = selectedMicSource == MicSourceConfig.PHONE,
+                                onClick = { selectedMicSource = MicSourceConfig.PHONE },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                when (selectedMicSource) {
+                                    MicSourceConfig.APP -> "This device captures mic input from Android/OS"
+                                    MicSourceConfig.PHONE -> "Phone uses its own mic (or adapter mic if present)"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
+                    }
+
+                    // WiFi Band Configuration
+                    ConfigurationOptionCard(
+                        title = "WiFi Band",
+                        description = "Wireless band for CarPlay connection",
+                        icon = Icons.Default.Wifi,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            AudioSourceButton(
+                                label = "5 GHz",
+                                icon = Icons.Default.Speed,
+                                isSelected = selectedWifiBand == WiFiBandConfig.BAND_5GHZ,
+                                onClick = { selectedWifiBand = WiFiBandConfig.BAND_5GHZ },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "2.4 GHz",
+                                icon = Icons.Default.SignalCellularAlt,
+                                isSelected = selectedWifiBand == WiFiBandConfig.BAND_24GHZ,
+                                onClick = { selectedWifiBand = WiFiBandConfig.BAND_24GHZ },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                when (selectedWifiBand) {
+                                    WiFiBandConfig.BAND_5GHZ -> "Better speed, less interference (recommended)"
+                                    WiFiBandConfig.BAND_24GHZ -> "Better range, more interference"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
+                    }
+
+                    // Call Quality Configuration
+                    ConfigurationOptionCard(
+                        title = "Call Quality",
+                        description = "Audio quality for phone calls",
+                        icon = Icons.Default.Call,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AudioSourceButton(
+                                label = "Normal",
+                                icon = Icons.Default.Phone,
+                                isSelected = selectedCallQuality == CallQualityConfig.NORMAL,
+                                onClick = { selectedCallQuality = CallQualityConfig.NORMAL },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "Clear",
+                                icon = Icons.Default.PhoneInTalk,
+                                isSelected = selectedCallQuality == CallQualityConfig.CLEAR,
+                                onClick = { selectedCallQuality = CallQualityConfig.CLEAR },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "HD",
+                                icon = Icons.Default.Hd,
+                                isSelected = selectedCallQuality == CallQualityConfig.HD,
+                                onClick = { selectedCallQuality = CallQualityConfig.HD },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                when (selectedCallQuality) {
+                                    CallQualityConfig.NORMAL -> "Standard call quality"
+                                    CallQualityConfig.CLEAR -> "Enhanced clarity"
+                                    CallQualityConfig.HD -> "Highest quality audio"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -887,24 +1077,33 @@ private fun AdapterConfigurationDialog(
                         Text("Default")
                     }
 
-                    // Save button
+                    // Apply & Restart button - all adapter config changes require restart
                     Button(
                         onClick = {
                             scope.launch {
+                                // Save all configuration
                                 adapterConfigPreference.setAudioSource(selectedAudioSource)
-                                onDismiss()
+                                adapterConfigPreference.setSampleRate(selectedSampleRate)
+                                adapterConfigPreference.setMicSource(selectedMicSource)
+                                adapterConfigPreference.setWifiBand(selectedWifiBand)
+                                adapterConfigPreference.setCallQuality(selectedCallQuality)
+
+                                // All adapter config changes require restart
+                                carlinkManager?.stop()
+                                kotlinx.coroutines.delay(500)
+                                android.os.Process.killProcess(android.os.Process.myPid())
                             }
                         },
                         modifier = Modifier.weight(1.5f),
                         enabled = hasChanges,
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Check,
+                            imageVector = Icons.Default.RestartAlt,
                             contentDescription = null,
                             modifier = Modifier.size(18.dp),
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Save")
+                        Text("Apply & Restart")
                     }
                 }
             }
@@ -948,9 +1147,10 @@ private fun ConfigurationOptionCard(
                 Spacer(modifier = Modifier.width(12.dp))
                 Text(
                     text = title,
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.SemiBold,
-                    ),
+                    style =
+                        MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.SemiBold,
+                        ),
                 )
             }
 
@@ -989,23 +1189,23 @@ private fun AudioSourceButton(
     // Animated properties for smooth selection transitions
     val backgroundColor by animateColorAsState(
         targetValue = if (isSelected) colorScheme.primaryContainer else colorScheme.surfaceContainer,
-        label = "backgroundColor"
+        label = "backgroundColor",
     )
     val borderWidth by animateDpAsState(
         targetValue = if (isSelected) 2.dp else 1.dp,
-        label = "borderWidth"
+        label = "borderWidth",
     )
     val borderColor by animateColorAsState(
         targetValue = if (isSelected) colorScheme.primary else colorScheme.outline,
-        label = "borderColor"
+        label = "borderColor",
     )
     val contentColor by animateColorAsState(
         targetValue = if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant,
-        label = "contentColor"
+        label = "contentColor",
     )
     val iconScale by animateFloatAsState(
         targetValue = if (isSelected) 1.1f else 1f,
-        label = "iconScale"
+        label = "iconScale",
     )
 
     Surface(
@@ -1013,15 +1213,17 @@ private fun AudioSourceButton(
         modifier = modifier.height(AutomotiveDimens.ButtonMinHeight),
         shape = MaterialTheme.shapes.medium,
         color = backgroundColor,
-        border = BorderStroke(
-            width = borderWidth,
-            color = borderColor,
-        ),
+        border =
+            BorderStroke(
+                width = borderWidth,
+                color = borderColor,
+            ),
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(12.dp),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
@@ -1029,16 +1231,21 @@ private fun AudioSourceButton(
                 imageVector = icon,
                 contentDescription = label,
                 tint = contentColor,
-                modifier = Modifier
-                    .size(24.dp)
-                    .graphicsLayer { scaleX = iconScale; scaleY = iconScale },
+                modifier =
+                    Modifier
+                        .size(24.dp)
+                        .graphicsLayer {
+                            scaleX = iconScale
+                            scaleY = iconScale
+                        },
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelLarge.copy(
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                ),
+                style =
+                    MaterialTheme.typography.labelLarge.copy(
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    ),
                 color = contentColor,
                 maxLines = 1,
                 overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
@@ -1075,7 +1282,7 @@ private fun DisplayModeDialog(
 
     // Load saved mode from preferences
     val savedMode by displayModePreference.displayModeFlow.collectAsStateWithLifecycle(
-        initialValue = DisplayMode.SYSTEM_UI_VISIBLE
+        initialValue = DisplayMode.SYSTEM_UI_VISIBLE,
     )
 
     // Local state for preview - allows cancel without saving
@@ -1133,9 +1340,10 @@ private fun DisplayModeDialog(
                     Spacer(modifier = Modifier.width(16.dp))
                     Text(
                         text = "Display Mode",
-                        style = MaterialTheme.typography.headlineSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                        ),
+                        style =
+                            MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                            ),
                     )
                 }
 
@@ -1152,9 +1360,10 @@ private fun DisplayModeDialog(
 
                 // Scrollable content area
                 Column(
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .verticalScroll(rememberScrollState()),
+                    modifier =
+                        Modifier
+                            .weight(1f, fill = false)
+                            .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
                     // Configuration option card
@@ -1194,14 +1403,20 @@ private fun DisplayModeDialog(
                         // Description for selected mode
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = when (selectedMode) {
-                                DisplayMode.SYSTEM_UI_VISIBLE ->
-                                    "Status bar and navigation always visible. AAOS manages display bounds."
-                                DisplayMode.STATUS_BAR_HIDDEN ->
-                                    "Status bar hidden, navigation bar visible. Extra vertical space."
-                                DisplayMode.FULLSCREEN_IMMERSIVE ->
-                                    "All system UI hidden. Swipe edge to temporarily reveal."
-                            },
+                            text =
+                                when (selectedMode) {
+                                    DisplayMode.SYSTEM_UI_VISIBLE -> {
+                                        "Status bar and navigation always visible. AAOS manages display bounds."
+                                    }
+
+                                    DisplayMode.STATUS_BAR_HIDDEN -> {
+                                        "Status bar hidden, navigation bar visible. Extra vertical space."
+                                    }
+
+                                    DisplayMode.FULLSCREEN_IMMERSIVE -> {
+                                        "All system UI hidden. Swipe edge to temporarily reveal."
+                                    }
+                                },
                             style = MaterialTheme.typography.bodySmall,
                             color = colorScheme.primary,
                         )
@@ -1250,7 +1465,10 @@ private fun DisplayModeDialog(
  * Applies the display mode preview by showing/hiding system bars.
  * Used for instant visual feedback in the DisplayModeDialog.
  */
-private fun applyDisplayModePreview(window: android.view.Window, mode: DisplayMode) {
+private fun applyDisplayModePreview(
+    window: android.view.Window,
+    mode: DisplayMode,
+) {
     val controller = WindowCompat.getInsetsController(window, window.decorView)
 
     when (mode) {
@@ -1258,6 +1476,7 @@ private fun applyDisplayModePreview(window: android.view.Window, mode: DisplayMo
             // Show all system bars - let AAOS manage display bounds
             controller.show(WindowInsetsCompat.Type.systemBars())
         }
+
         DisplayMode.STATUS_BAR_HIDDEN -> {
             // Hide status bar only, keep navigation bar visible
             controller.hide(WindowInsetsCompat.Type.statusBars())
@@ -1265,6 +1484,7 @@ private fun applyDisplayModePreview(window: android.view.Window, mode: DisplayMo
             controller.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+
         DisplayMode.FULLSCREEN_IMMERSIVE -> {
             // Hide all system bars for maximum projection area
             controller.hide(WindowInsetsCompat.Type.systemBars())
@@ -1293,23 +1513,23 @@ private fun DisplayModeButton(
     // Animated properties for smooth selection transitions
     val backgroundColor by animateColorAsState(
         targetValue = if (isSelected) colorScheme.primaryContainer else colorScheme.surfaceContainer,
-        label = "backgroundColor"
+        label = "backgroundColor",
     )
     val borderWidth by animateDpAsState(
         targetValue = if (isSelected) 2.dp else 1.dp,
-        label = "borderWidth"
+        label = "borderWidth",
     )
     val borderColor by animateColorAsState(
         targetValue = if (isSelected) colorScheme.primary else colorScheme.outline,
-        label = "borderColor"
+        label = "borderColor",
     )
     val contentColor by animateColorAsState(
         targetValue = if (isSelected) colorScheme.primary else colorScheme.onSurfaceVariant,
-        label = "contentColor"
+        label = "contentColor",
     )
     val iconScale by animateFloatAsState(
         targetValue = if (isSelected) 1.1f else 1f,
-        label = "iconScale"
+        label = "iconScale",
     )
 
     Surface(
@@ -1317,15 +1537,17 @@ private fun DisplayModeButton(
         modifier = modifier.height(AutomotiveDimens.ButtonMinHeight),
         shape = MaterialTheme.shapes.medium,
         color = backgroundColor,
-        border = BorderStroke(
-            width = borderWidth,
-            color = borderColor,
-        ),
+        border =
+            BorderStroke(
+                width = borderWidth,
+                color = borderColor,
+            ),
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(8.dp),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
@@ -1333,16 +1555,21 @@ private fun DisplayModeButton(
                 imageVector = icon,
                 contentDescription = label,
                 tint = contentColor,
-                modifier = Modifier
-                    .size(22.dp)
-                    .graphicsLayer { scaleX = iconScale; scaleY = iconScale },
+                modifier =
+                    Modifier
+                        .size(22.dp)
+                        .graphicsLayer {
+                            scaleX = iconScale
+                            scaleY = iconScale
+                        },
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelMedium.copy(
-                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                ),
+                style =
+                    MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                    ),
                 color = contentColor,
                 maxLines = 1,
                 textAlign = TextAlign.Center,
@@ -1468,7 +1695,7 @@ private fun LogsTabContent(
             // File Logging Card - Matches Flutter _buildFileLoggingCard
             LoggingControlCard(
                 title = "File Logging",
-                icon = Icons.Filled.Article,
+                icon = Icons.AutoMirrored.Filled.Article,
             ) {
                 // Toggle row - Matches Flutter SwitchListTile
                 // Using Row instead of ListItem to avoid dark background

@@ -109,20 +109,26 @@ data class AudioConfig(
          * ARM-based GM AAOS devices will use DEFAULT config.
          *
          * @param platformInfo Platform detection results
+         * @param userSampleRate Optional user-configured sample rate (overrides platform default)
          * @return Appropriate AudioConfig for the platform
          */
-        fun forPlatform(platformInfo: PlatformDetector.PlatformInfo): AudioConfig =
-            when {
+        fun forPlatform(
+            platformInfo: PlatformDetector.PlatformInfo,
+            userSampleRate: Int? = null,
+        ): AudioConfig {
+            // Determine effective sample rate: user preference > platform native
+            val effectiveSampleRate = userSampleRate ?: platformInfo.nativeSampleRate
+
+            return when {
                 // Intel GM AAOS - apply all audio optimizations
                 platformInfo.requiresGmAaosAudioFixes() -> {
-                    // Use detected native sample rate if available
-                    GM_AAOS.copy(sampleRate = platformInfo.nativeSampleRate)
+                    GM_AAOS.copy(sampleRate = effectiveSampleRate)
                 }
 
                 // Intel non-GM - use native rate with slightly increased buffers
                 platformInfo.requiresIntelMediaCodecFixes() -> {
                     DEFAULT.copy(
-                        sampleRate = platformInfo.nativeSampleRate,
+                        sampleRate = effectiveSampleRate,
                         bufferMultiplier = 6,
                     )
                 }
@@ -132,13 +138,14 @@ data class AudioConfig(
                 // Use larger buffers similar to GM_AAOS to prevent underruns
                 else -> {
                     DEFAULT.copy(
-                        sampleRate = platformInfo.nativeSampleRate,
-                        bufferMultiplier = 10,          // Increased from 6 to 10 for more headroom
-                        prefillThresholdMs = 250,       // Increased from 180 to 250ms
-                        mediaBufferCapacityMs = 1000,   // Increased from 600 to 1000ms (1 second)
-                        navBufferCapacityMs = 400,      // Increased from 250 to 400ms
+                        sampleRate = effectiveSampleRate,
+                        bufferMultiplier = 10, // Increased from 6 to 10 for more headroom
+                        prefillThresholdMs = 250, // Increased from 180 to 250ms
+                        mediaBufferCapacityMs = 1000, // Increased from 600 to 1000ms (1 second)
+                        navBufferCapacityMs = 400, // Increased from 250 to 400ms
                     )
                 }
             }
+        }
     }
 }

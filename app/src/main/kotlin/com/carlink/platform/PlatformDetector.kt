@@ -65,6 +65,7 @@ object PlatformDetector {
          * This enables specific optimizations for this hardware configuration.
          */
         fun isGmInfo37(): Boolean = device.equals("gminfo37", ignoreCase = true)
+
         /**
          * Returns true if Intel-specific MediaCodec fixes should be applied.
          * Requires BOTH Intel architecture AND Intel codec presence.
@@ -108,9 +109,10 @@ object PlatformDetector {
 
         // Detect Intel Broxton/Apollo Lake platform (used in gminfo37)
         // Broxton uses Intel Atom x7 (Apollo Lake) with HD Graphics 505
-        val isBroxton = board.contains("broxton", ignoreCase = true) ||
-            hardware.contains("broxton", ignoreCase = true) ||
-            product.contains("broxton", ignoreCase = true)
+        val isBroxton =
+            board.contains("broxton", ignoreCase = true) ||
+                hardware.contains("broxton", ignoreCase = true) ||
+                product.contains("broxton", ignoreCase = true)
 
         // Detect display resolution
         val (displayWidth, displayHeight) = detectDisplayResolution(context)
@@ -136,7 +138,7 @@ object PlatformDetector {
             Log.i(TAG, "[PLATFORM] Hardware H.264 decoder: ${hardwareH264DecoderName ?: "none (software fallback)"}")
             Log.i(TAG, "[PLATFORM] Intel-specific fixes: ${info.requiresIntelMediaCodecFixes()}")
             Log.i(TAG, "[PLATFORM] GM AAOS audio fixes: ${info.requiresGmAaosAudioFixes()}")
-            Log.i(TAG, "[PLATFORM] Broxton platform: $isBroxton, Display: ${displayWidth}x${displayHeight}")
+            Log.i(TAG, "[PLATFORM] Broxton platform: $isBroxton, Display: ${displayWidth}x$displayHeight")
         }
 
         return info
@@ -201,13 +203,14 @@ object PlatformDetector {
     private fun detectHardwareH264Decoder(): Pair<Boolean, String?> =
         try {
             val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
-            val hwDecoder = codecList.codecInfos.firstOrNull { info ->
-                !info.isEncoder &&
-                    info.isHardwareAccelerated &&
-                    info.supportedTypes.any { type ->
-                        type.equals("video/avc", ignoreCase = true)
-                    }
-            }
+            val hwDecoder =
+                codecList.codecInfos.firstOrNull { info ->
+                    !info.isEncoder &&
+                        info.isHardwareAccelerated &&
+                        info.supportedTypes.any { type ->
+                            type.equals("video/avc", ignoreCase = true)
+                        }
+                }
             if (hwDecoder != null) {
                 if (BuildConfig.DEBUG) Log.i(TAG, "[PLATFORM] Found hardware H.264 decoder: ${hwDecoder.name}")
                 Pair(true, hwDecoder.name)

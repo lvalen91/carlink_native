@@ -51,26 +51,32 @@ fun VideoSurface(
         factory = { context ->
             logInfo("[VIDEO_SURFACE] Creating VideoSurfaceView", tag = "UI")
             VideoSurfaceView(context).apply {
-                callback = object : VideoSurfaceView.Callback {
-                    override fun onSurfaceCreated(surface: Surface, width: Int, height: Int) {
-                        logInfo("[VIDEO_SURFACE] SurfaceView.onSurfaceCreated: ${width}x${height}", tag = "UI")
-                        onSurfaceAvailable(surface, width, height)
-                    }
+                callback =
+                    object : VideoSurfaceView.Callback {
+                        override fun onSurfaceCreated(
+                            surface: Surface,
+                            width: Int,
+                            height: Int,
+                        ) {
+                            logInfo("[VIDEO_SURFACE] SurfaceView.onSurfaceCreated: ${width}x$height", tag = "UI")
+                            onSurfaceAvailable(surface, width, height)
+                        }
 
-                    override fun onSurfaceChanged(width: Int, height: Int) {
-                        logInfo("[VIDEO_SURFACE] SurfaceView.onSurfaceChanged: ${width}x${height}", tag = "UI")
-                        onSurfaceSizeChanged?.invoke(width, height)
-                    }
+                        override fun onSurfaceChanged(
+                            width: Int,
+                            height: Int,
+                        ) {
+                            logInfo("[VIDEO_SURFACE] SurfaceView.onSurfaceChanged: ${width}x$height", tag = "UI")
+                            onSurfaceSizeChanged?.invoke(width, height)
+                        }
 
-                    override fun onSurfaceDestroyed() {
-                        logWarn("[VIDEO_SURFACE] SurfaceView.onSurfaceDestroyed", tag = "UI")
-                        onSurfaceDestroyed()
-                    }
+                        override fun onSurfaceDestroyed() {
+                            logWarn("[VIDEO_SURFACE] SurfaceView.onSurfaceDestroyed", tag = "UI")
+                            onSurfaceDestroyed()
+                        }
 
-                    override fun onTouchEvent(event: MotionEvent): Boolean {
-                        return onTouchEvent?.invoke(event) ?: false
+                        override fun onTouchEvent(event: MotionEvent): Boolean = onTouchEvent?.invoke(event) ?: false
                     }
-                }
             }
         },
     )

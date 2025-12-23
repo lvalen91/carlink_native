@@ -45,11 +45,17 @@ class AdapterDriver(
     private var initMessagesCount = 0
 
     /**
-     * Start the adapter communication.
+     * Start the adapter communication with smart initialization.
      *
      * @param config Adapter configuration
+     * @param initMode Initialization mode: "FULL", "MINIMAL_PLUS_CHANGES", or "MINIMAL_ONLY"
+     * @param pendingChanges Set of config keys that have changed since last init
      */
-    fun start(config: AdapterConfig = AdapterConfig.DEFAULT) {
+    fun start(
+        config: AdapterConfig = AdapterConfig.DEFAULT,
+        initMode: String = "FULL",
+        pendingChanges: Set<String> = emptySet(),
+    ) {
         if (isRunning.getAndSet(true)) {
             log("Adapter already running")
             return
@@ -69,10 +75,10 @@ class AdapterDriver(
         startHeartbeat()
         log("Heartbeat started before initialization (firmware stabilization)")
 
-        // Send initialization sequence
-        val initMessages = MessageSerializer.generateInitSequence(config)
+        // Send initialization sequence based on mode
+        val initMessages = MessageSerializer.generateInitSequence(config, initMode, pendingChanges)
         initMessagesCount = initMessages.size
-        log("Sending $initMessagesCount initialization messages")
+        log("Sending $initMessagesCount initialization messages (mode=$initMode, changes=$pendingChanges)")
 
         for ((index, message) in initMessages.withIndex()) {
             log("Init message ${index + 1}/$initMessagesCount")

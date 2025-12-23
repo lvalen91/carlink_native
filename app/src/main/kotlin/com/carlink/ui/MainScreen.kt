@@ -28,7 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
+import com.carlink.ui.components.LoadingSpinner
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
@@ -48,7 +48,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.carlink.BuildConfig
@@ -85,7 +84,6 @@ fun MainScreen(
     displayMode: DisplayMode,
     onNavigateToSettings: () -> Unit,
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     // State
@@ -149,15 +147,17 @@ fun MainScreen(
     // This matches Flutter's SafeArea behavior with _disableSafeArea flag:
     // - FULLSCREEN_IMMERSIVE: No insets, video fills entire screen (1920x1080)
     // - Other modes: Apply insets to constrain video to usable area
-    val baseModifier = Modifier
-        .fillMaxSize()
-        .background(Color.Black)
+    val baseModifier =
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
 
-    val boxModifier = if (displayMode == DisplayMode.FULLSCREEN_IMMERSIVE) {
-        baseModifier // No insets in fullscreen immersive mode - fill entire screen
-    } else {
-        baseModifier.windowInsetsPadding(WindowInsets.systemBars) // Apply insets
-    }
+    val boxModifier =
+        if (displayMode == DisplayMode.FULLSCREEN_IMMERSIVE) {
+            baseModifier // No insets in fullscreen immersive mode - fill entire screen
+        } else {
+            baseModifier.windowInsetsPadding(WindowInsets.systemBars) // Apply insets
+        }
 
     Box(modifier = boxModifier) {
         // Video surface with touch handling
@@ -166,7 +166,7 @@ fun MainScreen(
         VideoSurface(
             modifier = Modifier.fillMaxSize(),
             onSurfaceAvailable = { surface, width, height ->
-                logInfo("[UI_SURFACE] Surface available: ${width}x${height}", tag = "UI")
+                logInfo("[UI_SURFACE] Surface available: ${width}x$height", tag = "UI")
                 surfaceState.onSurfaceAvailable(surface, width, height)
             },
             onSurfaceDestroyed = {
@@ -174,7 +174,7 @@ fun MainScreen(
                 surfaceState.onSurfaceDestroyed()
             },
             onSurfaceSizeChanged = { width, height ->
-                logInfo("[UI_SURFACE] Surface size changed: ${width}x${height}", tag = "UI")
+                logInfo("[UI_SURFACE] Surface size changed: ${width}x$height", tag = "UI")
                 surfaceState.onSurfaceSizeChanged(width, height)
             },
             onTouchEvent = { event ->
@@ -182,7 +182,10 @@ fun MainScreen(
                 if (BuildConfig.DEBUG && isUserInteractingWithProjection) {
                     val now = System.currentTimeMillis()
                     if (now - lastTouchTime > 1000) { // Log at most once per second
-                        logDebug("[UI_TOUCH] CarPlay projection touch: action=${event.actionMasked}, pointers=${event.pointerCount}", tag = "UI")
+                        logDebug(
+                            "[UI_TOUCH] CarPlay projection touch: action=${event.actionMasked}, pointers=${event.pointerCount}",
+                            tag = "UI",
+                        )
                         lastTouchTime = now
                     }
                 }
@@ -204,19 +207,18 @@ fun MainScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    // Projection icon - Matches Flutter Image.asset("assets/projection_icon.png")
+                    // Projection icon - vector drawable scales without quality loss
                     Image(
-                        painter = painterResource(id = R.mipmap.ic_launcher_foreground),
+                        painter = painterResource(id = R.drawable.ic_phone_projection),
                         contentDescription = "Carlink",
                         modifier = Modifier.height(220.dp),
                     )
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Loading indicator
-                    CircularProgressIndicator(
+                    // Loading indicator - AVD for better AAOS hardware compatibility
+                    LoadingSpinner(
                         color = colorScheme.primary,
-                        strokeWidth = 3.dp,
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -225,10 +227,10 @@ fun MainScreen(
                     Text(
                         text =
                             when (state) {
-                                CarlinkManager.State.DISCONNECTED -> "Disconnected"
-                                CarlinkManager.State.CONNECTING -> "Connecting..."
-                                CarlinkManager.State.DEVICE_CONNECTED -> "Device connected"
-                                CarlinkManager.State.STREAMING -> "Streaming"
+                                CarlinkManager.State.DISCONNECTED -> "[ Connect Adapter ]"
+                                CarlinkManager.State.CONNECTING -> "[ Connecting... ]"
+                                CarlinkManager.State.DEVICE_CONNECTED -> "[ Waiting for Phone ]"
+                                CarlinkManager.State.STREAMING -> "[ Streaming ]"
                             },
                         style = MaterialTheme.typography.bodyLarge,
                         color = colorScheme.onSurface,
@@ -305,12 +307,11 @@ fun MainScreen(
                         transitionSpec = {
                             (fadeIn() + scaleIn()).togetherWith(fadeOut() + scaleOut())
                         },
-                        label = "resetIconTransition"
+                        label = "resetIconTransition",
                     ) { resetting ->
                         if (resetting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(AutomotiveDimens.IconSize),
-                                strokeWidth = 3.dp,
+                            LoadingSpinner(
+                                size = AutomotiveDimens.IconSize,
                                 color = colorScheme.onErrorContainer,
                             )
                         } else {

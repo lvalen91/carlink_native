@@ -12,7 +12,7 @@ android {
         applicationId = "zeno.carlink"
         minSdk = 32
         targetSdk = 36
-        versionCode = 25
+        versionCode = 27
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -50,6 +50,14 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    lint {
+        // Suppress DiscouragedApi warning for scheduleAtFixedRate usage.
+        // Tested alternatives (coroutines, scheduleWithFixedDelay) caused issues
+        // with microphone timing - Timer.scheduleAtFixedRate works reliably.
+        // See documents/revisions.txt [19], [21] for history.
+        disable += "DiscouragedApi"
     }
 }
 

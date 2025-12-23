@@ -83,10 +83,11 @@ class ImmersivePreference private constructor(
     // SharedPreferences sync cache for instant startup reads
     // Per Android Developer guidance: use SharedPreferences for synchronous access
     // to avoid blocking main thread with DataStore I/O
-    private val syncCache = appContext.getSharedPreferences(
-        SYNC_CACHE_PREFS_NAME,
-        Context.MODE_PRIVATE
-    )
+    private val syncCache =
+        appContext.getSharedPreferences(
+            SYNC_CACHE_PREFS_NAME,
+            Context.MODE_PRIVATE,
+        )
 
     /**
      * Flow for observing immersive mode state changes.
@@ -103,9 +104,7 @@ class ImmersivePreference private constructor(
      *
      * This is safe to call from the main thread during Activity.onCreate().
      */
-    fun isEnabledSync(): Boolean {
-        return syncCache.getBoolean(SYNC_CACHE_KEY_ENABLED, false)
-    }
+    fun isEnabledSync(): Boolean = syncCache.getBoolean(SYNC_CACHE_KEY_ENABLED, false)
 
     /**
      * Returns whether immersive fullscreen mode is enabled.

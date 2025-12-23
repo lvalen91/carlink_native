@@ -41,17 +41,17 @@ import com.carlink.logging.Logger
 import com.carlink.logging.apply
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
-import com.carlink.util.AudioDebugLogger
-import com.carlink.util.VideoDebugLogger
 import com.carlink.protocol.AdapterConfig
 import com.carlink.protocol.KnownDevices
-import com.carlink.util.IconAssets
 import com.carlink.ui.MainScreen
 import com.carlink.ui.SettingsScreen
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.settings.DisplayModePreference
 import com.carlink.ui.theme.CarlinkTheme
+import com.carlink.util.AudioDebugLogger
+import com.carlink.util.IconAssets
+import com.carlink.util.VideoDebugLogger
 
 /**
  * Main Activity - Entry Point for Carlink Native
@@ -88,31 +88,36 @@ class MainActivity : ComponentActivity() {
      * This is a feature that neither the original Flutter carlink nor carlink_native
      * had - both relied on transfer error detection for physical disconnection.
      */
-    private val usbDetachReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (UsbManager.ACTION_USB_DEVICE_DETACHED == intent.action) {
-                val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
-                }
+    private val usbDetachReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(
+                context: Context,
+                intent: Intent,
+            ) {
+                if (UsbManager.ACTION_USB_DEVICE_DETACHED == intent.action) {
+                    val device =
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                        }
 
-                device?.let {
-                    // Only handle if it's a known Carlinkit device
-                    if (KnownDevices.isKnownDevice(it.vendorId, it.productId)) {
-                        logWarn(
-                            "[USB_DETACH] Carlinkit device detached: VID=0x${it.vendorId.toString(16)} " +
-                                "PID=0x${it.productId.toString(16)} path=${it.deviceName}",
-                            tag = "MAIN"
-                        )
-                        // Notify CarlinkManager of the detachment (null-safe)
-                        carlinkManager?.onUsbDeviceDetached()
+                    device?.let {
+                        // Only handle if it's a known Carlinkit device
+                        if (KnownDevices.isKnownDevice(it.vendorId, it.productId)) {
+                            logWarn(
+                                "[USB_DETACH] Carlinkit device detached: VID=0x${it.vendorId.toString(16)} " +
+                                    "PID=0x${it.productId.toString(16)} path=${it.deviceName}",
+                                tag = "MAIN",
+                            )
+                            // Notify CarlinkManager of the detachment (null-safe)
+                            carlinkManager?.onUsbDeviceDetached()
+                        }
                     }
                 }
             }
         }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -230,11 +235,11 @@ class MainActivity : ComponentActivity() {
         if (isDebugBuild) {
             logInfo(
                 "[LOGGING] Video pipeline debug tags enabled: VIDEO_USB, VIDEO_RING, VIDEO_CODEC, VIDEO_SURFACE, VIDEO_PERF",
-                tag = "MAIN"
+                tag = "MAIN",
             )
             logInfo(
                 "[LOGGING] Audio pipeline debug tags enabled: AUDIO_USB, AUDIO_BUFFER, AUDIO_TRACK, AUDIO_STREAM, AUDIO_PERF",
-                tag = "MAIN"
+                tag = "MAIN",
             )
         }
     }
@@ -248,10 +253,13 @@ class MainActivity : ComponentActivity() {
         val windowInsets = windowMetrics.windowInsets
 
         // Get system bars insets (status bar, navigation bar, display cutouts)
-        val insets = windowInsets.getInsetsIgnoringVisibility(
-            android.view.WindowInsets.Type.systemBars() or
-                android.view.WindowInsets.Type.displayCutout()
-        )
+        val insets =
+            windowInsets.getInsetsIgnoringVisibility(
+                android.view.WindowInsets.Type
+                    .systemBars() or
+                    android.view.WindowInsets.Type
+                        .displayCutout(),
+            )
 
         // Calculate usable dimensions (window bounds minus system UI)
         val usableWidth = bounds.width() - insets.left - insets.right
@@ -274,6 +282,18 @@ class MainActivity : ComponentActivity() {
         // These are optional - only configured settings are sent to the adapter
         val userConfig = AdapterConfigPreference.getInstance(this).getUserConfigSync()
 
+        // Map user config enums to AdapterConfig values
+        val micType =
+            when (userConfig.micSource) {
+                com.carlink.ui.settings.MicSourceConfig.APP -> "os"
+                com.carlink.ui.settings.MicSourceConfig.PHONE -> "box"
+            }
+        val wifiType =
+            when (userConfig.wifiBand) {
+                com.carlink.ui.settings.WiFiBandConfig.BAND_5GHZ -> "5ghz"
+                com.carlink.ui.settings.WiFiBandConfig.BAND_24GHZ -> "24ghz"
+            }
+
         val config =
             AdapterConfig(
                 width = evenWidth,
@@ -283,21 +303,31 @@ class MainActivity : ComponentActivity() {
                 icon120Data = icon120,
                 icon180Data = icon180,
                 icon256Data = icon256,
-                // User-configured audio transfer mode (null if not configured)
+                // User-configured audio transfer mode (false=adapter, true=bluetooth)
                 audioTransferMode = userConfig.audioTransferMode,
+                // User-configured sample rate for media audio
+                sampleRate = userConfig.sampleRate.hz,
+                // User-configured mic, wifi, and call quality
+                micType = micType,
+                wifiType = wifiType,
+                callQuality = userConfig.callQuality.value,
             )
 
         logInfo(
             "[WINDOW] Bounds: ${bounds.width()}x${bounds.height()}, " +
-                "Usable: ${usableWidth}x${usableHeight}, " +
+                "Usable: ${usableWidth}x$usableHeight, " +
                 "Insets: T:${insets.top} B:${insets.bottom} L:${insets.left} R:${insets.right}",
-            tag = "MAIN"
+            tag = "MAIN",
         )
         logInfo("Display config: ${config.width}x${config.height}@${config.fps}fps, ${config.dpi}dpi", tag = "MAIN")
-        logInfo("Icons loaded: $iconsLoaded (120: ${icon120?.size ?: 0}B, 180: ${icon180?.size ?: 0}B, 256: ${icon256?.size ?: 0}B)", tag = "MAIN")
         logInfo(
-            "[ADAPTER_CONFIG] User config: audioTransferMode=${userConfig.audioTransferMode?.let { if (it) "bluetooth" else "adapter" } ?: "not configured"}",
-            tag = "MAIN"
+            "Icons loaded: $iconsLoaded (120: ${icon120?.size ?: 0}B, 180: ${icon180?.size ?: 0}B, 256: ${icon256?.size ?: 0}B)",
+            tag = "MAIN",
+        )
+        logInfo(
+            "[ADAPTER_CONFIG] User config: audioTransferMode=${if (userConfig.audioTransferMode) "bluetooth" else "adapter"}, " +
+                "sampleRate=${userConfig.sampleRate.hz}Hz, mic=$micType, wifi=$wifiType, callQuality=${userConfig.callQuality.name}",
+            tag = "MAIN",
         )
 
         carlinkManager = CarlinkManager(this, config)
@@ -346,6 +376,7 @@ class MainActivity : ComponentActivity() {
                 // Show all system bars - let AAOS manage display bounds
                 windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
             }
+
             DisplayMode.STATUS_BAR_HIDDEN -> {
                 // Hide status bar only, keep navigation bar visible
                 windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
@@ -353,6 +384,7 @@ class MainActivity : ComponentActivity() {
                 windowInsetsController.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
+
             DisplayMode.FULLSCREEN_IMMERSIVE -> {
                 // Hide all system bars for maximum projection area
                 windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())

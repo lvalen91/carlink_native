@@ -1,7 +1,7 @@
 package com.carlink.ui.settings
 
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.ui.graphics.vector.ImageVector
 
@@ -14,7 +14,7 @@ enum class SettingsTab(
     val icon: ImageVector,
 ) {
     CONTROL("Control", Icons.Default.Settings),
-    LOGS("Logs", Icons.Filled.Article),
+    LOGS("Logs", Icons.AutoMirrored.Filled.Article),
     ;
 
     companion object {

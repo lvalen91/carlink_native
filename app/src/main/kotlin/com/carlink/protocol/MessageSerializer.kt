@@ -254,9 +254,9 @@ object MessageSerializer {
                 put("syncTime", actualSyncTime)
                 put("androidAutoSizeW", aaWidth)
                 put("androidAutoSizeH", aaHeight)
-                put("mediaSound", 1) // Request 48kHz media audio
-                put("callQuality", 2) // HD call quality
-                put("WiFiChannel", 161) // 5GHz channel 161
+                put("mediaSound", if (config.sampleRate == 44100) 0 else 1) // 0=44.1kHz, 1=48kHz
+                put("callQuality", config.callQuality) // 0=normal, 1=clear, 2=HD
+                put("WiFiChannel", 161) // 5GHz channel 161 (optimal low interference)
                 put("wifiChannel", 161) // Both keys for compatibility
                 put("wifiName", "carlink")
                 put("btName", "carlink")
@@ -270,10 +270,12 @@ object MessageSerializer {
 
     /**
      * Generate AirPlay configuration string.
+     * Note: 'name' must be "AutoBox" (hardcoded) for CarPlay UI to display correctly.
+     * The custom display name goes in 'oemIconLabel' only.
      */
     fun generateAirplayConfig(config: AdapterConfig): String =
         """oemIconVisible = ${if (config.oemIconVisible) "1" else "0"}
-name = ${config.boxName}
+name = AutoBox
 model = Magic-Car-Link-1.00
 oemIconPath = /etc/oem_icon.png
 oemIconLabel = ${config.boxName}
@@ -282,16 +284,188 @@ oemIconLabel = ${config.boxName}
     // ==================== Initialization Sequence ====================
 
     /**
-     * Generate the complete initialization message sequence.
+     * Configuration keys matching AdapterConfigPreference.ConfigKey.
+     * Used to identify which settings to send for delta configuration.
      */
-    fun generateInitSequence(config: AdapterConfig): List<ByteArray> {
+    object ConfigKey {
+        const val AUDIO_SOURCE = "audio_source"
+        const val SAMPLE_RATE = "sample_rate"
+        const val MIC_SOURCE = "mic_source"
+        const val WIFI_BAND = "wifi_band"
+        const val CALL_QUALITY = "call_quality"
+    }
+
+    /**
+     * Generate initialization messages based on init mode and pending changes.
+     *
+     * @param config Adapter configuration with all current values
+     * @param initMode The initialization mode (FULL, MINIMAL_PLUS_CHANGES, MINIMAL_ONLY)
+     * @param pendingChanges Set of config keys that have changed since last init
+     * @return List of serialized messages to send to the adapter
+     */
+    fun generateInitSequence(
+        config: AdapterConfig,
+        initMode: String,
+        pendingChanges: Set<String> = emptySet(),
+    ): List<ByteArray> {
         val messages = mutableListOf<ByteArray>()
 
-        // DPI configuration
+        // === MINIMAL CONFIG: Always sent (every session) ===
+        // - DPI: stored in /tmp/ which is cleared on adapter power cycle
+        // - Open: display dimensions may change between sessions
+        // - WiFi Enable: required to activate wireless mode
+        messages.add(serializeNumber(config.dpi, FileAddress.DPI))
+        messages.add(serializeOpen(config))
+        messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
+
+        when (initMode) {
+            "MINIMAL_ONLY" -> {
+                // Just minimal - adapter retains all other settings
+                return messages
+            }
+
+            "MINIMAL_PLUS_CHANGES" -> {
+                // Add only the changed settings
+                addChangedSettings(messages, config, pendingChanges)
+                return messages
+            }
+
+            else -> {
+                // FULL - add all settings
+                addFullSettings(messages, config)
+                return messages
+            }
+        }
+    }
+
+    /**
+     * Add messages for only the changed settings.
+     */
+    private fun addChangedSettings(
+        messages: MutableList<ByteArray>,
+        config: AdapterConfig,
+        pendingChanges: Set<String>,
+    ) {
+        for (key in pendingChanges) {
+            when (key) {
+                ConfigKey.AUDIO_SOURCE -> {
+                    val command =
+                        if (config.audioTransferMode) {
+                            CommandMapping.AUDIO_TRANSFER_ON
+                        } else {
+                            CommandMapping.AUDIO_TRANSFER_OFF
+                        }
+                    messages.add(serializeCommand(command))
+                }
+
+                ConfigKey.SAMPLE_RATE -> {
+                    // Sample rate is part of BoxSettings, need to send full BoxSettings
+                    messages.add(serializeBoxSettings(config))
+                }
+
+                ConfigKey.MIC_SOURCE -> {
+                    val command =
+                        if (config.micType == "box") {
+                            CommandMapping.BOX_MIC
+                        } else {
+                            CommandMapping.MIC
+                        }
+                    messages.add(serializeCommand(command))
+                }
+
+                ConfigKey.WIFI_BAND -> {
+                    val command =
+                        if (config.wifiType == "5ghz") {
+                            CommandMapping.WIFI_5G
+                        } else {
+                            CommandMapping.WIFI_24G
+                        }
+                    messages.add(serializeCommand(command))
+                }
+
+                ConfigKey.CALL_QUALITY -> {
+                    // Call quality is part of BoxSettings, need to send full BoxSettings
+                    messages.add(serializeBoxSettings(config))
+                }
+            }
+        }
+    }
+
+    /**
+     * Add all settings for full initialization.
+     */
+    private fun addFullSettings(
+        messages: MutableList<ByteArray>,
+        config: AdapterConfig,
+    ) {
+        // Box name
+        messages.add(serializeString(config.boxName, FileAddress.BOX_NAME))
+
+        // AirPlay configuration
+        messages.add(serializeString(generateAirplayConfig(config), FileAddress.AIRPLAY_CONFIG))
+
+        // Upload icons if provided
+        config.icon120Data?.let { messages.add(serializeFile(FileAddress.ICON_120.path, it)) }
+        config.icon180Data?.let { messages.add(serializeFile(FileAddress.ICON_180.path, it)) }
+        config.icon256Data?.let { messages.add(serializeFile(FileAddress.ICON_256.path, it)) }
+
+        // WiFi band selection
+        val wifiCommand = if (config.wifiType == "5ghz") CommandMapping.WIFI_5G else CommandMapping.WIFI_24G
+        messages.add(serializeCommand(wifiCommand))
+
+        // Box settings JSON (includes sample rate, call quality)
+        messages.add(serializeBoxSettings(config))
+
+        // Microphone source
+        val micCommand = if (config.micType == "box") CommandMapping.BOX_MIC else CommandMapping.MIC
+        messages.add(serializeCommand(micCommand))
+
+        // Audio transfer mode
+        val audioTransferCommand = if (config.audioTransferMode) CommandMapping.AUDIO_TRANSFER_ON else CommandMapping.AUDIO_TRANSFER_OFF
+        messages.add(serializeCommand(audioTransferCommand))
+
+        // Android work mode (if enabled)
+        if (config.androidWorkMode) {
+            messages.add(serializeBoolean(true, FileAddress.ANDROID_WORK_MODE))
+        }
+    }
+
+    /**
+     * Generate the initialization message sequence.
+     *
+     * @param config Adapter configuration
+     * @param useMinimalConfig When true, only sends essential messages (DPI, Open, WiFi Enable).
+     *                         Use for subsequent sessions where adapter already has persisted config.
+     *                         When false, sends full configuration including files and settings.
+     * @deprecated Use generateInitSequence(config, initMode, pendingChanges) instead
+     */
+    fun generateInitSequence(
+        config: AdapterConfig,
+        useMinimalConfig: Boolean = false,
+    ): List<ByteArray> {
+        val messages = mutableListOf<ByteArray>()
+
+        // === MINIMAL CONFIG: Only essential messages ===
+        // These are required every session:
+        // - DPI: stored in /tmp/ which is cleared on adapter power cycle
+        // - Open: display dimensions may change between sessions
+        // - WiFi Enable: required to activate wireless mode
+
+        // DPI configuration (always needed - /tmp/ is volatile)
         messages.add(serializeNumber(config.dpi, FileAddress.DPI))
 
-        // Open command with resolution/format
+        // Open command with resolution/format (always needed)
         messages.add(serializeOpen(config))
+
+        // Enable WiFi (always needed to activate wireless mode)
+        messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
+
+        if (useMinimalConfig) {
+            // Minimal config: adapter retains all other settings from /etc/riddle.conf
+            return messages
+        }
+
+        // === FULL CONFIG: All settings (first install or reset) ===
 
         // Box name
         messages.add(serializeString(config.boxName, FileAddress.BOX_NAME))
@@ -322,9 +496,6 @@ oemIconLabel = ${config.boxName}
         // Box settings JSON
         messages.add(serializeBoxSettings(config))
 
-        // Enable WiFi
-        messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
-
         // Microphone source
         val micCommand =
             if (config.micType == "box") {
@@ -334,19 +505,16 @@ oemIconLabel = ${config.boxName}
             }
         messages.add(serializeCommand(micCommand))
 
-        // Audio transfer mode - only send if user has explicitly configured it
-        // null = not configured, adapter retains current setting
+        // Audio transfer mode
         // true = bluetooth (AUDIO_TRANSFER_ON)
-        // false = adapter/USB (AUDIO_TRANSFER_OFF)
-        config.audioTransferMode?.let { audioTransferEnabled ->
-            val audioTransferCommand =
-                if (audioTransferEnabled) {
-                    CommandMapping.AUDIO_TRANSFER_ON
-                } else {
-                    CommandMapping.AUDIO_TRANSFER_OFF
-                }
-            messages.add(serializeCommand(audioTransferCommand))
-        }
+        // false = adapter/USB (AUDIO_TRANSFER_OFF) - default
+        val fullInitAudioCommand =
+            if (config.audioTransferMode) {
+                CommandMapping.AUDIO_TRANSFER_ON
+            } else {
+                CommandMapping.AUDIO_TRANSFER_OFF
+            }
+        messages.add(serializeCommand(fullInitAudioCommand))
 
         // Android work mode (if enabled)
         if (config.androidWorkMode) {

@@ -81,6 +81,7 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
          * Stop foreground service mode when adapter disconnects.
          * Called from CarlinkManager when entering DISCONNECTED state.
          */
+        @Suppress("UNUSED_PARAMETER") // API symmetry with startConnectionForeground
         fun stopConnectionForeground(context: Context) {
             instance?.stopForegroundMode()
         }
@@ -161,7 +162,11 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
         result.sendResult(mutableListOf())
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int,
+    ): Int {
         if (intent?.action == "ACTION_START_FOREGROUND") {
             startForegroundMode()
         }
@@ -183,15 +188,16 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
      * Uses IMPORTANCE_LOW for silent notifications that don't interrupt.
      */
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            NOTIFICATION_CHANNEL_ID,
-            "Connection Status",
-            NotificationManager.IMPORTANCE_LOW  // Silent - no sound, no popup
-        ).apply {
-            description = "Shows when Carlink adapter is connected"
-            setShowBadge(false)
-            lockscreenVisibility = Notification.VISIBILITY_PUBLIC
-        }
+        val channel =
+            NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                "Connection Status",
+                NotificationManager.IMPORTANCE_LOW, // Silent - no sound, no popup
+            ).apply {
+                description = "Shows when Carlink adapter is connected"
+                setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
 
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager.createNotificationChannel(channel)
@@ -205,32 +211,36 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
      */
     private fun buildNotification(): Notification {
         // Intent to open app when notification tapped
-        val contentIntent = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val contentIntent =
+            PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
 
-        val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Carlink")
-            .setContentText("Adapter connected")
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setOngoing(true)
-            .setSilent(true)
-            .setShowWhen(false)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setContentIntent(contentIntent)
+        val builder =
+            NotificationCompat
+                .Builder(this, NOTIFICATION_CHANNEL_ID)
+                .setContentTitle("Carlink")
+                .setContentText("Adapter connected")
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setOngoing(true)
+                .setSilent(true)
+                .setShowWhen(false)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setContentIntent(contentIntent)
 
         // Add MediaStyle if session token available
         mediaSessionToken?.let { token: MediaSessionCompat.Token ->
             builder.setStyle(
-                androidx.media.app.NotificationCompat.MediaStyle()
-                    .setMediaSession(token)
+                androidx.media.app.NotificationCompat
+                    .MediaStyle()
+                    .setMediaSession(token),
             )
         }
 

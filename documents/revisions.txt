@@ -37,3 +37,5 @@
 [23] :: Gradle Dependency updates. CarlinkMediaBrowserService now creates a foreground process in notification to hopefully keep app active. Also provide a shortcut to return to app, if it works. 
 [24] :: Song Metadata inconsistency fix maybe
 [25] :: App Display Mode Options. Now includes three options.
+[26] :: Adapter Config settings option additions.
+[27] :: Lint checks and some UI changes.

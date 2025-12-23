@@ -330,7 +330,7 @@ class UsbDeviceWrapper(
          */
         fun processVideoDirect(
             payloadLength: Int,
-            readCallback: (buffer: ByteArray, offset: Int, length: Int) -> Int
+            readCallback: (buffer: ByteArray, offset: Int, length: Int) -> Int,
         )
     }
 
@@ -395,8 +395,8 @@ class UsbDeviceWrapper(
                     // Handle VIDEO_DATA specially with direct processing for zero-copy performance
                     // This bypasses message parsing and writes directly to the renderer's ring buffer
                     if (header.type == com.carlink.protocol.MessageType.VIDEO_DATA &&
-                        header.length > 0 && videoProcessor != null) {
-
+                        header.length > 0 && videoProcessor != null
+                    ) {
                         // Direct video processing - read USB data directly into ring buffer
                         val conn = connection
                         val endpoint = inEndpoint
@@ -407,13 +407,14 @@ class UsbDeviceWrapper(
                                 while (totalRead < length && _isReadingLoopActive.get()) {
                                     val remaining = length - totalRead
                                     val chunkSize = minOf(remaining, 16384)
-                                    val chunkRead = conn.bulkTransfer(
-                                        endpoint,
-                                        buffer,
-                                        offset + totalRead,
-                                        chunkSize,
-                                        timeout
-                                    )
+                                    val chunkRead =
+                                        conn.bulkTransfer(
+                                            endpoint,
+                                            buffer,
+                                            offset + totalRead,
+                                            chunkSize,
+                                            timeout,
+                                        )
                                     if (chunkRead > 0) {
                                         totalRead += chunkRead
                                         bytesReceived += chunkRead

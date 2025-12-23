@@ -9,8 +9,8 @@ import com.carlink.logging.Logger
 import com.carlink.logging.logDebug
 import com.carlink.logging.logError
 import com.carlink.logging.logInfo
-import com.carlink.logging.logWarn
 import com.carlink.logging.logVideoUsb
+import com.carlink.logging.logWarn
 import com.carlink.media.CarlinkMediaBrowserService
 import com.carlink.media.MediaSessionManager
 import com.carlink.platform.AudioConfig
@@ -30,6 +30,7 @@ import com.carlink.protocol.TouchAction
 import com.carlink.protocol.UnpluggedMessage
 import com.carlink.protocol.VideoDataMessage
 import com.carlink.protocol.VideoStreamingSignal
+import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.usb.UsbDeviceWrapper
 import com.carlink.util.AppExecutors
 import com.carlink.util.LogCallback
@@ -63,6 +64,7 @@ class CarlinkManager(
 ) {
     // Config can be updated when actual surface dimensions are known
     private var config: AdapterConfig = initialConfig
+
     companion object {
         private const val USB_WAIT_PERIOD_MS = 3000L
         private const val PAIR_TIMEOUT_MS = 15000L
@@ -137,7 +139,6 @@ class CarlinkManager(
     // Audio
     private var audioManager: DualStreamAudioManager? = null
     private var audioInitialized = false
-    private var currentAudioDecodeType = 4 // Default to 48kHz stereo
 
     // Microphone
     private var microphoneManager: MicrophoneCaptureManager? = null
@@ -212,9 +213,9 @@ class CarlinkManager(
         // (with or without system bar insets depending on immersive mode)
         if (config.width != evenWidth || config.height != evenHeight) {
             logInfo(
-                "[RES] Updating config from ${config.width}x${config.height} to ${evenWidth}x${evenHeight} " +
+                "[RES] Updating config from ${config.width}x${config.height} to ${evenWidth}x$evenHeight " +
                     "(actual surface size)",
-                tag = Logger.Tags.VIDEO
+                tag = Logger.Tags.VIDEO,
             )
             config = config.copy(width = evenWidth, height = evenHeight)
         }
@@ -238,22 +239,23 @@ class CarlinkManager(
         this.videoSurface = surface
 
         logInfo(
-            "[RES] Initializing with surface ${evenWidth}x${evenHeight} @ ${config.fps}fps, ${config.dpi}dpi",
-            tag = Logger.Tags.VIDEO
+            "[RES] Initializing with surface ${evenWidth}x$evenHeight @ ${config.fps}fps, ${config.dpi}dpi",
+            tag = Logger.Tags.VIDEO,
         )
 
         // Detect platform for optimal audio configuration
+        // Pass user-configured sample rate from AdapterConfig (overrides platform default)
         val platformInfo = PlatformDetector.detect(context)
-        val audioConfig = AudioConfig.forPlatform(platformInfo)
+        val audioConfig = AudioConfig.forPlatform(platformInfo, userSampleRate = config.sampleRate)
 
         logInfo(
             "[PLATFORM] Using AudioConfig: sampleRate=${audioConfig.sampleRate}Hz, " +
                 "bufferMult=${audioConfig.bufferMultiplier}x, prefill=${audioConfig.prefillThresholdMs}ms",
-            tag = Logger.Tags.AUDIO
+            tag = Logger.Tags.AUDIO,
         )
         logInfo(
             "[PLATFORM] Using VideoDecoder: ${platformInfo.hardwareH264DecoderName ?: "generic (createDecoderByType)"}",
-            tag = Logger.Tags.VIDEO
+            tag = Logger.Tags.VIDEO,
         )
 
         // Initialize H264 renderer with Surface for direct HWC rendering
@@ -342,7 +344,7 @@ class CarlinkManager(
             logWarn(
                 "H264Renderer not initialized - Surface not ready. " +
                     "Video will be discarded until initialize() is called with valid Surface.",
-                tag = Logger.Tags.VIDEO
+                tag = Logger.Tags.VIDEO,
             )
         }
 
@@ -396,7 +398,25 @@ class CarlinkManager(
                 videoProcessor = videoProcessor,
             )
 
-        adapterDriver?.start(config)
+        // Determine initialization mode based on first-run state and pending changes
+        val adapterConfigPref = AdapterConfigPreference.getInstance(context)
+        val initMode = adapterConfigPref.getInitializationMode()
+        val pendingChanges = adapterConfigPref.getPendingChangesSync()
+
+        log("[INIT] Mode: ${adapterConfigPref.getInitializationInfo()}")
+
+        adapterDriver?.start(config, initMode.name, pendingChanges)
+
+        // Mark first init completed and clear pending changes after successful start
+        // This runs in a coroutine to handle the suspend functions
+        CoroutineScope(Dispatchers.IO).launch {
+            if (initMode == AdapterConfigPreference.InitMode.FULL) {
+                adapterConfigPref.markFirstInitCompleted()
+            }
+            if (pendingChanges.isNotEmpty()) {
+                adapterConfigPref.clearPendingChanges()
+            }
+        }
 
         // Start pair timeout
         clearPairTimeout()
@@ -420,9 +440,9 @@ class CarlinkManager(
         logDebug("[LIFECYCLE] stop() called - clearing frame interval and phoneType", tag = Logger.Tags.VIDEO)
         clearPairTimeout()
         stopFrameInterval()
-        cancelReconnect()  // Cancel any pending auto-reconnect
-        currentPhoneType = null  // Clear phone type on disconnect
-        clearCachedMediaMetadata()  // Clear stale metadata to prevent race conditions on reconnect
+        cancelReconnect() // Cancel any pending auto-reconnect
+        currentPhoneType = null // Clear phone type on disconnect
+        clearCachedMediaMetadata() // Clear stale metadata to prevent race conditions on reconnect
         stopMicrophoneCapture()
 
         adapterDriver?.stop()
@@ -649,7 +669,7 @@ class CarlinkManager(
             is PluggedMessage -> {
                 logInfo("[PLUGGED] Device plugged: phoneType=${message.phoneType}, wifi=${message.wifi}", tag = Logger.Tags.VIDEO)
                 clearPairTimeout()
-                stopFrameInterval()  // Stop any existing timer (clean slate)
+                stopFrameInterval() // Stop any existing timer (clean slate)
 
                 // Reset reconnect attempts on successful connection
                 reconnectAttempts = 0
@@ -993,41 +1013,43 @@ class CarlinkManager(
             logWarn(
                 "[RECONNECT] Max attempts ($MAX_RECONNECT_ATTEMPTS) reached, giving up. " +
                     "User must manually restart.",
-                tag = Logger.Tags.USB
+                tag = Logger.Tags.USB,
             )
             reconnectAttempts = 0
             return
         }
 
         // Calculate delay with exponential backoff, capped at max
-        val delay = minOf(
-            INITIAL_RECONNECT_DELAY_MS * (1L shl reconnectAttempts),
-            MAX_RECONNECT_DELAY_MS
-        )
+        val delay =
+            minOf(
+                INITIAL_RECONNECT_DELAY_MS * (1L shl reconnectAttempts),
+                MAX_RECONNECT_DELAY_MS,
+            )
         reconnectAttempts++
 
         logInfo(
             "[RECONNECT] Scheduling attempt $reconnectAttempts/$MAX_RECONNECT_ATTEMPTS in ${delay}ms",
-            tag = Logger.Tags.USB
+            tag = Logger.Tags.USB,
         )
 
-        reconnectJob = scope.launch {
-            kotlinx.coroutines.delay(delay)
+        reconnectJob =
+            scope.launch {
+                kotlinx.coroutines.delay(delay)
 
-            // Only attempt if still disconnected
-            if (state == State.DISCONNECTED) {
-                logInfo("[RECONNECT] Attempting reconnection...", tag = Logger.Tags.USB)
-                try {
-                    start()
-                } catch (e: Exception) {
-                    logError("[RECONNECT] Reconnection failed: ${e.message}", tag = Logger.Tags.USB)
-                    // handleError will be called by start() failure, which will schedule next attempt
+                // Only attempt if still disconnected
+                if (state == State.DISCONNECTED) {
+                    logInfo("[RECONNECT] Attempting reconnection...", tag = Logger.Tags.USB)
+                    try {
+                        start()
+                    } catch (e: Exception) {
+                        logError("[RECONNECT] Reconnection failed: ${e.message}", tag = Logger.Tags.USB)
+                        // handleError will be called by start() failure, which will schedule next attempt
+                    }
+                } else {
+                    logInfo("[RECONNECT] Already connected, cancelling reconnect", tag = Logger.Tags.USB)
+                    reconnectAttempts = 0
                 }
-            } else {
-                logInfo("[RECONNECT] Already connected, cancelling reconnect", tag = Logger.Tags.USB)
-                reconnectAttempts = 0
             }
-        }
     }
 
     /**
@@ -1048,10 +1070,14 @@ class CarlinkManager(
         return when {
             // MediaCodec-specific errors that typically indicate recoverable issues
             lowerError.contains("reset codec") -> true
+
             lowerError.contains("mediacodec") && lowerError.contains("illegalstateexception") -> true
+
             lowerError.contains("codecexception") -> true
+
             // Surface texture related errors that may be recoverable
             lowerError.contains("surface") && lowerError.contains("invalid") -> true
+
             else -> false
         }
     }
@@ -1121,7 +1147,6 @@ class CarlinkManager(
             }
 
             logWarn("[EMERGENCY CLEANUP] Conservative cleanup finished", tag = Logger.Tags.ADAPTR)
-
         } catch (e: Exception) {
             logError("[EMERGENCY CLEANUP] State error: ${e.message}", tag = Logger.Tags.ADAPTR)
         }
@@ -1160,16 +1185,17 @@ class CarlinkManager(
 
         logInfo("[FRAME_INTERVAL] Starting periodic keyframe request (every 5s) for CarPlay", tag = Logger.Tags.VIDEO)
 
-        frameIntervalJob = scope.launch(Dispatchers.IO) {
-            var requestCount = 0
-            while (isActive) {
-                delay(5000)
-                requestCount++
-                val sent = adapterDriver?.sendCommand(CommandMapping.FRAME) ?: false
-                logDebug("[FRAME_INTERVAL] Keyframe request #$requestCount sent=$sent", tag = Logger.Tags.VIDEO)
+        frameIntervalJob =
+            scope.launch(Dispatchers.IO) {
+                var requestCount = 0
+                while (isActive) {
+                    delay(5000)
+                    requestCount++
+                    val sent = adapterDriver?.sendCommand(CommandMapping.FRAME) ?: false
+                    logDebug("[FRAME_INTERVAL] Keyframe request #$requestCount sent=$sent", tag = Logger.Tags.VIDEO)
+                }
+                logDebug("[FRAME_INTERVAL] Coroutine ended after $requestCount requests", tag = Logger.Tags.VIDEO)
             }
-            logDebug("[FRAME_INTERVAL] Coroutine ended after $requestCount requests", tag = Logger.Tags.VIDEO)
-        }
     }
 
     /**
@@ -1198,26 +1224,27 @@ class CarlinkManager(
         return object : UsbDeviceWrapper.VideoDataProcessor {
             override fun processVideoDirect(
                 payloadLength: Int,
-                readCallback: (buffer: ByteArray, offset: Int, length: Int) -> Int
+                readCallback: (buffer: ByteArray, offset: Int, length: Int) -> Int,
             ) {
                 // Get the H264Renderer - if not available, discard data
-                val renderer = h264Renderer ?: run {
-                    // Still need to read and discard the data to prevent USB buffer overflow
-                    val discardBuffer = ByteArray(payloadLength)
-                    readCallback(discardBuffer, 0, payloadLength)
+                val renderer =
+                    h264Renderer ?: run {
+                        // Still need to read and discard the data to prevent USB buffer overflow
+                        val discardBuffer = ByteArray(payloadLength)
+                        readCallback(discardBuffer, 0, payloadLength)
 
-                    // Log warning (throttled to every 2 seconds to avoid log spam)
-                    val now = System.currentTimeMillis()
-                    if (now - lastVideoDiscardWarningTime > 2000) {
-                        lastVideoDiscardWarningTime = now
-                        logWarn(
-                            "Video frame discarded - H264Renderer not initialized. " +
-                                "Ensure initialize(surface) is called before video streaming starts.",
-                            tag = Logger.Tags.VIDEO
-                        )
+                        // Log warning (throttled to every 2 seconds to avoid log spam)
+                        val now = System.currentTimeMillis()
+                        if (now - lastVideoDiscardWarningTime > 2000) {
+                            lastVideoDiscardWarningTime = now
+                            logWarn(
+                                "Video frame discarded - H264Renderer not initialized. " +
+                                    "Ensure initialize(surface) is called before video streaming starts.",
+                                tag = Logger.Tags.VIDEO,
+                            )
+                        }
+                        return
                     }
-                    return
-                }
 
                 // Use processDataDirect to write directly to ring buffer
                 // payloadLength includes the 20-byte video header

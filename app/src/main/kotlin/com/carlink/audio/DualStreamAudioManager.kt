@@ -688,12 +688,13 @@ class DualStreamAudioManager(
 
         synchronized(lock) {
             val trackState = navTrack?.playState
-            val trackStateStr = when (trackState) {
-                AudioTrack.PLAYSTATE_PLAYING -> "PLAYING"
-                AudioTrack.PLAYSTATE_PAUSED -> "PAUSED"
-                AudioTrack.PLAYSTATE_STOPPED -> "STOPPED"
-                else -> "null/unknown($trackState)"
-            }
+            val trackStateStr =
+                when (trackState) {
+                    AudioTrack.PLAYSTATE_PLAYING -> "PLAYING"
+                    AudioTrack.PLAYSTATE_PAUSED -> "PAUSED"
+                    AudioTrack.PLAYSTATE_STOPPED -> "STOPPED"
+                    else -> "null/unknown($trackState)"
+                }
             log("[NAV_STOP] Track state: $trackStateStr, navStarted=$navStarted, navStartTime=$navStartTime")
 
             navTrack?.let { track ->
@@ -703,8 +704,10 @@ class DualStreamAudioManager(
                     val bufferLevel = navBuffer?.fillLevelMs() ?: 0
                     val bytesRead = navBuffer?.totalBytesRead ?: 0
 
-                    log("[NAV_STOP] playDuration=${playDuration}ms, bufferLevel=${bufferLevel}ms, " +
-                        "bytesRead=$bytesRead, packets=$navPackets, underruns=$navUnderruns")
+                    log(
+                        "[NAV_STOP] playDuration=${playDuration}ms, bufferLevel=${bufferLevel}ms, " +
+                            "bytesRead=$bytesRead, packets=$navPackets, underruns=$navUnderruns",
+                    )
 
                     if (playDuration < minNavPlayDurationMs && bufferLevel > 50) {
                         log(
@@ -1324,7 +1327,8 @@ class DualStreamAudioManager(
                                 val available = buffer.availableForRead()
                                 if (available > 0) {
                                     // Calculate how much we can read while maintaining minimum buffer level
-                                    val bytesPerMs = (mediaFormat?.sampleRate ?: 48000) * (mediaFormat?.channelCount ?: 2) * 2 / 1000
+                                    val bytesPerMs =
+                                        (mediaFormat?.sampleRate ?: audioConfig.sampleRate) * (mediaFormat?.channelCount ?: 2) * 2 / 1000
                                     val maxReadableMs = currentFillMs - minBufferLevelMs
                                     val maxReadableBytes = maxReadableMs * bytesPerMs
                                     val toRead = minOf(available, playbackChunkSize, maxReadableBytes.coerceAtLeast(0))
@@ -1334,12 +1338,13 @@ class DualStreamAudioManager(
                                         if (bytesRead > 0) {
                                             // Use WRITE_NON_BLOCKING to avoid blocking the playback thread
                                             // This allows better pacing and prevents starvation
-                                            val written = track.write(
-                                                mediaTempBuffer,
-                                                0,
-                                                bytesRead,
-                                                AudioTrack.WRITE_NON_BLOCKING
-                                            )
+                                            val written =
+                                                track.write(
+                                                    mediaTempBuffer,
+                                                    0,
+                                                    bytesRead,
+                                                    AudioTrack.WRITE_NON_BLOCKING,
+                                                )
                                             if (written < 0) {
                                                 handleTrackError("MEDIA", written)
                                             } else if (written < bytesRead) {
@@ -1405,7 +1410,8 @@ class DualStreamAudioManager(
                                 val available = buffer.availableForRead()
                                 if (available > 0) {
                                     // Calculate how much we can read while maintaining minimum buffer level
-                                    val bytesPerMs = (navFormat?.sampleRate ?: 48000) * (navFormat?.channelCount ?: 2) * 2 / 1000
+                                    val bytesPerMs =
+                                        (navFormat?.sampleRate ?: audioConfig.sampleRate) * (navFormat?.channelCount ?: 2) * 2 / 1000
                                     val maxReadableMs = currentNavFillMs - navMinBufferMs
                                     val maxReadableBytes = maxReadableMs * bytesPerMs
                                     val toRead = minOf(available, playbackChunkSize, maxReadableBytes.coerceAtLeast(0))
@@ -1538,7 +1544,7 @@ class DualStreamAudioManager(
                         mediaUnderruns,
                         navUnderruns,
                         voiceUnderruns,
-                        callUnderruns
+                        callUnderruns,
                     )
                 } catch (e: InterruptedException) {
                     break

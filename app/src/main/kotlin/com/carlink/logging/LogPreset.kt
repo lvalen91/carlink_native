@@ -191,7 +191,8 @@ fun LogPreset.apply() {
                 true,
             )
             // Also enable debug logging flag for VideoDebugLogger (Java)
-            com.carlink.util.VideoDebugLogger.setDebugEnabled(true)
+            com.carlink.util.VideoDebugLogger
+                .setDebugEnabled(true)
         }
     }
 }

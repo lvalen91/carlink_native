@@ -26,11 +26,13 @@ object IconAssets {
         return Triple(icon120, icon180, icon256)
     }
 
-    private fun loadAsset(context: Context, fileName: String): ByteArray? {
-        return try {
+    private fun loadAsset(
+        context: Context,
+        fileName: String,
+    ): ByteArray? =
+        try {
             context.assets.open(fileName).use { it.readBytes() }
         } catch (e: Exception) {
             null
         }
-    }
 }
