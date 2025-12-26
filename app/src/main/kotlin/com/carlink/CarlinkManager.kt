@@ -2,6 +2,7 @@ package com.carlink
 
 import android.content.Context
 import android.hardware.usb.UsbManager
+import android.os.PowerManager
 import android.view.Surface
 import com.carlink.audio.DualStreamAudioManager
 import com.carlink.audio.MicrophoneCaptureManager
@@ -77,6 +78,9 @@ class CarlinkManager(
         private const val MAX_RECONNECT_ATTEMPTS = 5
         private const val INITIAL_RECONNECT_DELAY_MS = 2000L // Start with 2 seconds
         private const val MAX_RECONNECT_DELAY_MS = 30000L // Cap at 30 seconds
+
+        // Surface debouncing - wait for size to stabilize before updating codec
+        private const val SURFACE_DEBOUNCE_MS = 150L
     }
 
     /**
@@ -127,6 +131,14 @@ class CarlinkManager(
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private var usbDevice: UsbDeviceWrapper? = null
 
+    // Wake lock to prevent CPU sleep during USB streaming
+    // PARTIAL_WAKE_LOCK keeps CPU running but allows screen to turn off
+    private val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    private val wakeLock: PowerManager.WakeLock = powerManager.newWakeLock(
+        PowerManager.PARTIAL_WAKE_LOCK,
+        "Carlink::UsbStreamingWakeLock",
+    )
+
     // Protocol
     private var adapterDriver: AdapterDriver? = null
 
@@ -164,6 +176,13 @@ class CarlinkManager(
     // Auto-reconnect on USB disconnect
     private var reconnectJob: Job? = null
     private var reconnectAttempts: Int = 0
+
+    // Surface update debouncing - prevents repeated codec recreation during rapid surface size changes
+    private var surfaceUpdateJob: Job? = null
+    private var pendingSurface: Surface? = null
+    private var pendingSurfaceWidth: Int = 0
+    private var pendingSurfaceHeight: Int = 0
+    private var pendingCallback: Callback? = null
 
     // Media metadata tracking
     private var lastMediaSongName: String? = null
@@ -220,21 +239,51 @@ class CarlinkManager(
             config = config.copy(width = evenWidth, height = evenHeight)
         }
 
-        // Guard: If already initialized with the same Surface, just update callback
-        // This prevents duplicate H264Renderer instances which cause Surface connection conflicts
-        if (h264Renderer != null && this.videoSurface === surface) {
-            logInfo("Already initialized with same Surface, updating callback only", tag = Logger.Tags.VIDEO)
-            this.callback = callback
+        // LIFECYCLE FIX: If renderer exists, always update surface via setOutputSurface().
+        //
+        // CRITICAL: Do NOT use reference equality (===) to check if Surface is "the same".
+        // After app goes to background, the Surface Java object may be the same reference,
+        // but the underlying native BufferQueue is DESTROYED and recreated.
+        // The codec will be rendering to a dead buffer → "BufferQueue has been abandoned" error.
+        //
+        // Solution: Always call setOutputSurface() when initialize() is called with an existing
+        // renderer. This ensures the codec always has a valid native surface.
+        // See: https://developer.android.com/reference/android/media/MediaCodec#setOutputSurface
+        //
+        // DEBOUNCE FIX: Surface size changes rapidly during layout (996→960→965→969→992).
+        // Each change triggers codec recreation. Debounce to wait for size stabilization.
+        if (h264Renderer != null) {
+            // Store pending values
+            pendingSurface = surface
+            pendingSurfaceWidth = evenWidth
+            pendingSurfaceHeight = evenHeight
+            pendingCallback = callback
+
+            // Cancel any pending update
+            surfaceUpdateJob?.cancel()
+
+            // Debounce: wait for surface size to stabilize before updating codec
+            surfaceUpdateJob = scope.launch {
+                delay(SURFACE_DEBOUNCE_MS)
+
+                // Use the latest pending values after debounce
+                val finalSurface = pendingSurface ?: return@launch
+                val finalCallback = pendingCallback ?: return@launch
+
+                logInfo(
+                    "[LIFECYCLE] Surface stabilized at ${pendingSurfaceWidth}x$pendingSurfaceHeight - updating codec",
+                    tag = Logger.Tags.VIDEO,
+                )
+
+                this@CarlinkManager.callback = finalCallback
+                this@CarlinkManager.videoSurface = finalSurface
+                // Resume with new surface - this calls setOutputSurface() internally
+                h264Renderer?.resume(finalSurface)
+            }
             return
         }
 
-        // Clean up existing renderer before creating new one to prevent Surface conflicts
-        if (h264Renderer != null) {
-            logInfo("Cleaning up existing H264Renderer before re-initialization", tag = Logger.Tags.VIDEO)
-            h264Renderer?.stop()
-            h264Renderer = null
-        }
-
+        // First-time initialization - create new renderer
         this.callback = callback
         this.videoSurface = surface
 
@@ -579,6 +628,30 @@ class CarlinkManager(
     }
 
     /**
+     * Handle Surface destruction - pause codec IMMEDIATELY.
+     *
+     * CRITICAL: This is called when SurfaceView's Surface is destroyed, which happens
+     * BEFORE onStop() is called. If we wait for onStop(), the codec will try to render
+     * to a dead surface causing "BufferQueue has been abandoned" errors.
+     *
+     * Call this from VideoSurface's onSurfaceDestroyed callback.
+     */
+    fun onSurfaceDestroyed() {
+        logInfo("[LIFECYCLE] Surface destroyed - pausing codec immediately", tag = Logger.Tags.VIDEO)
+
+        // Cancel any pending surface updates
+        surfaceUpdateJob?.cancel()
+        surfaceUpdateJob = null
+        pendingSurface = null
+
+        // Clear surface reference - it's now invalid
+        videoSurface = null
+
+        // Pause codec immediately to prevent rendering to dead surface
+        h264Renderer?.pause()
+    }
+
+    /**
      * Pause video decoding when app goes to background.
      *
      * On AAOS, when the app is covered by another app (e.g., Maps, Phone), the Surface
@@ -588,6 +661,9 @@ class CarlinkManager(
      *
      * This method flushes the codec to prevent BufferQueue stalls. The USB connection
      * and audio playback continue unaffected.
+     *
+     * NOTE: Surface destruction is handled separately by onSurfaceDestroyed() which
+     * is called when the Surface is actually destroyed (may be before or after onStop).
      *
      * Call this from Activity.onStop().
      */
@@ -602,11 +678,29 @@ class CarlinkManager(
      * After pauseVideo(), the codec is in a flushed state. This method restarts the
      * codec and requests a keyframe so video can resume immediately.
      *
+     * NOTE: The main surface update happens in initialize() when the new Surface is created.
+     * If onStart() is called before the Surface is ready, we skip resume here and let
+     * initialize() handle it when the Surface becomes available.
+     *
      * Call this from Activity.onStart().
      */
     fun resumeVideo() {
         logInfo("[LIFECYCLE] Resuming video for foreground", tag = Logger.Tags.VIDEO)
-        h264Renderer?.resume()
+
+        // If surface is null (destroyed and not yet recreated), skip resume.
+        // initialize() will handle resume when new Surface becomes available.
+        val surface = videoSurface
+        if (surface == null || !surface.isValid) {
+            logInfo(
+                "[LIFECYCLE] Surface not ready yet - resume will happen via initialize()",
+                tag = Logger.Tags.VIDEO,
+            )
+            return
+        }
+
+        // Pass current surface to resume
+        h264Renderer?.resume(surface)
+
         // Also request keyframe through adapter if connected
         if (state == State.STREAMING || state == State.DEVICE_CONNECTED) {
             adapterDriver?.sendCommand(CommandMapping.FRAME)
@@ -627,20 +721,47 @@ class CarlinkManager(
         when (state) {
             State.CONNECTING -> {
                 mediaSessionManager?.setStateConnecting()
+                // Acquire wake lock early to ensure USB operations aren't interrupted
+                acquireWakeLock()
             }
 
             State.DISCONNECTED -> {
                 mediaSessionManager?.setStateStopped()
                 // Stop foreground service when disconnected
                 CarlinkMediaBrowserService.stopConnectionForeground(context)
+                // Release wake lock - CPU can sleep now
+                releaseWakeLock()
             }
 
             State.STREAMING -> {
                 // Start foreground service to keep app active when backgrounded
                 CarlinkMediaBrowserService.startConnectionForeground(context)
+                // Ensure wake lock is held during streaming
+                acquireWakeLock()
             }
 
             else -> {} // Playback state updated when audio starts
+        }
+    }
+
+    /**
+     * Acquires a partial wake lock to prevent CPU sleep during USB streaming.
+     * This ensures USB transfers and heartbeats continue when the app is backgrounded.
+     */
+    private fun acquireWakeLock() {
+        if (!wakeLock.isHeld) {
+            wakeLock.acquire(10 * 60 * 1000L) // 10 minute timeout as safety
+            logInfo("[WAKE_LOCK] Acquired partial wake lock for USB streaming", tag = Logger.Tags.USB)
+        }
+    }
+
+    /**
+     * Releases the wake lock, allowing CPU to sleep.
+     */
+    private fun releaseWakeLock() {
+        if (wakeLock.isHeld) {
+            wakeLock.release()
+            logInfo("[WAKE_LOCK] Released wake lock", tag = Logger.Tags.USB)
         }
     }
 

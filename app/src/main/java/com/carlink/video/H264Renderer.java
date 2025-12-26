@@ -97,6 +97,7 @@ public class H264Renderer {
     private int height;
     private Surface surface;
     private volatile boolean running = false;  // volatile for callback thread visibility
+    private volatile boolean isPaused = false;  // Track if codec is in Flushed state after pause()
     private boolean bufferLoopRunning = false;
     private LogCallback logCallback;
     private KeyframeRequestCallback keyframeCallback;
@@ -304,6 +305,7 @@ public class H264Renderer {
         if (running) return;
 
         running = true;
+        isPaused = false;  // Reset paused state on fresh start
         lastStatsTime = System.currentTimeMillis();
         totalFramesReceived = 0;
         totalFramesDecoded = 0;
@@ -606,6 +608,10 @@ public class H264Renderer {
                 // This prevents BufferQueue from filling up while in background
                 mCodec.flush();
 
+                // Mark as paused - codec is now in Flushed state
+                // resume() will need to call start() to transition back to Running state
+                isPaused = true;
+
                 // Clear our buffer tracking
                 synchronized (codecAvailableBufferIndexes) {
                     codecAvailableBufferIndexes.clear();
@@ -628,43 +634,95 @@ public class H264Renderer {
      * and requests a keyframe so video can resume immediately.
      *
      * Call this from Activity.onStart() to resume video playback.
+     *
+     * @param newSurface The current Surface from SurfaceView (may be different after recreation)
      */
-    public void resume() {
-        log("[LIFECYCLE] resume() called - restarting codec for foreground");
+    public void resume(Surface newSurface) {
+        log("[LIFECYCLE] resume() called with surface - restarting codec for foreground");
 
         synchronized (codecLock) {
             if (mCodec == null) {
-                log("[LIFECYCLE] Codec is null, cannot resume");
+                log("[LIFECYCLE] Codec is null, triggering full start with new surface");
+                this.surface = newSurface;
+                running = false;  // Allow start() to proceed
+                start();
                 return;
             }
 
             if (!running) {
                 log("[LIFECYCLE] Codec not running, triggering full start");
-                // Will be handled by normal start() flow
+                this.surface = newSurface;
+                start();
                 return;
             }
 
-            try {
-                // Restart codec after flush (required in async mode)
-                mCodec.start();
-                codecStartTime = System.currentTimeMillis();
+            // CRITICAL FIX: ALWAYS update output surface via setOutputSurface() (API 23+)
+            //
+            // Even if the Surface Java reference is the same, the native BufferQueue may have
+            // been destroyed and recreated when the app went to background. The codec would
+            // then be rendering to a dead buffer → "BufferQueue has been abandoned" error.
+            //
+            // We must call setOutputSurface() unconditionally to ensure the codec has a valid
+            // native surface connection.
+            // See: https://developer.android.com/reference/android/media/MediaCodec#setOutputSurface
+            if (newSurface != null && newSurface.isValid()) {
+                try {
+                    // setOutputSurface requires API 23+ (minSdk 32, so always available)
+                    mCodec.setOutputSurface(newSurface);
+                    this.surface = newSurface;
+                    log("[LIFECYCLE] Output surface updated via setOutputSurface()");
 
-                // Reset keyframe detection - we need a new IDR frame
-                framesReceivedSinceReset = 0;
-                framesDecodedSinceReset = 0;
-                resetTimestamp = System.currentTimeMillis();
-                pendingKeyframeRequest = true;
+                    // If codec was paused (flush() was called), it's in Flushed state.
+                    // We need to call start() to transition back to Running state so
+                    // onInputBufferAvailable callbacks will fire again.
+                    if (isPaused) {
+                        log("[LIFECYCLE] Codec was paused - calling start() to resume from Flushed state");
 
-                log("[LIFECYCLE] Codec resumed - awaiting keyframe");
-                VideoDebugLogger.logCodecStarted();
-            } catch (Exception e) {
-                log("[LIFECYCLE] resume() failed: " + e.toString() + " - will need full reset");
+                        // CRITICAL: Clear ring buffer BEFORE starting codec.
+                        // While backgrounded, P-frames accumulated in the buffer.
+                        // These P-frames cannot be decoded without reference frames (lost on flush).
+                        // If we feed them to the codec, it will consume input but produce no output,
+                        // causing input buffer starvation and black screen.
+                        // We must discard stale frames and wait for fresh keyframe.
+                        ringBuffer.reset();
+                        synchronized (codecAvailableBufferIndexes) {
+                            codecAvailableBufferIndexes.clear();
+                        }
+                        log("[LIFECYCLE] Ring buffer cleared - discarding stale P-frames");
+
+                        mCodec.start();
+                        isPaused = false;
+                        codecStartTime = System.currentTimeMillis();
+                        log("[LIFECYCLE] Codec restarted from Flushed state");
+                    }
+
+                    // Reset keyframe detection and request a new keyframe
+                    framesReceivedSinceReset = 0;
+                    framesDecodedSinceReset = 0;
+                    resetTimestamp = System.currentTimeMillis();
+                    pendingKeyframeRequest = true;
+                    log("[LIFECYCLE] Surface updated - awaiting keyframe");
+
+                } catch (IllegalArgumentException e) {
+                    // Surface type incompatible - need full codec restart
+                    log("[LIFECYCLE] setOutputSurface() failed (incompatible): " + e.getMessage() + " - recreating codec");
+                    recreateCodecWithSurface(newSurface);
+                    return;
+                } catch (IllegalStateException e) {
+                    // Codec in wrong state (crashed/released) - need full codec restart
+                    log("[LIFECYCLE] setOutputSurface() failed (wrong state): " + e.getMessage() + " - recreating codec");
+                    recreateCodecWithSurface(newSurface);
+                    return;
+                }
+            } else {
+                log("[LIFECYCLE] WARNING: Resume called with invalid surface - cannot update codec");
+                return;
             }
         }
 
         // Request keyframe outside lock to avoid deadlock
         if (keyframeCallback != null) {
-            log("[LIFECYCLE] Requesting keyframe after resume");
+            log("[LIFECYCLE] Requesting keyframe after surface update");
             try {
                 keyframeCallback.onKeyframeNeeded();
                 lastKeyframeRequestTime = System.currentTimeMillis();
@@ -672,6 +730,66 @@ public class H264Renderer {
                 log("[LIFECYCLE] Keyframe request after resume failed: " + e.toString());
             }
         }
+    }
+
+    /**
+     * Recreate the codec with a new surface when recovery from errors fails.
+     * This is the nuclear option when setOutputSurface() or start() fails.
+     */
+    private void recreateCodecWithSurface(Surface newSurface) {
+        log("[LIFECYCLE] Recreating codec with new surface");
+
+        // Clean up old codec
+        try {
+            if (mCodec != null) {
+                mCodec.stop();
+                mCodec.release();
+            }
+        } catch (Exception e) {
+            log("[LIFECYCLE] Error cleaning up old codec: " + e.getMessage());
+        }
+        mCodec = null;
+
+        // Clear state
+        synchronized (codecAvailableBufferIndexes) {
+            codecAvailableBufferIndexes.clear();
+        }
+        ringBuffer.reset();
+
+        // Create new codec with new surface
+        this.surface = newSurface;
+        try {
+            initCodec(width, height, newSurface);
+            mCodec.start();
+            codecStartTime = System.currentTimeMillis();
+
+            // Reset keyframe detection
+            framesReceivedSinceReset = 0;
+            framesDecodedSinceReset = 0;
+            resetTimestamp = System.currentTimeMillis();
+            pendingKeyframeRequest = true;
+
+            log("[LIFECYCLE] Codec recreated successfully");
+            VideoDebugLogger.logCodecStarted();
+
+            // Request keyframe
+            if (keyframeCallback != null) {
+                keyframeCallback.onKeyframeNeeded();
+                lastKeyframeRequestTime = System.currentTimeMillis();
+            }
+        } catch (Exception e) {
+            log("[LIFECYCLE] Failed to recreate codec: " + e.toString());
+            // Mark as not running so next attempt will try again
+            running = false;
+        }
+    }
+
+    /**
+     * Resume video decoding (legacy overload without surface parameter).
+     * Attempts to resume with existing surface reference.
+     */
+    public void resume() {
+        resume(this.surface);
     }
 
 

@@ -398,39 +398,43 @@ class UsbDeviceWrapper(
                         header.length > 0 && videoProcessor != null
                     ) {
                         // Direct video processing - read USB data directly into ring buffer
+                        // CRITICAL: Wrap in try-catch to prevent exceptions from crashing reading loop
+                        // which would trigger disconnect and session close
                         val conn = connection
                         val endpoint = inEndpoint
                         if (conn != null && endpoint != null) {
-                            videoProcessor.processVideoDirect(header.length) { buffer, offset, length ->
-                                // Read chunks directly into the provided buffer
-                                var totalRead = 0
-                                while (totalRead < length && _isReadingLoopActive.get()) {
-                                    val remaining = length - totalRead
-                                    val chunkSize = minOf(remaining, 16384)
-                                    val chunkRead =
-                                        conn.bulkTransfer(
-                                            endpoint,
-                                            buffer,
-                                            offset + totalRead,
-                                            chunkSize,
-                                            timeout,
-                                        )
-                                    if (chunkRead > 0) {
-                                        totalRead += chunkRead
-                                        bytesReceived += chunkRead
-                                        receiveCount++
-                                    } else if (chunkRead <= 0) {
-                                        break
-                                    }
-                                }
-                                totalRead
-                            }
-
-                            // Notify callback that video data was received (empty payload signals streaming)
                             try {
+                                videoProcessor.processVideoDirect(header.length) { buffer, offset, length ->
+                                    // Read chunks directly into the provided buffer
+                                    var totalRead = 0
+                                    while (totalRead < length && _isReadingLoopActive.get()) {
+                                        val remaining = length - totalRead
+                                        val chunkSize = minOf(remaining, 16384)
+                                        val chunkRead =
+                                            conn.bulkTransfer(
+                                                endpoint,
+                                                buffer,
+                                                offset + totalRead,
+                                                chunkSize,
+                                                timeout,
+                                            )
+                                        if (chunkRead > 0) {
+                                            totalRead += chunkRead
+                                            bytesReceived += chunkRead
+                                            receiveCount++
+                                        } else if (chunkRead <= 0) {
+                                            break
+                                        }
+                                    }
+                                    totalRead
+                                }
+
+                                // Notify callback that video data was received (empty payload signals streaming)
                                 callback.onMessage(header.type.id, ByteArray(0))
                             } catch (e: Exception) {
-                                log("Video message callback error: ${e.message}")
+                                // Log but don't propagate - prevents reading loop crash on video processing errors
+                                log("Video processing error (non-fatal): ${e.message}")
+                                receiveErrors++
                             }
                         }
                         continue

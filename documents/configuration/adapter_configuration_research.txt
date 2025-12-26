@@ -1,0 +1,554 @@
+================================================================================
+ADAPTER CONFIGURATION RESEARCH
+================================================================================
+Date: 2025-12-21 (Updated: 2025-12-22)
+Status: VERIFIED & TESTED
+Purpose: Define default and minimal configuration strategies
+
+================================================================================
+PART 1: AUDIO PIPELINE ANALYSIS
+================================================================================
+
+QUESTION: If adapter is changed from 48kHz to 44kHz, does the audio pipeline
+need to be reconstructed?
+
+ANSWER: Yes, changing sample rates requires pipeline reconstruction.
+
+What Gets Reconstructed on Sample Rate Change:
+------------------------------------------------------------------------------
+| Component          | Impact                                               |
+|--------------------|----------------------------------------------------- |
+| AudioTrack         | Full release -> recreation with new sample rate      |
+| Ring Buffers       | Reallocated (96KB->88KB for 500ms media buffer)      |
+| Playback Chunk Size| Recalculated (960->882 bytes)                        |
+| Pre-fill State     | Reset, requires new buffer accumulation              |
+------------------------------------------------------------------------------
+
+Reconstruction Trigger Code (DualStreamAudioManager.kt:916-951):
+```kotlin
+if (mediaFormat != format) {
+    releaseMediaTrack()  // Release old
+    mediaBuffer = AudioRingBuffer(sampleRate = format.sampleRate, ...)
+    mediaTrack = createAudioTrack(format, ...)  // Create new
+}
+```
+
+Transition Cost:
+- ~20-300ms including cleanup + pre-fill wait
+- Brief audio glitch during switchover
+- No data continuity across format change
+
+The adapter does NOT support dynamic/live reconfiguration. Any sample rate
+change requires connection reinitialization (app restart).
+
+================================================================================
+PART 2: SAMPLE RATE PROTOCOL MAPPING
+================================================================================
+
+From firmware documentation (firmware_configurables.md):
+------------------------------------------------------------------------------
+| mediaSound Value | Sample Rate | DecodeType Sent by Adapter |
+|------------------|-------------|---------------------------|
+| 0 (default)      | 44.1kHz     | 1 or 2                    |
+| 1                | 48kHz       | 4                         |
+------------------------------------------------------------------------------
+
+Protocol location: SendBoxSettings JSON -> "mediaSound" field
+
+Audio Format Mapping (MessageTypes.kt):
+```kotlin
+1 -> AudioFormat(44100, 2, 16)  // 44.1kHz stereo
+2 -> AudioFormat(44100, 2, 16)  // 44.1kHz stereo (alt)
+3 -> AudioFormat(8000, 1, 16)   // 8kHz mono (phone calls)
+4 -> AudioFormat(48000, 2, 16)  // 48kHz stereo (high quality)
+5 -> AudioFormat(16000, 1, 16)  // 16kHz mono (Siri/voice)
+6 -> AudioFormat(24000, 1, 16)  // 24kHz mono (enhanced voice)
+7 -> AudioFormat(16000, 2, 16)  // 16kHz stereo (stereo voice)
+```
+
+================================================================================
+PART 3: ALL CONFIGURABLE VALUES (FROM DOCUMENTATION)
+================================================================================
+
+3.1 SendOpen (0x01) - Display Parameters
+------------------------------------------------------------------------------
+| Field         | Type | Range      | Purpose                               |
+|---------------|------|------------|---------------------------------------|
+| width         | int  | 0-4096     | Display width                         |
+| height        | int  | 0-4096     | Display height                        |
+| fps           | int  | 0,15-60    | Frame rate                            |
+| format        | int  | 5          | Video format (H.264)                  |
+| packetMax     | int  | 49152      | Max packet size                       |
+| boxVersion    | int  | 2          | Protocol version                      |
+| phoneWorkMode | int  | 1=AA, 2=CP | Work mode                             |
+------------------------------------------------------------------------------
+
+3.2 SendBoxSettings (0x19) - JSON Configuration
+------------------------------------------------------------------------------
+| Field            | Type   | Range/Values    | Default | Purpose           |
+|------------------|--------|-----------------|---------|-------------------|
+| mediaDelay       | int    | 300-2000        | 300     | Audio delay (ms)  |
+| syncTime         | long   | Unix timestamp  | Auto    | Time sync         |
+| androidAutoSizeW | int    | 800-1920        | Auto    | AA width          |
+| androidAutoSizeH | int    | 480-1080        | Auto    | AA height         |
+| mediaSound       | 0-1    | 0=44.1k, 1=48k  | 0       | Sample rate       |
+| callQuality      | 0-2    | 0=Norm,1=Clr,2=HD| 2      | Call quality      |
+| WiFiChannel      | int    | 36-161          | 161     | 5GHz channel      |
+| wifiChannel      | int    | 36-161          | 161     | Same (compat)     |
+| wifiName         | string | max 31 chars    | carlink | WiFi SSID         |
+| btName           | string | max 31 chars    | carlink | Bluetooth name    |
+| boxName          | string | max 31 chars    | carlink | Device name       |
+| OemName          | string | max 31 chars    | carlink | OEM display name  |
+------------------------------------------------------------------------------
+
+3.3 SendFile (0x99) - File Uploads
+------------------------------------------------------------------------------
+| File Path              | Content Type | Purpose                          |
+|------------------------|--------------|----------------------------------|
+| /tmp/screen_dpi        | int (4 bytes)| DPI value                        |
+| /etc/box_name          | string       | Device name                      |
+| /etc/airplay.conf      | config text  | AirPlay settings                 |
+| /etc/icon_120x120.png  | PNG binary   | Small OEM icon                   |
+| /etc/icon_180x180.png  | PNG binary   | Medium OEM icon                  |
+| /etc/icon_256x256.png  | PNG binary   | Large OEM icon                   |
+------------------------------------------------------------------------------
+
+3.4 Commands (0x08) - Runtime Configuration
+------------------------------------------------------------------------------
+| Command          | Code | Purpose                                        |
+|------------------|------|------------------------------------------------|
+| wifi5g           | 25   | Use 5GHz WiFi band                             |
+| wifi24g          | 24   | Use 2.4GHz WiFi band                           |
+| boxMic           | 15   | Use car/adapter microphone                     |
+| mic              | 7    | Use phone/OS microphone                        |
+| audioTransferOff | 23   | Audio routed through adapter (USB)             |
+| audioTransferOn  | 22   | Audio routed via Bluetooth                     |
+| enableNightMode  | 16   | Dark mode                                      |
+| disableNightMode | 17   | Light mode                                     |
+| wifiEnable       | 1000 | Enable wireless mode (REQUIRED)                |
+| wifiConnect      | 1002 | Trigger Bluetooth pairing                      |
+------------------------------------------------------------------------------
+
+================================================================================
+PART 4: CURRENT INITIALIZATION CONFIGURATION
+================================================================================
+
+Current implementation in MessageSerializer.generateInitSequence():
+
+4.1 Messages Sent (in order):
+------------------------------------------------------------------------------
+1.  DPI file           -> /tmp/screen_dpi (from display metrics)
+2.  SendOpen           -> Display dimensions, fps, format
+3.  Box name file      -> /etc/box_name = "carlink"
+4.  AirPlay config     -> /etc/airplay.conf (generated)
+5.  Icon 120x120       -> /etc/icon_120x120.png (from assets)
+6.  Icon 180x180       -> /etc/icon_180x180.png (from assets)
+7.  Icon 256x256       -> /etc/icon_256x256.png (from assets)
+8.  WiFi band command  -> WIFI_5G (25) - hardcoded
+9.  BoxSettings JSON   -> All JSON settings
+10. wifiEnable command -> Command 1000 (required)
+11. Mic source command -> MIC (7) - hardcoded "os"
+12. Audio transfer     -> AUDIO_TRANSFER_ON/OFF (conditional, user config)
+13. Android work mode  -> (conditional, if enabled)
+------------------------------------------------------------------------------
+
+4.2 Current BoxSettings JSON:
+```json
+{
+  "mediaDelay": 300,
+  "syncTime": <unix_timestamp>,
+  "androidAutoSizeW": <calculated>,
+  "androidAutoSizeH": <calculated>,
+  "mediaSound": 0 or 1,        // User configurable (sample rate)
+  "callQuality": 2,            // Hardcoded (HD)
+  "WiFiChannel": 161,          // Hardcoded
+  "wifiChannel": 161,          // Hardcoded
+  "wifiName": "carlink",       // Hardcoded
+  "btName": "carlink",         // Hardcoded
+  "boxName": "carlink",        // Hardcoded
+  "OemName": "carlink"         // Hardcoded
+}
+```
+
+4.3 Currently User-Configurable:
+------------------------------------------------------------------------------
+| Setting      | Status       | Protocol Location                          |
+|--------------|--------------|-------------------------------------------|
+| Sample Rate  | Implemented  | BoxSettings.mediaSound (0=44.1k, 1=48k)   |
+| Audio Source | Implemented  | Command 22 (BT) or 23 (Adapter)           |
+| WiFi Band    | Hardcoded    | Command 24 (2.4G) or 25 (5G)              |
+| Mic Source   | Hardcoded    | Command 7 (phone) or 15 (car)             |
+| Call Quality | Hardcoded    | BoxSettings.callQuality (0-2)             |
+| Media Delay  | Hardcoded    | BoxSettings.mediaDelay (300-2000)         |
+| WiFi Channel | Hardcoded    | BoxSettings.wifiChannel                   |
+| Device Names | Hardcoded    | BoxSettings.boxName/btName/wifiName       |
+------------------------------------------------------------------------------
+
+================================================================================
+PART 5: DEFAULT VS MINIMAL CONFIGURATION STRATEGY
+================================================================================
+
+KEY INSIGHT: Adapter firmware persists settings to /etc/riddle.conf
+Settings survive power cycles. Only need to send once (first install/reset).
+
+5.1 Default Configuration (First Install / Reset to Defaults)
+------------------------------------------------------------------------------
+Sent when:
+- App is first installed and adapter connects
+- User explicitly chooses "Reset to Defaults"
+
+Messages to send:
+| # | Category    | Item                | Value/Source              |
+|---|-------------|---------------------|---------------------------|
+| 1 | Required    | HeartBeat           | Before all init (critical)|
+| 2 | Required    | SendOpen            | Dynamic dimensions        |
+| 3 | Required    | wifiEnable          | Command 1000              |
+| 4 | Files       | DPI                 | From display metrics      |
+| 5 | Files       | box_name            | "carlink"                 |
+| 6 | Files       | airplay.conf        | Generated config          |
+| 7 | Files       | icon_120x120.png    | From assets               |
+| 8 | Files       | icon_180x180.png    | From assets               |
+| 9 | Files       | icon_256x256.png    | From assets               |
+| 10| BoxSettings | Full JSON           | All default values        |
+| 11| Commands    | WIFI_5G             | Default 5GHz              |
+| 12| Commands    | MIC                 | Default phone mic         |
+| 13| Commands    | AUDIO_TRANSFER_OFF  | Default adapter audio     |
+------------------------------------------------------------------------------
+Total: ~12-15 messages
+
+5.2 Minimal Configuration (Subsequent Sessions)
+------------------------------------------------------------------------------
+Sent when:
+- App opens and adapter already has stored configuration
+- Reconnecting during same session (no settings changed)
+
+Messages to send:
+| # | Category | Item       | Notes                              |
+|---|----------|------------|-----------------------------------|
+| 1 | Required | HeartBeat  | MUST be first (firmware stability)|
+| 2 | Required | SendOpen   | Display dimensions may change     |
+| 3 | Required | wifiEnable | Always needed to activate         |
+| 4 | Optional | DPI        | Only if display changed           |
+------------------------------------------------------------------------------
+Total: 3-4 messages
+
+5.3 Why Minimal Works
+------------------------------------------------------------------------------
+Adapter firmware retains (persisted in /etc/riddle.conf):
+- box_name
+- Icons (all 3 sizes)
+- airplay.conf
+- WiFi settings (band, channel, SSID)
+- Audio settings (sample rate, transfer mode)
+- Mic settings
+- Call quality
+- All BoxSettings values
+
+Only truly dynamic per-session:
+- Display dimensions (width, height, fps) - may change
+- DPI - may change if display changes
+- wifiEnable - must be sent to activate wireless mode
+
+5.4 Comparison Table
+------------------------------------------------------------------------------
+| Item              | Default | Minimal | Persisted by Adapter? |
+|-------------------|---------|---------|----------------------|
+| HeartBeat         | Yes     | Yes     | N/A                  |
+| SendOpen          | Yes     | Yes     | No (dynamic)         |
+| wifiEnable        | Yes     | Yes     | No (must activate)   |
+| DPI               | Yes     | Optional| Yes                  |
+| box_name          | Yes     | Skip    | Yes                  |
+| airplay.conf      | Yes     | Skip    | Yes                  |
+| Icons (3x)        | Yes     | Skip    | Yes                  |
+| BoxSettings JSON  | Yes     | Skip    | Yes                  |
+| WIFI_5G/24G       | Yes     | Skip    | Yes                  |
+| MIC/BOX_MIC       | Yes     | Skip    | Yes                  |
+| AUDIO_TRANSFER    | Yes     | Skip    | Yes                  |
+------------------------------------------------------------------------------
+
+================================================================================
+PART 6: IMPLEMENTATION CONSIDERATIONS
+================================================================================
+
+6.1 Detecting First Install
+------------------------------------------------------------------------------
+Need to track whether defaults have been sent:
+
+```kotlin
+// In AdapterConfigPreference or similar
+val hasInitializedAdapter: Boolean  // false on first install
+```
+
+6.2 When to Send Full (Default) Config
+------------------------------------------------------------------------------
+1. hasInitializedAdapter == false -> Send default config, then set true
+2. User presses "Reset to Defaults" -> Send default config
+3. User changes any setting -> Send only that setting + restart app
+
+6.3 When to Send Minimal Config
+------------------------------------------------------------------------------
+1. hasInitializedAdapter == true AND no settings changed -> Minimal config
+2. Reconnect during active session -> Minimal config
+
+6.4 Settings That Require App Restart
+------------------------------------------------------------------------------
+Per documentation and adapter behavior:
+- Sample rate (audio pipeline reconstruction)
+- Audio source (adapter audio routing)
+- WiFi band (network reconfiguration)
+- Mic source (audio input routing)
+- Any BoxSettings change (adapter must re-read)
+
+All adapter configuration changes require app restart because the adapter
+does not support dynamic/live reconfiguration.
+
+6.5 Performance Benefit
+------------------------------------------------------------------------------
+| Scenario           | Current    | Proposed Minimal | Savings        |
+|--------------------|------------|------------------|----------------|
+| Messages sent      | 12-15      | 3-4              | ~75% fewer     |
+| Icon uploads       | ~20KB      | 0                | 100% saved     |
+| Init time estimate | 300-400ms  | 50-100ms         | ~75% faster    |
+------------------------------------------------------------------------------
+
+================================================================================
+PART 7: PROPOSED DEFAULT VALUES
+================================================================================
+
+These values should be sent on first install or "Reset to Defaults":
+
+7.1 Display (SendOpen)
+------------------------------------------------------------------------------
+| Field         | Value           | Source                              |
+|---------------|-----------------|-------------------------------------|
+| width         | Dynamic         | Window metrics (even number)        |
+| height        | Dynamic         | Window metrics (even number)        |
+| fps           | Dynamic         | Display refresh rate                |
+| format        | 5               | H.264 (fixed)                       |
+| packetMax     | 49152           | Protocol default                    |
+| boxVersion    | 2               | Protocol version                    |
+| phoneWorkMode | 2               | CarPlay mode                        |
+------------------------------------------------------------------------------
+
+7.2 BoxSettings JSON Defaults
+------------------------------------------------------------------------------
+| Field            | Default Value | Rationale                          |
+|------------------|---------------|-------------------------------------|
+| mediaDelay       | 300           | Standard audio sync                 |
+| syncTime         | <timestamp>   | Auto-generated                      |
+| androidAutoSizeW | <calculated>  | Based on display width              |
+| androidAutoSizeH | <calculated>  | Based on display height             |
+| mediaSound       | 1             | 48kHz (GM AAOS native rate)         |
+| callQuality      | 2             | HD quality                          |
+| WiFiChannel      | 161           | 5GHz channel 161                    |
+| wifiChannel      | 161           | Same (compatibility)                |
+| wifiName         | "carlink"     | WiFi SSID                           |
+| btName           | "carlink"     | Bluetooth name                      |
+| boxName          | "carlink"     | Device name                         |
+| OemName          | "carlink"     | OEM display name                    |
+------------------------------------------------------------------------------
+
+7.3 Command Defaults
+------------------------------------------------------------------------------
+| Setting        | Default Command | Code | Rationale                     |
+|----------------|-----------------|------|-------------------------------|
+| WiFi Band      | WIFI_5G         | 25   | Better performance            |
+| Mic Source     | MIC (phone)     | 7    | More reliable                 |
+| Audio Transfer | AUDIO_TRANSFER_OFF| 23 | Audio via adapter (USB)       |
+------------------------------------------------------------------------------
+
+================================================================================
+PART 8: FUTURE USER-CONFIGURABLE OPTIONS
+================================================================================
+
+These could be exposed as user settings in the Adapter Configuration dialog:
+
+8.1 Easy to Add (infrastructure exists in AdapterConfig)
+------------------------------------------------------------------------------
+| Setting      | Protocol      | Values              | Current Status  |
+|--------------|---------------|---------------------|-----------------|
+| WiFi Band    | Command 24/25 | 2.4GHz / 5GHz       | Hardcoded 5GHz  |
+| Mic Source   | Command 7/15  | Phone / Car         | Hardcoded Phone |
+| Night Mode   | Command 16/17 | Dark / Light        | Not implemented |
+------------------------------------------------------------------------------
+
+8.2 Requires BoxSettings JSON Change
+------------------------------------------------------------------------------
+| Setting      | JSON Field    | Values              | Current Status  |
+|--------------|---------------|---------------------|-----------------|
+| Call Quality | callQuality   | Normal/Clear/HD     | Hardcoded HD    |
+| Media Delay  | mediaDelay    | 300-2000ms          | Hardcoded 300   |
+| WiFi Channel | wifiChannel   | 36,40,44,149,157,161| Hardcoded 161   |
+| Device Names | boxName, etc  | String              | Hardcoded       |
+------------------------------------------------------------------------------
+
+================================================================================
+PART 9: VERIFIED FIELD MAPPINGS (TESTED 2025-12-22)
+================================================================================
+
+Testing performed by monitoring adapter's /tmp/ttyLog and /etc/riddle.conf
+during app initialization sequences.
+
+9.1 BoxSettings JSON -> riddle.conf Mapping
+------------------------------------------------------------------------------
+| App Sends (JSON)     | Adapter Stores        | Values                     |
+|----------------------|-----------------------|----------------------------|
+| mediaDelay           | MediaLatency          | milliseconds (e.g., 300)   |
+| androidAutoSizeW     | AndroidAutoWidth      | pixels (e.g., 1280)        |
+| androidAutoSizeH     | AndroidAutoHeight     | pixels (e.g., 720)         |
+| mediaSound           | MediaQuality          | 0=44.1kHz, 1=48kHz         |
+| wifiChannel          | WiFiChannel           | channel number (e.g., 161) |
+| wifiName             | CustomWifiName        | string (e.g., "carlink")   |
+| btName               | CustomBluetoothName   | string (e.g., "carlink")   |
+| boxName              | CustomBoxName         | string (e.g., "carlink")   |
+------------------------------------------------------------------------------
+
+9.2 Command -> riddle.conf Mapping
+------------------------------------------------------------------------------
+| Command Sent     | Code | riddle.conf Field | Value Stored               |
+|------------------|------|-------------------|----------------------------|
+| MIC (phone)      | 7    | MicType           | 0                          |
+| BOX_MIC (adapter)| 15   | MicType           | 1                          |
+| AUDIO_TRANSFER_ON| 22   | BtAudio           | 1 (Bluetooth audio)        |
+| AUDIO_TRANSFER_OFF| 23  | BtAudio           | 0 (Adapter/USB audio)      |
+| WIFI_5G          | 25   | (WiFiBand)        | 5GHz mode                  |
+| WIFI_24G         | 24   | (WiFiBand)        | 2.4GHz mode                |
+------------------------------------------------------------------------------
+
+9.3 Adapter Errors (Non-blocking)
+------------------------------------------------------------------------------
+During testing, adapter firmware logged these errors but still processed:
+- "apk callQuality value transf box value error"
+- "apk wifiChannel value transf box value error"
+- "apk OemName value transf box value error"
+
+These fields are sent but firmware may not fully support them. Config still
+applies and CarPlay functions correctly.
+
+================================================================================
+PART 10: MINIMAL CONFIGURATION - VERIFIED WORKING
+================================================================================
+
+Tested on 2025-12-22. CarPlay connected successfully with minimal config.
+
+10.1 Minimal Config Messages (VERIFIED)
+------------------------------------------------------------------------------
+| # | Message Type | Content                           | Size      |
+|---|--------------|-----------------------------------|-----------|
+| 1 | SendFile     | /tmp/screen_dpi                   | 4 bytes   |
+| 2 | SendOpen     | 1920x996@60fps, H.264, CarPlay    | 28 bytes  |
+| 3 | Command      | wifiEnable (1000)                 | 4 bytes   |
+------------------------------------------------------------------------------
+Total: 3 messages, ~36 bytes payload
+
+10.2 Why These Three Are Required
+------------------------------------------------------------------------------
+/tmp/screen_dpi:
+  - Stored in /tmp/ which is volatile (cleared on adapter power cycle)
+  - Must be sent every session
+
+SendOpen:
+  - Display dimensions may change between sessions
+  - Required for video stream setup
+
+wifiEnable (Command 1000):
+  - Must be sent to activate wireless mode
+  - Adapter won't start WiFi/CarPlay without this
+
+10.3 Test Results
+------------------------------------------------------------------------------
+Adapter retained from /etc/riddle.conf:
+  - MediaQuality = 0 (44.1kHz) - persisted from previous session
+  - BtAudio = 0 (Adapter audio) - persisted
+  - MicType = 0 (Phone mic) - persisted
+  - WiFiChannel = 161 - persisted
+  - CustomWifiName = "carlink" - persisted
+  - CustomBluetoothName = "carlink" - persisted
+  - CustomBoxName = "carlink" - persisted
+
+CarPlay connection: SUCCESSFUL
+NowPlaying messages: Received from iPhone
+Video stream: Working at 1920x996@60fps
+
+10.4 Performance Comparison (Measured)
+------------------------------------------------------------------------------
+| Metric              | Full Config    | Minimal Config | Improvement    |
+|---------------------|----------------|----------------|----------------|
+| Messages sent       | 12-15          | 3              | 75-80% fewer   |
+| Icon data           | ~20KB          | 0              | 100% saved     |
+| BoxSettings JSON    | ~200 bytes     | 0              | 100% saved     |
+| File uploads        | 5 files        | 1 file         | 80% fewer      |
+| Estimated init time | 300-400ms      | ~50ms          | ~85% faster    |
+------------------------------------------------------------------------------
+
+10.5 Implementation (MessageSerializer.kt)
+------------------------------------------------------------------------------
+```kotlin
+fun generateInitSequence(
+    config: AdapterConfig,
+    useMinimalConfig: Boolean = false
+): List<ByteArray> {
+    val messages = mutableListOf<ByteArray>()
+
+    // Always required (every session)
+    messages.add(serializeNumber(config.dpi, FileAddress.DPI))
+    messages.add(serializeOpen(config))
+    messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
+
+    if (useMinimalConfig) {
+        return messages  // Done - adapter uses persisted settings
+    }
+
+    // Full config continues with files, icons, BoxSettings, commands...
+}
+```
+
+10.6 When to Use Each Config
+------------------------------------------------------------------------------
+MINIMAL CONFIG (useMinimalConfig = true):
+  - Subsequent app launches (adapter already configured)
+  - Reconnecting after brief disconnect
+  - No settings have changed since last full config
+
+FULL CONFIG (useMinimalConfig = false):
+  - First app install (adapter has factory defaults)
+  - User resets to defaults
+  - User changes any adapter setting (requires restart anyway)
+  - After adapter firmware update
+
+================================================================================
+PART 11: NEXT STEPS FOR IMPLEMENTATION
+================================================================================
+
+11.1 Track First-Run State
+------------------------------------------------------------------------------
+Add to AdapterConfigPreference:
+```kotlin
+private val KEY_HAS_INITIALIZED_ADAPTER = booleanPreferencesKey("has_initialized_adapter")
+
+val hasInitializedAdapter: Flow<Boolean>
+suspend fun setHasInitializedAdapter(value: Boolean)
+```
+
+11.2 Decision Logic in CarlinkManager
+------------------------------------------------------------------------------
+```kotlin
+val useMinimalConfig = adapterConfigPreference.hasInitializedAdapterSync()
+adapterDriver?.start(config, useMinimalConfig)
+
+// After successful full config:
+if (!useMinimalConfig) {
+    adapterConfigPreference.setHasInitializedAdapter(true)
+}
+```
+
+11.3 Reset to Defaults
+------------------------------------------------------------------------------
+When user presses "Reset to Defaults":
+1. Set hasInitializedAdapter = false
+2. Restart app
+3. Full config will be sent on next launch
+
+================================================================================
+END OF DOCUMENT
+================================================================================

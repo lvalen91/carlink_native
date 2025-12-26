@@ -39,3 +39,4 @@
 [25] :: App Display Mode Options. Now includes three options.
 [26] :: Adapter Config settings option additions.
 [27] :: Lint checks and some UI changes.
+[28] :: App resume testing for Video black screen.

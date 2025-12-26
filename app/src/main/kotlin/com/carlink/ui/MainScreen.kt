@@ -103,6 +103,9 @@ fun MainScreen(
     // Touch tracking
     val activeTouches = remember { mutableStateMapOf<Int, TouchPoint>() }
 
+    // Track if we've already started the connection to avoid restarting on surface recreation
+    var hasStartedConnection by remember { mutableStateOf(false) }
+
     // Initialize when surface is available
     // Pass actual surface dimensions to configure adapter with correct resolution
     LaunchedEffect(surfaceState.surface, surfaceState.width, surfaceState.height) {
@@ -135,8 +138,13 @@ fun MainScreen(
                         }
                     },
             )
-            // Start connection
-            carlinkManager.start()
+            // Only start connection on first initialization
+            // On subsequent surface recreations (e.g., returning from background),
+            // initialize() handles resuming the existing connection via setOutputSurface()
+            if (!hasStartedConnection) {
+                hasStartedConnection = true
+                carlinkManager.start()
+            }
         }
     }
 
@@ -172,6 +180,9 @@ fun MainScreen(
             onSurfaceDestroyed = {
                 logInfo("[UI_SURFACE] Surface destroyed", tag = "UI")
                 surfaceState.onSurfaceDestroyed()
+                // CRITICAL: Notify CarlinkManager immediately so it can pause codec
+                // BEFORE the surface becomes invalid. This prevents "BufferQueue abandoned" errors.
+                carlinkManager.onSurfaceDestroyed()
             },
             onSurfaceSizeChanged = { width, height ->
                 logInfo("[UI_SURFACE] Surface size changed: ${width}x$height", tag = "UI")
