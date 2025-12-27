@@ -313,26 +313,30 @@ oemIconLabel = ${config.boxName}
         // === MINIMAL CONFIG: Always sent (every session) ===
         // - DPI: stored in /tmp/ which is cleared on adapter power cycle
         // - Open: display dimensions may change between sessions
-        // - WiFi Enable: required to activate wireless mode
         messages.add(serializeNumber(config.dpi, FileAddress.DPI))
         messages.add(serializeOpen(config))
-        messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
 
         when (initMode) {
             "MINIMAL_ONLY" -> {
                 // Just minimal - adapter retains all other settings
+                // WiFi Enable sent last to activate wireless mode after config
+                messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
                 return messages
             }
 
             "MINIMAL_PLUS_CHANGES" -> {
                 // Add only the changed settings
                 addChangedSettings(messages, config, pendingChanges)
+                // WiFi Enable sent last to activate wireless mode after config
+                messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
                 return messages
             }
 
             else -> {
                 // FULL - add all settings
                 addFullSettings(messages, config)
+                // WiFi Enable sent last to activate wireless mode after config
+                messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
                 return messages
             }
         }
@@ -449,7 +453,7 @@ oemIconLabel = ${config.boxName}
         // These are required every session:
         // - DPI: stored in /tmp/ which is cleared on adapter power cycle
         // - Open: display dimensions may change between sessions
-        // - WiFi Enable: required to activate wireless mode
+        // - WiFi Enable: required to activate wireless mode (sent last)
 
         // DPI configuration (always needed - /tmp/ is volatile)
         messages.add(serializeNumber(config.dpi, FileAddress.DPI))
@@ -457,11 +461,10 @@ oemIconLabel = ${config.boxName}
         // Open command with resolution/format (always needed)
         messages.add(serializeOpen(config))
 
-        // Enable WiFi (always needed to activate wireless mode)
-        messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
-
         if (useMinimalConfig) {
             // Minimal config: adapter retains all other settings from /etc/riddle.conf
+            // WiFi Enable sent last to activate wireless mode after config
+            messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
             return messages
         }
 
@@ -520,6 +523,9 @@ oemIconLabel = ${config.boxName}
         if (config.androidWorkMode) {
             messages.add(serializeBoolean(true, FileAddress.ANDROID_WORK_MODE))
         }
+
+        // WiFi Enable sent last to activate wireless mode after config
+        messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
 
         return messages
     }

@@ -64,11 +64,11 @@ class ImmersivePreference private constructor(
 
     companion object {
         @Volatile
-        private var INSTANCE: ImmersivePreference? = null
+        private var instance: ImmersivePreference? = null
 
         fun getInstance(context: Context): ImmersivePreference =
-            INSTANCE ?: synchronized(this) {
-                INSTANCE ?: ImmersivePreference(context.applicationContext).also { INSTANCE = it }
+            instance ?: synchronized(this) {
+                instance ?: ImmersivePreference(context.applicationContext).also { instance = it }
             }
 
         private val KEY_IMMERSIVE_MODE_ENABLED = booleanPreferencesKey("immersive_mode_enabled")

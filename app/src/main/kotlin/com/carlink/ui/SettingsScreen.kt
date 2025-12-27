@@ -48,6 +48,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Article
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Check
@@ -80,7 +81,6 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.VideoSettings
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
@@ -89,7 +89,6 @@ import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import com.carlink.ui.components.LoadingSpinner
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
@@ -131,11 +130,15 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.CarlinkManager
+import com.carlink.logging.FileExportService
 import com.carlink.logging.FileLogManager
 import com.carlink.logging.LogPreset
 import com.carlink.logging.LoggingPreferences
 import com.carlink.logging.apply
+import com.carlink.logging.logError
 import com.carlink.logging.logInfo
+import com.carlink.logging.logWarn
+import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.AudioSourceConfig
 import com.carlink.ui.settings.CallQualityConfig
@@ -191,6 +194,7 @@ fun SettingsScreen(
                 val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
                 "${packageInfo.versionName}+${packageInfo.longVersionCode}"
             } catch (e: PackageManager.NameNotFoundException) {
+                logWarn("[SettingsScreen] Failed to get package info: ${e.message}")
                 "Unknown"
             }
         }
@@ -1598,41 +1602,37 @@ private fun LogsTabContent(
     val colorScheme = MaterialTheme.colorScheme
 
     // File export state - stores the file to export when SAF picker returns
+    // Using both pendingExportFile and isExporting prevents race conditions on rapid clicks
     var pendingExportFile by remember { mutableStateOf<File?>(null) }
+    var isExporting by remember { mutableStateOf(false) }
 
     // SAF Document Creator launcher - matches Flutter ACTION_CREATE_DOCUMENT
+    // Lifecycle-aware registration handled by Compose; I/O delegated to FileExportService
     val createDocumentLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.CreateDocument("text/plain"),
         ) { uri: Uri? ->
-            if (uri != null && pendingExportFile != null) {
-                // Write file contents to selected URI
+            // Capture file reference immediately to avoid race conditions
+            val fileToExport = pendingExportFile
+            if (uri != null && fileToExport != null) {
+                // Delegate I/O to FileExportService (runs on Dispatchers.IO)
                 scope.launch {
-                    try {
-                        val file = pendingExportFile!!
-                        val bytes = file.readBytes()
-                        val outputStream = context.contentResolver.openOutputStream(uri)
-                        if (outputStream != null) {
-                            outputStream.use {
-                                it.write(bytes)
-                                it.flush()
-                            }
-                            logInfo("[FILE_EXPORT] Successfully exported ${file.name} (${bytes.size} bytes)", tag = "FILE_LOG")
-                            Toast.makeText(context, "Exported: ${file.name}", Toast.LENGTH_SHORT).show()
-                        } else {
-                            logInfo("[FILE_EXPORT] Export failed: Could not open output stream", tag = "FILE_LOG")
-                            Toast.makeText(context, "Export failed: Could not write to location", Toast.LENGTH_SHORT).show()
+                    val result = FileExportService.writeFileToUri(context, uri, fileToExport)
+                    result
+                        .onSuccess { bytesWritten ->
+                            Toast.makeText(context, "Exported: ${fileToExport.name}", Toast.LENGTH_SHORT).show()
+                        }.onFailure { error ->
+                            logError("[FILE_EXPORT] Export failed: ${error.message}", tag = "FILE_LOG")
+                            Toast.makeText(context, "Export failed: ${error.message}", Toast.LENGTH_SHORT).show()
                         }
-                    } catch (e: Exception) {
-                        logInfo("[FILE_EXPORT] Export failed: ${e.message}", tag = "FILE_LOG")
-                        Toast.makeText(context, "Export failed: ${e.message}", Toast.LENGTH_SHORT).show()
-                    } finally {
-                        pendingExportFile = null
-                    }
+                    // Clear state after completion
+                    pendingExportFile = null
+                    isExporting = false
                 }
             } else {
                 logInfo("[FILE_EXPORT] User cancelled document picker", tag = "FILE_LOG")
                 pendingExportFile = null
+                isExporting = false
             }
         }
 
@@ -1647,7 +1647,8 @@ private fun LogsTabContent(
             try {
                 val appInfo = context.packageManager.getApplicationInfo(context.packageName, 0)
                 (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-            } catch (e: Exception) {
+            } catch (e: PackageManager.NameNotFoundException) {
+                logWarn("[SettingsScreen] Failed to check debug build status: ${e.message}")
                 false
             }
         }
@@ -1849,13 +1850,18 @@ private fun LogsTabContent(
                     LogFileItem(
                         file = file,
                         dateFormat = dateFormat,
+                        isExportEnabled = !isExporting,
                         onDelete = { showDeleteDialog = file },
                         onExport = {
-                            // Launch SAF document picker with suggested filename
-                            // Matches Flutter: FileExportService.createDocument()
-                            logInfo("[FILE_EXPORT] Starting export for: ${file.name}", tag = "FILE_LOG")
-                            pendingExportFile = file
-                            createDocumentLauncher.launch(file.name)
+                            // Prevent double-clicks by checking isExporting state
+                            if (!isExporting) {
+                                // Launch SAF document picker with suggested filename
+                                // Matches Flutter: FileExportService.createDocument()
+                                logInfo("[FILE_EXPORT] Starting export for: ${file.name}", tag = "FILE_LOG")
+                                isExporting = true
+                                pendingExportFile = file
+                                createDocumentLauncher.launch(file.name)
+                            }
                         },
                     )
                 }
@@ -1926,7 +1932,8 @@ private fun LogsTabContent(
         val fileSize =
             try {
                 file.length()
-            } catch (e: Exception) {
+            } catch (e: SecurityException) {
+                logWarn("[SettingsScreen] Cannot read file size for ${file.name}: ${e.message}")
                 0L
             }
         val fileSizeStr = formatBytes(fileSize)
@@ -2372,11 +2379,18 @@ private fun LoggingControlCard(
 /**
  * Material 3 Log file item with export button
  * Matches Flutter _buildLogFileItem
+ *
+ * @param file The log file to display
+ * @param dateFormat Format for displaying last modified date
+ * @param isExportEnabled Whether export button is enabled (false during active export)
+ * @param onDelete Callback when delete button is clicked
+ * @param onExport Callback when export button is clicked
  */
 @Composable
 private fun LogFileItem(
     file: File,
     dateFormat: SimpleDateFormat,
+    isExportEnabled: Boolean = true,
     onDelete: () -> Unit,
     onExport: () -> Unit,
 ) {
@@ -2426,11 +2440,15 @@ private fun LogFileItem(
             }
 
             // Export button - Matches Flutter save_alt icon
-            IconButton(onClick = onExport) {
+            // Disabled during active export to prevent race conditions
+            IconButton(
+                onClick = onExport,
+                enabled = isExportEnabled,
+            ) {
                 Icon(
                     imageVector = Icons.Default.SaveAlt,
                     contentDescription = "Export",
-                    tint = colorScheme.primary,
+                    tint = if (isExportEnabled) colorScheme.primary else colorScheme.onSurface.copy(alpha = 0.38f),
                     modifier = Modifier.size(24.dp),
                 )
             }

@@ -85,6 +85,8 @@ class AdapterDriver(
             if (!send(message)) {
                 log("Failed to send init message ${index + 1}")
             }
+            // Delay between messages to allow adapter firmware to process each one
+            Thread.sleep(120)
         }
 
         log("Initialization sequence completed")

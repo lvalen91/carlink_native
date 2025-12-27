@@ -37,11 +37,11 @@ class LoggingPreferences private constructor(
 
     companion object {
         @Volatile
-        private var INSTANCE: LoggingPreferences? = null
+        private var instance: LoggingPreferences? = null
 
         fun getInstance(context: Context): LoggingPreferences =
-            INSTANCE ?: synchronized(this) {
-                INSTANCE ?: LoggingPreferences(context.applicationContext).also { INSTANCE = it }
+            instance ?: synchronized(this) {
+                instance ?: LoggingPreferences(context.applicationContext).also { instance = it }
             }
 
         // Preference keys matching Flutter

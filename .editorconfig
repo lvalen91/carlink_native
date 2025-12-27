@@ -1,0 +1,30 @@
+# EditorConfig - https://editorconfig.org
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{kt,kts}]
+indent_size = 4
+
+# ktlint configuration
+# Composable functions use PascalCase per Jetpack Compose API Guidelines
+# https://github.com/androidx/androidx/blob/androidx-main/compose/docs/compose-api-guidelines.md
+ktlint_function_naming_ignore_when_annotated_with = Composable
+
+[*.{java}]
+indent_size = 4
+
+[*.{xml,json}]
+indent_size = 4
+
+[*.{gradle,gradle.kts}]
+indent_size = 4
+
+[*.md]
+trim_trailing_whitespace = false

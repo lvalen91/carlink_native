@@ -39,11 +39,11 @@ class FileLogManager(
         private const val FLUSH_INTERVAL_MS = 1000L
 
         @Volatile
-        private var INSTANCE: FileLogManager? = null
+        private var instance: FileLogManager? = null
 
         fun getInstance(context: Context): FileLogManager =
-            INSTANCE ?: synchronized(this) {
-                INSTANCE ?: FileLogManager(context.applicationContext).also { INSTANCE = it }
+            instance ?: synchronized(this) {
+                instance ?: FileLogManager(context.applicationContext).also { instance = it }
             }
     }
 

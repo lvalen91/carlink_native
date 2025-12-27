@@ -96,11 +96,11 @@ class DisplayModePreference private constructor(
 
     companion object {
         @Volatile
-        private var INSTANCE: DisplayModePreference? = null
+        private var instance: DisplayModePreference? = null
 
         fun getInstance(context: Context): DisplayModePreference =
-            INSTANCE ?: synchronized(this) {
-                INSTANCE ?: DisplayModePreference(context.applicationContext).also { INSTANCE = it }
+            instance ?: synchronized(this) {
+                instance ?: DisplayModePreference(context.applicationContext).also { instance = it }
             }
 
         // New int key for display mode

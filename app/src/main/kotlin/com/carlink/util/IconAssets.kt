@@ -1,6 +1,8 @@
 package com.carlink.util
 
 import android.content.Context
+import com.carlink.logging.logWarn
+import java.io.IOException
 
 /**
  * Utility for loading icon assets for adapter initialization.
@@ -32,7 +34,8 @@ object IconAssets {
     ): ByteArray? =
         try {
             context.assets.open(fileName).use { it.readBytes() }
-        } catch (e: Exception) {
+        } catch (e: IOException) {
+            logWarn("[IconAssets] Failed to load asset '$fileName': ${e.message}")
             null
         }
 }

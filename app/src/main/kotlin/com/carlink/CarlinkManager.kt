@@ -32,6 +32,8 @@ import com.carlink.protocol.UnpluggedMessage
 import com.carlink.protocol.VideoDataMessage
 import com.carlink.protocol.VideoStreamingSignal
 import com.carlink.ui.settings.AdapterConfigPreference
+import com.carlink.ui.settings.MicSourceConfig
+import com.carlink.ui.settings.WiFiBandConfig
 import com.carlink.usb.UsbDeviceWrapper
 import com.carlink.util.AppExecutors
 import com.carlink.util.LogCallback
@@ -134,10 +136,11 @@ class CarlinkManager(
     // Wake lock to prevent CPU sleep during USB streaming
     // PARTIAL_WAKE_LOCK keeps CPU running but allows screen to turn off
     private val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-    private val wakeLock: PowerManager.WakeLock = powerManager.newWakeLock(
-        PowerManager.PARTIAL_WAKE_LOCK,
-        "Carlink::UsbStreamingWakeLock",
-    )
+    private val wakeLock: PowerManager.WakeLock =
+        powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "Carlink::UsbStreamingWakeLock",
+        )
 
     // Protocol
     private var adapterDriver: AdapterDriver? = null
@@ -263,23 +266,24 @@ class CarlinkManager(
             surfaceUpdateJob?.cancel()
 
             // Debounce: wait for surface size to stabilize before updating codec
-            surfaceUpdateJob = scope.launch {
-                delay(SURFACE_DEBOUNCE_MS)
+            surfaceUpdateJob =
+                scope.launch {
+                    delay(SURFACE_DEBOUNCE_MS)
 
-                // Use the latest pending values after debounce
-                val finalSurface = pendingSurface ?: return@launch
-                val finalCallback = pendingCallback ?: return@launch
+                    // Use the latest pending values after debounce
+                    val finalSurface = pendingSurface ?: return@launch
+                    val finalCallback = pendingCallback ?: return@launch
 
-                logInfo(
-                    "[LIFECYCLE] Surface stabilized at ${pendingSurfaceWidth}x$pendingSurfaceHeight - updating codec",
-                    tag = Logger.Tags.VIDEO,
-                )
+                    logInfo(
+                        "[LIFECYCLE] Surface stabilized at ${pendingSurfaceWidth}x$pendingSurfaceHeight - updating codec",
+                        tag = Logger.Tags.VIDEO,
+                    )
 
-                this@CarlinkManager.callback = finalCallback
-                this@CarlinkManager.videoSurface = finalSurface
-                // Resume with new surface - this calls setOutputSurface() internally
-                h264Renderer?.resume(finalSurface)
-            }
+                    this@CarlinkManager.callback = finalCallback
+                    this@CarlinkManager.videoSurface = finalSurface
+                    // Resume with new surface - this calls setOutputSurface() internally
+                    h264Renderer?.resume(finalSurface)
+                }
             return
         }
 
@@ -350,34 +354,43 @@ class CarlinkManager(
                 logCallback,
             )
 
-        // Initialize MediaSession
-        mediaSessionManager =
-            MediaSessionManager(context, logCallback).apply {
-                initialize()
-                setMediaControlCallback(
-                    object : MediaSessionManager.MediaControlCallback {
-                        override fun onPlay() {
-                            sendKey(CommandMapping.PLAY)
-                        }
+        // Initialize MediaSession only for ADAPTER audio mode (not Bluetooth)
+        // In Bluetooth mode, audio goes through phone BT → car stereo directly,
+        // so we don't want this app to appear as an active media source in AAOS.
+        // This prevents the vehicle from switching audio source to the app when
+        // the user opens or returns to it.
+        if (!config.audioTransferMode) {
+            mediaSessionManager =
+                MediaSessionManager(context, logCallback).apply {
+                    initialize()
+                    setMediaControlCallback(
+                        object : MediaSessionManager.MediaControlCallback {
+                            override fun onPlay() {
+                                sendKey(CommandMapping.PLAY)
+                            }
 
-                        override fun onPause() {
-                            sendKey(CommandMapping.PAUSE)
-                        }
+                            override fun onPause() {
+                                sendKey(CommandMapping.PAUSE)
+                            }
 
-                        override fun onStop() {
-                            sendKey(CommandMapping.PAUSE)
-                        }
+                            override fun onStop() {
+                                sendKey(CommandMapping.PAUSE)
+                            }
 
-                        override fun onSkipToNext() {
-                            sendKey(CommandMapping.NEXT)
-                        }
+                            override fun onSkipToNext() {
+                                sendKey(CommandMapping.NEXT)
+                            }
 
-                        override fun onSkipToPrevious() {
-                            sendKey(CommandMapping.PREV)
-                        }
-                    },
-                )
-            }
+                            override fun onSkipToPrevious() {
+                                sendKey(CommandMapping.PREV)
+                            }
+                        },
+                    )
+                }
+            logInfo("MediaSession initialized (ADAPTER audio mode)", tag = Logger.Tags.ADAPTR)
+        } else {
+            logInfo("MediaSession skipped (BLUETOOTH audio mode - audio via phone BT)", tag = Logger.Tags.ADAPTR)
+        }
 
         logInfo("CarlinkManager initialized", tag = Logger.Tags.ADAPTR)
     }
@@ -452,9 +465,32 @@ class CarlinkManager(
         val initMode = adapterConfigPref.getInitializationMode()
         val pendingChanges = adapterConfigPref.getPendingChangesSync()
 
-        log("[INIT] Mode: ${adapterConfigPref.getInitializationInfo()}")
+        // Refresh user-configurable settings from preference store before starting
+        // This ensures changes made in Settings screen are applied on next connection
+        // (display settings like width/height are kept from original config)
+        val userConfig = adapterConfigPref.getUserConfigSync()
+        val refreshedConfig =
+            config.copy(
+                audioTransferMode = userConfig.audioTransferMode,
+                sampleRate = userConfig.sampleRate.hz,
+                micType =
+                    when (userConfig.micSource) {
+                        MicSourceConfig.APP -> "os"
+                        MicSourceConfig.PHONE -> "box"
+                    },
+                wifiType =
+                    when (userConfig.wifiBand) {
+                        WiFiBandConfig.BAND_5GHZ -> "5ghz"
+                        WiFiBandConfig.BAND_24GHZ -> "24ghz"
+                    },
+                callQuality = userConfig.callQuality.value,
+            )
+        config = refreshedConfig // Update stored config for other uses
 
-        adapterDriver?.start(config, initMode.name, pendingChanges)
+        log("[INIT] Mode: ${adapterConfigPref.getInitializationInfo()}")
+        log("[INIT] Audio mode: ${if (refreshedConfig.audioTransferMode) "BLUETOOTH" else "ADAPTER"}")
+
+        adapterDriver?.start(refreshedConfig, initMode.name, pendingChanges)
 
         // Mark first init completed and clear pending changes after successful start
         // This runs in a coroutine to handle the suspend functions

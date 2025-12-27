@@ -179,11 +179,11 @@ class AdapterConfigPreference private constructor(
 
     companion object {
         @Volatile
-        private var INSTANCE: AdapterConfigPreference? = null
+        private var instance: AdapterConfigPreference? = null
 
         fun getInstance(context: Context): AdapterConfigPreference =
-            INSTANCE ?: synchronized(this) {
-                INSTANCE ?: AdapterConfigPreference(context.applicationContext).also { INSTANCE = it }
+            instance ?: synchronized(this) {
+                instance ?: AdapterConfigPreference(context.applicationContext).also { instance = it }
             }
 
         // Preference keys

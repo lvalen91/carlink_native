@@ -1,5 +1,7 @@
 package com.carlink.protocol
 
+import com.carlink.logging.logWarn
+import org.json.JSONException
 import org.json.JSONObject
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -213,7 +215,8 @@ object MessageParser {
                         val jsonString = String(jsonBytes, StandardCharsets.UTF_8).trim('\u0000')
                         val json = JSONObject(jsonString)
                         json.keys().asSequence().associateWith { json.get(it) }
-                    } catch (e: Exception) {
+                    } catch (e: JSONException) {
+                        logWarn("[MessageParser] Failed to parse media metadata JSON: ${e.message}")
                         emptyMap()
                     }
                 }
