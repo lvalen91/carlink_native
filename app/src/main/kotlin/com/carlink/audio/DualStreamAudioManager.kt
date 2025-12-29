@@ -136,7 +136,8 @@ class DualStreamAudioManager(
     // Minimum buffer level (ms) to maintain during playback
     // This prevents draining the buffer to 0ms which causes underruns
     // Keep at least this much data in the ring buffer as headroom for USB jitter
-    private val minBufferLevelMs = 100
+    // Reduced from 100ms to 50ms based on captured USB data showing P99 jitter of only 7ms
+    private val minBufferLevelMs = 50
 
     // Track whether each stream has started playing (for pre-fill logic)
     @Volatile private var mediaStarted = false
@@ -1419,7 +1420,15 @@ class DualStreamAudioManager(
                                     if (toRead > 0) {
                                         val bytesRead = buffer.read(navTempBuffer, 0, toRead)
                                         if (bytesRead > 0) {
-                                            val written = track.write(navTempBuffer, 0, bytesRead)
+                                            // Use WRITE_NON_BLOCKING to prevent thread starvation
+                                            // across multiple streams (media/nav/voice/call)
+                                            val written =
+                                                track.write(
+                                                    navTempBuffer,
+                                                    0,
+                                                    bytesRead,
+                                                    AudioTrack.WRITE_NON_BLOCKING,
+                                                )
                                             if (written < 0) {
                                                 handleTrackError("NAV", written)
                                             } else {
@@ -1465,7 +1474,15 @@ class DualStreamAudioManager(
                                     val toRead = minOf(available, playbackChunkSize)
                                     val bytesRead = buffer.read(voiceTempBuffer, 0, toRead)
                                     if (bytesRead > 0) {
-                                        val written = track.write(voiceTempBuffer, 0, bytesRead)
+                                        // Use WRITE_NON_BLOCKING to prevent thread starvation
+                                        // across multiple streams (media/nav/voice/call)
+                                        val written =
+                                            track.write(
+                                                voiceTempBuffer,
+                                                0,
+                                                bytesRead,
+                                                AudioTrack.WRITE_NON_BLOCKING,
+                                            )
                                         if (written < 0) {
                                             handleTrackError("VOICE", written)
                                         }
@@ -1507,7 +1524,15 @@ class DualStreamAudioManager(
                                     val toRead = minOf(available, playbackChunkSize)
                                     val bytesRead = buffer.read(callTempBuffer, 0, toRead)
                                     if (bytesRead > 0) {
-                                        val written = track.write(callTempBuffer, 0, bytesRead)
+                                        // Use WRITE_NON_BLOCKING to prevent thread starvation
+                                        // across multiple streams (media/nav/voice/call)
+                                        val written =
+                                            track.write(
+                                                callTempBuffer,
+                                                0,
+                                                bytesRead,
+                                                AudioTrack.WRITE_NON_BLOCKING,
+                                            )
                                         if (written < 0) {
                                             handleTrackError("CALL", written)
                                         }
