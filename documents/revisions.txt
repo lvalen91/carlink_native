@@ -32,6 +32,7 @@
 [18] :: PlatformDetector was not used correctly, Fixed. Should now detected the hardware decoder and use it.
 [19] :: Static Analysis warning fixes. Moved Mic from Timer to Coroutine. Though Coroutine uses a shared pool, so too many timers can cause issues.
 [20]: runBlocking ANR Risk and lateinit Crash fixed. carlinkManager nullable, the receiver needed null-safe access
+
 [21] :: Microphone Code reverted back. Timer works while coroutine does not for mic. Excessive debug logging in 'release'.
 [22] :: Auto reconnect attempt on adapter disconnect. Return to App Blank Video fixed? False success on file export in some scenarios, fixed? Some UI tweaks
 [23] :: Gradle Dependency updates. CarlinkMediaBrowserService now creates a foreground process in notification to hopefully keep app active. Also provide a shortcut to return to app, if it works. 
@@ -42,7 +43,9 @@
 [28] :: App resume testing for Video black screen. Also testing letting app not take audio focus if adapter audio transfer is off.
 [29] :: Ktlint and Detekt fixes. Refactored File Export
 [30] :: Video Code change TESTING. Seems unstable or long to recover, too aggressive and compounding recovery logic.
+
 [31] :: FIX: Progressive video quality degradation. Root cause: PacketRingByteBuffer.readPacket() used zero-copy ByteBuffer.wrap() sharing memory with ring buffer. Race condition allowed USB writes to overwrite data before MediaCodec consumed it, corrupting H.264 reference frames. Fix: Safe copy via System.arraycopy() before returning ByteBuffer. Periodic keyframes didn't help because they were also corrupted; only reset() worked because it cleared the buffer first.
 [32] :: OPTIMIZATION: Eliminated double-copy in video pipeline. Added readPacketInto(ByteBuffer) method that copies directly from ring buffer to MediaCodec input buffer, eliminating intermediate byte[] allocation. Reduces GC pressure by ~3600 allocations/minute at 60fps and ~2-3% CPU overhead.
 [33] :: DualStreamAudioManager.kt WRITE_NON_BLOCKING for all streams Prevents thread starvation during multi-stream playback. minBufferLevelMs reduced. AudioConfig.kt Buffer multiplier reduced across all platforms. Pre-fill threshold reduced.
 [34] :: Testing why oemIcon in CarPlay does not have label.
+[35] :: Navigation Audio changes.

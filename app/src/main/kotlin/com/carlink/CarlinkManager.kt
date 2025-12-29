@@ -936,6 +936,14 @@ class CarlinkManager(
 
             AudioCommand.AUDIO_NAVI_STOP -> {
                 logInfo("[AUDIO_CMD] Navigation audio STOP command received", tag = Logger.Tags.AUDIO)
+                // Signal nav stopped - stop accepting new packets, but don't flush yet
+                // (NAVI_COMPLETE will handle final cleanup)
+                audioManager?.onNavStopped()
+            }
+
+            AudioCommand.AUDIO_NAVI_COMPLETE -> {
+                logInfo("[AUDIO_CMD] Navigation audio COMPLETE command received", tag = Logger.Tags.AUDIO)
+                // Explicit end-of-prompt signal from adapter - clean shutdown
                 audioManager?.stopNavTrack()
             }
 

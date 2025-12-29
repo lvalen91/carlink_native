@@ -3,6 +3,12 @@
 ## System Overview
 **CPC200-CCPA firmware**: Intelligent wireless video protocol bridge for multi-protocol video stream conversion (CarPlay/Android Auto → Host Android apps) over USB/WiFi with advanced format conversion, resolution negotiation, and encrypted streaming.
 
+**Sources:**
+- Firmware rootfs analysis
+- USB captures: `~/.pi-carplay/usb-logs/video_2400x960@60/` (Dec 2025)
+
+**Last Updated:** 2025-12-29 (with USB capture verification)
+
 ## Hardware Specifications
 **CPC200-CCPA (Internal: A15W)**
 - **Processing**: ARM32 with hardware-accelerated decoding
@@ -208,18 +214,123 @@ class VideoFormatConverter {
 struct CPCVideoMessage {
     uint32_t magic;      // 0x55AA55AA
     uint32_t length;     // Payload size
-    uint32_t command;    // 0x08 for VideoData
+    uint32_t command;    // 0x06 for VideoData
     uint32_t checksum;   // command ^ 0xFFFFFFFF
 };
 
-struct VideoPayload {
-    uint32_t frame_type;     // I/P/B-frame
-    uint32_t timestamp;      // Frame timestamp
-    uint32_t resolution_id;  // Resolution ID
-    uint32_t format_flags;   // Format flags
-    uint8_t  frame_data[];   // H.264 data
+struct VideoPayload {      // 20-byte header + H.264 data
+    uint32_t width;        // Display width (e.g., 2400)
+    uint32_t height;       // Display height (e.g., 960)
+    uint32_t flags;        // Frame flags/timestamp
+    uint32_t totalLength;  // Total frame data length
+    uint32_t reserved;     // Reserved (usually 0)
+    uint8_t  h264_data[];  // Raw H.264 NAL units
 };
 ```
+
+---
+
+## USB Capture Verification (December 2025)
+
+### Verified Video Packet Structure
+
+From `video_2400x960@60` capture @ 7.505s:
+
+**Protocol Header (16 bytes):**
+```
+Offset  Size  Field      Example          Description
+─────────────────────────────────────────────────────────────
+0x00    4     magic      aa 55 aa 55      Protocol magic
+0x04    4     length     03 02 00 00      Payload size (515 bytes)
+0x08    4     type       06 00 00 00      VideoData (0x06)
+0x0C    4     checksum   f9 ff ff ff      ~0x06
+```
+
+**Video Header (20 bytes):**
+```
+Offset  Size  Field        Example          Description
+─────────────────────────────────────────────────────────────
+0x00    4     width        60 09 00 00      2400 pixels (0x0960)
+0x04    4     height       c0 03 00 00      960 pixels (0x03c0)
+0x08    4     flags        3f 4e cb 01      Timestamp/flags (0x01cb4e3f)
+0x0C    4     totalLength  d6 20 04 00      Total frame size
+0x10    4     reserved     00 00 00 00      Reserved
+```
+
+**H.264 NAL Unit Data (after 20-byte header):**
+```
+00 00 00 01 27 ...   SPS (Sequence Parameter Set)
+00 00 00 01 28 ...   PPS (Picture Parameter Set)
+00 00 00 01 25 ...   IDR Slice (Keyframe)
+00 00 00 01 21 ...   Non-IDR Slice (P-frame)
+```
+
+### Captured Video Session Timeline
+
+```
+Time      Packet  Type                Size      Notes
+─────────────────────────────────────────────────────────────
+7.505s    #25     VideoData           531       First frame (SPS+PPS+IDR)
+7.507s    #26     VideoData           22553     P-frame
+7.508s    #27     VideoData           14148     P-frame
+7.510s    #28     VideoData           8200      P-frame
+7.515s    #29     VideoData           8028      P-frame
+7.517s    #30     VideoData           20662     P-frame
+7.517s    #31     VideoData           459       Continuation
+7.518s    #32     VideoData           5293      P-frame
+...
+7.551s    #52     VideoData           24688     P-frame
+7.567s    #53     VideoData           25727     P-frame (~16ms interval)
+7.582s    #54     VideoData           26774     P-frame (~15ms interval)
+```
+
+### Frame Timing Analysis
+
+**60fps Target:**
+- Expected frame interval: 16.67ms (1000ms / 60fps)
+- Observed intervals: 15-17ms (within tolerance)
+
+**Keyframe (IDR) Characteristics:**
+- First frame contains SPS, PPS, and IDR slice
+- Subsequent frames are P-frames (non-IDR slices)
+- Typical IDR frame size: ~500 bytes (header) + variable slice data
+- Typical P-frame size: 5,000-30,000 bytes
+
+### H.264 NAL Unit Types Observed
+
+| NAL Type | Hex | Description | Occurrence |
+|----------|-----|-------------|------------|
+| 0x27 | 39 | SPS (Sequence Parameter Set) | First frame |
+| 0x28 | 40 | PPS (Picture Parameter Set) | First frame |
+| 0x25 | 37 | IDR Slice (Keyframe) | First frame, periodic |
+| 0x21 | 33 | Non-IDR Slice (P-frame) | Most frames |
+
+### Video Stream Statistics
+
+From `video_2400x960@60` capture:
+
+| Metric | Value |
+|--------|-------|
+| Resolution | 2400 x 960 |
+| Target FPS | 60 fps |
+| Observed FPS | ~60 fps (15-17ms intervals) |
+| First video packet | @ 7.505s (after Phase=8) |
+| Average P-frame size | ~15-25 KB |
+| Keyframe interval | First frame + periodic |
+
+### Connection to Video Start Sequence
+
+```
+Time      Event                              Notes
+─────────────────────────────────────────────────────────────
+0.253s    SendOpen (2400x960@60)            Host requests resolution
+0.410s    Open echo from adapter            Resolution confirmed
+4.498s    Phase = 7 (connecting)            Phone connecting
+7.504s    Phase = 8 (streaming ready)       Video ready
+7.505s    First VideoData packet            Stream begins
+```
+
+**Key Finding:** Video streaming begins immediately after Phase transitions to 8 (streaming ready), approximately 7 seconds after session initialization.
 
 ### USB Configuration
 **CarPlay**: iAP2 mode, VID:08e4 PID:01c0

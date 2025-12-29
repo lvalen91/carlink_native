@@ -130,6 +130,8 @@ enum class AudioCommand(
     AUDIO_MEDIA_STOP(11),
     AUDIO_ALERT_START(12),
     AUDIO_ALERT_STOP(13),
+    AUDIO_INCOMING_CALL_INIT(14),
+    AUDIO_NAVI_COMPLETE(16),
     UNKNOWN(-1),
     ;
 
@@ -255,17 +257,29 @@ data class AudioFormat(
 
 /**
  * Decode type to audio format mapping.
+ *
+ * decode_type serves dual purposes:
+ * 1. Audio format specification (sample rate, channels, bit depth)
+ * 2. Semantic context for the audio command (discovered Dec 2025 capture research)
+ *
+ * Semantic meanings (from CPC200 adapter capture analysis):
+ * - decode_type=2: Stop/cleanup operations (seen with MEDIA_STOP, PHONECALL_STOP)
+ * - decode_type=4: Standard CarPlay audio output (MEDIA_START, NAVI_*, ALERT_*, OUTPUT_*)
+ * - decode_type=5: Mic/input related operations (SIRI_*, PHONECALL_START, INPUT_*, INCOMING_CALL_INIT)
+ *
+ * Note: decode_type appears in the 13-byte audio command packet:
+ *   [decode_type:4][volume:4][audio_type:4][command:1]
  */
 object AudioFormats {
     private val formats =
         mapOf(
-            1 to AudioFormat(44100, 2, 16),
-            2 to AudioFormat(44100, 2, 16),
-            3 to AudioFormat(8000, 1, 16),
-            4 to AudioFormat(48000, 2, 16),
-            5 to AudioFormat(16000, 1, 16),
-            6 to AudioFormat(24000, 1, 16),
-            7 to AudioFormat(16000, 2, 16),
+            1 to AudioFormat(44100, 2, 16),  // Media playback (44.1kHz)
+            2 to AudioFormat(44100, 2, 16),  // Navigation / Stop commands
+            3 to AudioFormat(8000, 1, 16),   // Phone call (narrow-band)
+            4 to AudioFormat(48000, 2, 16),  // Media HD / Standard CarPlay
+            5 to AudioFormat(16000, 1, 16),  // Siri / Phone / Mic input
+            6 to AudioFormat(24000, 1, 16),  // Voice recognition
+            7 to AudioFormat(16000, 2, 16),  // Stereo voice
         )
 
     fun fromDecodeType(decodeType: Int): AudioFormat? = formats[decodeType]

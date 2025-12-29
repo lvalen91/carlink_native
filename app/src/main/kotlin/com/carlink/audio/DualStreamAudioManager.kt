@@ -170,6 +170,11 @@ class DualStreamAudioManager(
     private var consecutiveNavZeroPackets: Int = 0
     private val navZeroFlushThreshold = 3 // Flush after 3 consecutive zero packets
 
+    // Navigation stopped state - stop accepting nav packets after NAVI_STOP until next NAVI_START
+    // USB captures show adapter sends ~2 seconds of silence after NAVI_STOP before NAVI_COMPLETE
+    // These silence packets should be dropped to prevent playback artifacts
+    @Volatile private var navStopped = false
+
     @Volatile private var voiceStarted = false
 
     @Volatile private var callStarted = false
@@ -488,6 +493,13 @@ class DualStreamAudioManager(
 
             AudioStreamType.NAVIGATION -> {
                 // USAGE_ASSISTANCE_NAVIGATION_GUIDANCE → CarAudioContext.NAVIGATION
+
+                // Drop nav packets after NAVI_STOP received (until next NAVI_START)
+                // USB captures show ~2 seconds of silence packets sent after NAVI_STOP
+                if (navStopped) {
+                    return 0
+                }
+
                 val bufferLevelMs = navBuffer?.fillLevelMs() ?: 0
 
                 // Check for end marker FIRST (before ensuring track)
@@ -678,8 +690,23 @@ class DualStreamAudioManager(
     // when the stream restarts, avoiding audio glitches.
 
     /**
+     * Signal navigation stream stopped - stop accepting new nav packets.
+     * Called when AUDIO_NAVI_STOP command is received from the adapter.
+     *
+     * USB captures show adapter sends ~2 seconds of silence packets after NAVI_STOP
+     * before finally sending NAVI_COMPLETE. This method prevents those silence
+     * packets from being written to the buffer, avoiding playback artifacts.
+     *
+     * The actual track cleanup happens when NAVI_COMPLETE is received.
+     */
+    fun onNavStopped() {
+        log("[NAV_STOP] onNavStopped() called - will reject incoming nav packets")
+        navStopped = true
+    }
+
+    /**
      * Pause navigation AudioTrack when nav audio stream ends.
-     * Called when AudioNaviStop command is received from the adapter.
+     * Called when AUDIO_NAVI_COMPLETE command is received from the adapter.
      *
      * Enforces minimum playback duration to prevent premature cutoff when adapter
      * sends stop command too quickly (observed in Sessions 1-2).
@@ -739,6 +766,7 @@ class DualStreamAudioManager(
             }
 
             navStarted = false
+            navStopped = false // Reset stopped state for next nav session
             navPackets = 0 // Reset packet counter for next nav prompt
             navUnderruns = 0 // Reset underrun counter for next nav prompt
         }
@@ -958,6 +986,9 @@ class DualStreamAudioManager(
         val format = AudioFormats.fromDecodeType(decodeType)
 
         synchronized(lock) {
+            // Reset stopped state - new nav session starting
+            navStopped = false
+
             // Resume paused track if same format
             navTrack?.let { track ->
                 if (track.playState == AudioTrack.PLAYSTATE_PAUSED && navFormat == format) {

@@ -142,6 +142,76 @@
 | rgbFault | hex | 24-bit color | 0x000080 | Fault/error color |
 | ledTimingMode | enum | 0-2 | 1 | 0=Static,1=Blink,2=Gradient |
 
+## riddle.conf and Host App Initialization
+
+### Configuration File Format
+
+The primary configuration storage is `/etc/riddle.conf`, a JSON file that persists all firmware parameters. The backup file `/etc/riddle_default.conf` stores factory defaults.
+
+**File Location**: `/etc/riddle.conf`
+**Format**: JSON
+**Backup**: `/etc/riddle_default.conf`
+
+### Host App BoxSettings Influence
+
+**IMPORTANT**: Many riddle.conf parameters are dynamically set by the host application during initialization. The CPC200-CCPA firmware accepts configuration commands from the connected head unit's host app (e.g., carlink_native), which then writes to riddle.conf.
+
+**Initialization Flow**:
+```
+1. Host App starts → Sends BoxSettings configuration via USB protocol
+2. Firmware receives configuration → Updates riddle.conf
+3. Parameters persist across adapter reboots until next host configuration
+```
+
+### Host-Configurable Parameters
+
+These parameters are typically set by the host app during connection initialization:
+
+| Parameter | Type | Description | BoxSettings Mapping |
+|-----------|------|-------------|---------------------|
+| MediaLatency | int | Video buffering delay (ms) | `mediaDelay` |
+| AndroidAutoWidth | int | Android Auto display width | `width` |
+| AndroidAutoHeight | int | Android Auto display height | `height` |
+| MediaQuality | int | Video quality level | `fps` / `bitRate` |
+| WiFiChannel | int | 5GHz channel (36,40,44,149,157,161) | `wifiChannel` |
+| BtAudio | bool | Bluetooth audio enable | `btMusicChannel` |
+| MicType | int | Microphone type (0=External,1=Internal) | `micType` |
+| CarDrivePosition | int | Drive position (0=Left,1=Right) | `drivePosition` |
+
+### Example riddle.conf Content
+
+```json
+{
+  "resolutionWidth": 2400,
+  "resolutionHeight": 960,
+  "MediaLatency": 300,
+  "AndroidAutoWidth": 1000,
+  "AndroidAutoHeight": 500,
+  "MediaQuality": 0,
+  "WiFiChannel": 36,
+  "BtAudio": 0,
+  "MicType": 0,
+  "CarDrivePosition": 0,
+  "CustomWifiName": "AutoBox-76d4",
+  "BoxIp": "192.168.43.1",
+  "USBVID": "1314",
+  "USBPID": "1521"
+}
+```
+
+### Configuration Precedence
+
+| Priority | Source | Persistence | Notes |
+|----------|--------|-------------|-------|
+| 1 (Highest) | Host App BoxSettings | Until next init | Sent via USB protocol at connection |
+| 2 | riddle.conf | Persistent | Written by riddleBoxCfg or Web API |
+| 3 | Web API (/server.cgi) | Persistent | Manual configuration changes |
+| 4 (Lowest) | riddle_default.conf | Factory | Restored on factory reset |
+
+**Note**: When the host app sends BoxSettings during initialization, it can override values in riddle.conf. This is why the same adapter may behave differently with different host applications - each app sends its own configuration preferences.
+
+---
+
 ## Configuration Commands
 
 ### CLI Examples

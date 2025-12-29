@@ -288,6 +288,85 @@ This explains why the old code worked for restarts but failed for cold starts.
 
 ---
 
+## USB Gadget Configuration
+
+**Source:** Reverse engineering of firmware startup scripts and dmesg logs
+
+The CPC200-CCPA presents different USB identities depending on which side of the connection:
+
+### iPhone-Facing (Gadget Mode)
+
+The adapter presents itself to the iPhone as an Apple-compatible accessory:
+
+```bash
+# From start_iap2_ncm.sh
+echo 0 > /sys/class/android_usb/android0/enable
+echo 0x08e4 > /sys/class/android_usb/android0/idVendor   # Magic Communication Tec.
+echo 0x01c0 > /sys/class/android_usb/android0/idProduct  # Auto Box
+echo "Magic Communication Tec." > /sys/class/android_usb/android0/iManufacturer
+echo "Auto Box" > /sys/class/android_usb/android0/iProduct
+echo "iap2,ncm" > /sys/class/android_usb/android0/functions
+echo 1 > /sys/class/android_usb/android0/enable
+```
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| idVendor | 0x08e4 (2276) | Magic Communication Technology |
+| idProduct | 0x01c0 (448) | Auto Box product ID |
+| iManufacturer | "Magic Communication Tec." | Manufacturer string |
+| iProduct | "Auto Box" | Product string |
+| functions | iap2,ncm | IAP2 protocol + USB NCM networking |
+
+### Head Unit-Facing (Host Mode)
+
+The adapter presents itself to the Android head unit:
+
+```yaml
+# From riddle.conf (influenced by host app BoxSettings)
+USBVID: "1314"    # 0x1314 = 4884 decimal
+USBPID: "1521"    # 0x1521 = 5409 decimal
+```
+
+### USB Role Switch Detection
+
+The firmware detects connected iPhones by Apple's VID/PID:
+
+```bash
+# From start_hnp.sh
+iphoneRoleSwitch_test 0x05ac 0x12a8
+# 0x05ac = Apple Inc. vendor ID
+# 0x12a8 = iPhone product ID
+```
+
+**Note:** The adapter does NOT use Apple's VID for its own identity - Apple VID is only used to detect connected iPhones.
+
+### USB Gadget Functions
+
+From dmesg, the USB gadget initialization sequence:
+
+```
+1. android_usb gadget ready
+2. android_usb_accessory gadget ready
+3. Functions enabled:
+   - iap2            # IAP2 protocol for iPhone communication
+   - ncm             # USB NCM networking (IPv6 link-local)
+   - mass_storage    # USB storage (for firmware updates)
+   - accessory       # Android Open Accessory mode
+```
+
+### Kernel Modules
+
+| Module | Purpose |
+|--------|---------|
+| `g_iphone.ko` | IAP2 USB gadget driver |
+| `f_ptp_appledev.ko` | PTP Apple device function |
+| `f_ptp_appledev2.ko` | Alternative PTP function |
+| `g_android_accessory.ko` | Android AOA gadget |
+| `cdc_ncm.ko` | USB NCM networking |
+| `storage_common.ko` | USB mass storage |
+
+---
+
 ## Related Documentation
 
 - **Configuration**: See `firmware_configurables.md` for all 87 firmware parameters

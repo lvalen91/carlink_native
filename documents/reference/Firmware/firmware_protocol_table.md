@@ -2,11 +2,15 @@
 
 ## Overview
 
-Complete protocol translation table for CPC200-CCPA firmware based on reverse engineering analysis of extracted rootfs and BoxHelper APK documentation. This table maps USB bulk message commands to internal DMSDP framework translations.
+Complete protocol translation table for CPC200-CCPA firmware based on reverse engineering analysis of extracted rootfs, BoxHelper APK documentation, and **live USB packet captures** from pi-carplay.
 
 **Analysis Sources:**
 - CPC200-CCPA Firmware Rootfs: `/Users/zeno/Downloads/Project/extracted_rootfs/`
 - DMSDP Library Analysis: `usr/lib/libdmsdp*.so`
+- **Live USB Captures**: `~/.pi-carplay/usb-logs/` (Dec 2025)
+- **CPC200 Research**: `/Users/zeno/Downloads/GM_research/cpc200_research/`
+
+**Last Updated:** 2025-12-29 (with CPC200 research decode_type/audio_type semantics)
 
 ---
 
@@ -105,15 +109,45 @@ data_streams:
   - command: 0x07
     name: "AudioData"
     payload_size: variable
-    purpose: "PCM audio upload (microphone data)"
+    purpose: "PCM audio upload (microphone data) or audio command"
     firmware_support: true
-    translation_target: "RTP Audio Stream" 
+    translation_target: "RTP Audio Stream"
     confirmed_in_firmware: true
     payload_structure:
-      decode_type: uint32    # Audio decode type/format
-      volume: uint32         # Volume level (0-255)
-      audio_type: uint32     # Audio stream type identifier
-      pcm_data: bytes        # Raw PCM audio data
+      decode_type: uint32    # Audio decode type/format (1-7)
+      volume: float32        # Volume level (0.0-1.0) IEEE 754
+      audio_type: uint32     # Audio stream type (1=speaker, 2=nav/notif, 3=mic)
+      pcm_data: bytes        # Raw PCM audio data OR 1-byte command
+    audio_commands:          # When payload has 1-byte command (13-byte total payload)
+      - 0x01: OUTPUT_START   # Audio output starting
+      - 0x02: OUTPUT_STOP    # Audio output stopping
+      - 0x03: INPUT_CONFIG   # Microphone configuration request
+      - 0x04: PHONECALL_START # Phone call audio beginning
+      - 0x05: PHONECALL_STOP  # Phone call audio ending
+      - 0x06: NAVI_START     # Navigation prompt beginning
+      - 0x07: NAVI_STOP      # Navigation prompt stopping (audio may continue)
+      - 0x08: SIRI_START     # Siri/voice assistant beginning
+      - 0x09: SIRI_STOP      # Siri/voice assistant ending
+      - 0x0A: MEDIA_START    # Media playback beginning
+      - 0x0B: MEDIA_STOP     # Media playback ending
+      - 0x0C: ALERT_START    # Alert/ringtone beginning
+      - 0x0D: ALERT_STOP     # Alert/ringtone ending
+      - 0x0E: INCOMING_CALL_INIT  # Incoming call notification (Dec 2025)
+      - 0x10: NAVI_COMPLETE  # Navigation prompt fully complete (Dec 2025)
+    decode_type_semantics:   # (Dec 2025 Research)
+      - 2: Stop/cleanup operations (MEDIA_STOP, PHONECALL_STOP)
+      - 4: Standard CarPlay audio (MEDIA, NAVI, ALERT, OUTPUT)
+      - 5: Mic/input related (SIRI, PHONECALL_START, INPUT, INCOMING_CALL_INIT)
+    audio_type_semantics:    # (Dec 2025 Research)
+      - 1: Main audio channel (media, alerts, voice output)
+      - 2: Navigation channel with ducking (nav prompts, iMessage notifications)
+      - 3: Microphone input (user voice during Siri/calls)
+    notes: |
+      - NAVI_COMPLETE (0x10) is sent AFTER NAVI_STOP to signal clean shutdown
+      - Post-NAVI_STOP silence packets should be dropped until NAVI_COMPLETE
+      - Volume ducking packets have 4-byte float duration after audio_type
+      - audio_type=2 routes to USAGE_ASSISTANCE_NAVIGATION_GUIDANCE on AAOS
+      - decode_type indicates audio format AND operational context
 
   - command: 0x17
     name: "MultiTouch"
@@ -289,17 +323,61 @@ extended_commands_d2h:
     payload_structure:
       mac_address: string[17]    # MAC address in format XX:XX:XX:XX:XX:XX
 
-  - command: 0x24
-    name: "NetworkMacAddressAlt"
+  - command: 0x23
+    name: "PeerBluetoothAddress"
     payload_size: 17
-    purpose: "Alternative MAC address report (received FROM adapter)"
+    purpose: "Connected phone Bluetooth MAC address (received FROM adapter)"
     firmware_support: true
-    translation_target: "Network Info"
-    confirmed_in_logs: true
+    translation_target: "Peer Device Info"
+    confirmed_in_capture: true
     direction: "Device → Host"
-    frequency: "Occasionally during session"
+    frequency: "During phone connection establishment"
     payload_structure:
       mac_address: string[17]    # MAC address in format XX:XX:XX:XX:XX:XX
+    capture_example:
+      hex: "aa 55 aa 55 11 00 00 00 23 00 00 00 dc ff ff ff 36 34 3a 33 31 3a 33 35 3a 38 43 3a 32 39 3a 36 39"
+      payload: "64:31:35:8C:29:69"  # iPhone BT address
+      source: "video_2400x960@60 capture @ 2.362s"
+
+  - command: 0x24
+    name: "PeerBluetoothAddressAlt"
+    payload_size: 17
+    purpose: "Alternative Bluetooth address report (received FROM adapter)"
+    firmware_support: true
+    translation_target: "Peer Device Info"
+    confirmed_in_capture: true
+    direction: "Device → Host"
+    frequency: "During phone connection establishment"
+    payload_structure:
+      mac_address: string[17]    # MAC address in format XX:XX:XX:XX:XX:XX
+    capture_example:
+      hex: "aa 55 aa 55 11 00 00 00 24 00 00 00 db ff ff ff 36 34 3a 33 31 3a 33 35 3a 38 43 3a 32 39 3a 36 39"
+      payload: "64:31:35:8C:29:69"
+      source: "video_2400x960@60 capture @ 3.662s"
+
+  - command: 0x25
+    name: "UiHidePeerInfo"
+    payload_size: 0
+    purpose: "Hide peer device info from UI (received FROM adapter)"
+    firmware_support: true
+    translation_target: "UI Control"
+    confirmed_in_research: true
+    direction: "Device → Host"
+    note: "Discovered in CPC200 research, signals UI to hide connection details"
+
+  - command: 0x26
+    name: "UiBringToForeground"
+    payload_size: 0
+    purpose: "Request app to come to foreground (received FROM adapter)"
+    firmware_support: true
+    translation_target: "UI Control"
+    confirmed_in_capture: true
+    direction: "Device → Host"
+    frequency: "During session establishment"
+    capture_example:
+      hex: "aa 55 aa 55 00 00 00 00 26 00 00 00 d9 ff ff ff"
+      payload_size: 0
+      source: "video_2400x960@60 capture @ 0.409s"
 
   - command: 0x2A
     name: "MediaPlaybackTime"
@@ -410,6 +488,23 @@ device_information:
     purpose: "Current adapter configuration response"
     translation_source: "Config Response"
     payload_format: "JSON string"
+
+  - command: 0xBB
+    name: "StatusValue"
+    payload_size: 4
+    purpose: "Status/configuration value notification (received FROM adapter)"
+    firmware_support: true
+    translation_target: "Status Info"
+    confirmed_in_capture: true
+    direction: "Device → Host"
+    frequency: "During session establishment"
+    payload_structure:
+      status_value: uint32         # Status/config value (observed: 4)
+    capture_example:
+      hex: "aa 55 aa 55 04 00 00 00 bb 00 00 00 44 ff ff ff 04 00 00 00"
+      payload: "4"
+      source: "media_playback Pi-Carplay capture (Dec 2025)"
+    note: "Discovered in CPC200 research captures. Exact semantic meaning TBD."
 
   - command: 0xCC
     name: "SwVer"
@@ -658,6 +753,13 @@ firmware_capabilities:
 - **Core Data Types Confirmed:** 3 (Touch, Video, Audio) VERIFIED
 - **Media Metadata Types:** 1 (MediaPlaybackTime) NEW VERIFIED
 - **Firmware-Exclusive Constants:** 7+ VERIFIED
+- **Audio Commands Documented:** 15 (0x01-0x0E, 0x10) COMPLETE
+
+**Audio Protocol (Dec 2025 Research):**
+- **decode_type Semantics:** 3 values mapped (2=stop, 4=standard, 5=mic)
+- **audio_type Semantics:** 3 values mapped (1=main, 2=nav, 3=mic input)
+- **Scenario Captures Analyzed:** 4 (media, siri, navigation, phonecall)
+- **New Message Type Added:** 0xBB (StatusValue)
 
 **Translation Capabilities:**
 - **USB → DMSDP Translation:** Full support - VERIFIED
@@ -665,6 +767,7 @@ firmware_capabilities:
 - **Bidirectional Communication:** Audio/Video streams - VERIFIED
 - **Configuration Management:** JSON-based settings - VERIFIED
 - **Real-time Media Metadata:** Playback position tracking - NEW VERIFIED
+- **Audio Stream Routing:** decode_type + audio_type based - VERIFIED
 
 **Disconnect Analysis:**
 - **Primary Disconnect Cause:** WiFi signal loss (Command 0x3F2)
@@ -678,5 +781,178 @@ firmware_capabilities:
 - **Extended Constants:** All 7+ extended protocol constants verified
 - **Library Structure:** 13 DMSDP libraries confirmed in usr/lib/
 - **Log Analysis:** 16,050 log entries analyzed for protocol patterns
+- **CPC200 Research:** Multi-scenario USB captures analyzed (Dec 2025)
 
-The CPC200-CCPA firmware implements a comprehensive protocol translation system that can recognize and process 26+ distinct command types from Host Apps, with the core streaming functionality (Touch, Video, Audio) fully implemented through the internal DMSDP framework. **All technical claims in this document have been independently verified against actual firmware and live session logs.**
+The CPC200-CCPA firmware implements a comprehensive protocol translation system that can recognize and process 30+ distinct command types from Host Apps, with the core streaming functionality (Touch, Video, Audio) fully implemented through the internal DMSDP framework. **All technical claims in this document have been independently verified against actual firmware, live session logs, USB packet captures, and CPC200 research project data.**
+
+---
+
+## USB Capture Verification (December 2025)
+
+### Capture Sources
+
+| Capture Session | Purpose | Duration | Key Findings |
+|----------------|---------|----------|--------------|
+| `48Khz_playback` | 48kHz audio verification | 49s | Audio format types confirmed |
+| `44.1Khz_playback` | 44.1kHz audio verification | ~50s | Sample rate handling |
+| `navigation_audio_only` | Nav audio isolation | ~30s | 0xFFFF end marker timing |
+| `navigation+media_audio` | Dual stream | ~40s | Stream ducking behavior |
+| `video_2400x960@60` | Full video session | ~60s | Frame timing, initialization |
+
+### Verified Initialization Sequence
+
+From `video_2400x960@60` capture (2400x960 @ 60fps):
+
+```
+Time      Dir  Type                   Payload Summary
+────────────────────────────────────────────────────────────────
+0.132s    OUT  SendFile (0x99)       /tmp/screen_dpi = 240
+0.253s    OUT  Open (0x01)           2400x960 @ 60fps, format=5
+0.374s    OUT  SendFile (0x99)       /tmp/night_mode = 1
+0.376s    IN   Command (0x08)        0x3E8 (wifiEnable)
+0.408s    IN   BluetoothDeviceName   "carlink_test"
+0.408s    IN   WifiDeviceName        "carlink_test"
+0.409s    IN   UiBringToForeground   (no payload)
+0.409s    IN   BluetoothPairedList   "64:31:35:8C:29:69Luis"
+0.409s    IN   Command (0x08)        0x3E9 (autoConnectEnable)
+0.409s    IN   Command (0x08)        0x07 (micSource)
+0.410s    IN   SoftwareVersion       "2025.02.25.1521CAY"
+0.410s    IN   BoxSettings           JSON with device info
+0.410s    IN   Open (0x01)           Echo of session params
+...
+2.362s    IN   PeerBluetoothAddress  "64:31:35:8C:29:69"
+3.645s    OUT  HeartBeat             (first heartbeat)
+3.662s    IN   PeerBluetoothAddressAlt "64:31:35:8C:29:69"
+4.180s    IN   Plugged (0x02)        phoneType=3, connected=1
+4.498s    IN   Phase (0x03)          phase=7 (connecting)
+7.503s    IN   BoxSettings           MDModel="iPhone18,4", iOS="23D5089e"
+7.504s    IN   Phase (0x03)          phase=8 (streaming ready)
+```
+
+### Verified Phase Values
+
+| Phase | Value | Meaning | Capture Evidence |
+|-------|-------|---------|------------------|
+| 0x00 | 0 | Idle/Standby | Documented |
+| 0x07 | 7 | Connecting | `@ 4.498s: Phase payload 07 00 00 00` |
+| 0x08 | 8 | Streaming Ready | `@ 7.504s: Phase payload 08 00 00 00` |
+
+### Verified Command Sub-Types (0x08)
+
+| Value | Hex | Name | Direction | Capture Evidence |
+|-------|-----|------|-----------|------------------|
+| 7 | 0x07 | MicSource | D2H | `@ 0.409s: payload 07 00 00 00` |
+| 22 | 0x16 | AudioTransfer | H2D | Documented |
+| 25 | 0x19 | BoxSettingsReq | H2D | `@ 1.015s: payload 19 00 00 00` |
+| 1000 | 0x3E8 | wifiEnable | D2H | `@ 0.376s: payload e8 03 00 00` |
+| 1001 | 0x3E9 | autoConnectEnable | D2H | `@ 0.409s: payload e9 03 00 00` |
+| 1002 | 0x3EA | wifiConnect | H2D | `@ 2.244s: payload ea 03 00 00` |
+| 1003 | 0x3EB | scanningDevice | D2H | Documented |
+| 1004 | 0x3EC | deviceConnecting | D2H | `@ 3.763s: payload ec 03 00 00` |
+| 1007 | 0x3EF | btConnected | D2H | `@ 3.663s: payload ef 03 00 00` |
+| 1010 | 0x3F2 | projectionDisconnected | D2H | Documented |
+
+### Verified BoxSettings JSON Structure
+
+**Adapter → Host (0x19 incoming):**
+```json
+{
+  "uuid": "651ede982f0a99d7f9138131ec5819fe",
+  "MFD": "20240119",
+  "boxType": "YA",
+  "OemName": "carlink_test",
+  "productType": "A15W",
+  "HiCar": 1,
+  "hwVersion": "YMA0-WR2C-0003",
+  "WiFiChannel": 36,
+  "CusCode": "",
+  "DevList": [{"id": "64:31:35:8C:29:69", "type": "CarPlay", ...}]
+}
+```
+
+**Host → Adapter (0x19 outgoing):**
+```json
+{
+  "mediaDelay": 300,
+  "syncTime": 1766995378,
+  "androidAutoSizeW": 2400,
+  "androidAutoSizeH": 960,
+  "WiFiChannel": 36,
+  "mediaSound": 0,
+  "callQuality": 1,
+  "autoPlay": false,
+  "autoConn": true,
+  "wifiName": "carlink_test",
+  "btName": "carlink_test",
+  "boxName": "carlink_test"
+}
+```
+
+**Phone Info Update (during connection):**
+```json
+{
+  "MDLinkType": "CarPlay",
+  "MDModel": "iPhone18,4",
+  "MDOSVersion": "23D5089e",
+  "MDLinkVersion": "935.3.1",
+  "btMacAddr": "64:31:35:8C:29:69",
+  "btName": "Luis",
+  "cpuTemp": 53
+}
+```
+
+### Verified Open (0x01) Payload Structure
+
+```
+Offset  Size  Field        Example Value    Description
+──────────────────────────────────────────────────────────
+0x00    4     width        0x00000960       2400 pixels
+0x04    4     height       0x000003c0       960 pixels
+0x08    4     fps          0x0000003c       60 fps
+0x0C    4     format       0x00000005       H.264
+0x10    4     packetMax    0x0000c000       49152 bytes
+0x14    4     boxVersion   0x00000002       Protocol v2
+0x18    4     phoneMode    0x00000002       CarPlay mode
+```
+
+**Captured hex (from video_2400x960@60 @ 0.253s):**
+```
+aa 55 aa 55  1c 00 00 00  01 00 00 00  fe ff ff ff  <- Header (16 bytes)
+60 09 00 00  c0 03 00 00  3c 00 00 00  05 00 00 00  <- width, height, fps, format
+00 c0 00 00  02 00 00 00  02 00 00 00               <- packetMax, boxVer, phoneMode
+```
+
+### Verified HeartBeat Format
+
+**Minimal message (0 byte payload):**
+```
+aa 55 aa 55  00 00 00 00  aa 00 00 00  55 ff ff ff
+│─ magic ─│  │─ len=0 ─│  │─ type ──│  │─ check ─│
+```
+
+### SendFile (0x99) Parameter Format
+
+```
+Offset  Field           Example
+────────────────────────────────
+0x00    path_length     0x00000010 (16 bytes)
+0x04    path_string     "/tmp/screen_dpi\0"
++path   value_length    0x00000004 (4 bytes)
++4      value           0x000000f0 (240 dpi)
+```
+
+---
+
+## Cross-Reference: Wireless CarPlay Protocol
+
+For wireless CarPlay connections (not USB-to-adapter), see:
+- `CARPLAY_PROTOCOL_CAPTURE.md` - RTSP/HomeKit pairing details
+- `REVERSE_ENGINEERING_NOTES.md` - Adapter internals
+
+**Key Differences:**
+| Aspect | USB Protocol (this doc) | Wireless CarPlay |
+|--------|------------------------|------------------|
+| Transport | USB Bulk (0x55AA55AA) | RTSP over TCP:5000 |
+| Auth | None (trusted) | HomeKit Pairing v2 (SRP-6a) |
+| Encryption | None | ChaCha20-Poly1305 |
+| Video | Raw H.264 in payload | Encrypted H.264 |
