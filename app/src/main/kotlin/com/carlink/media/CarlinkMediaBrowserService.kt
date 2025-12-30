@@ -117,7 +117,7 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
         clientPackageName: String,
         clientUid: Int,
         rootHints: Bundle?,
-    ): BrowserRoot? {
+    ): BrowserRoot {
         if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] onGetRoot from: $clientPackageName (uid=$clientUid)")
 
         // Log AAOS root hints for debugging

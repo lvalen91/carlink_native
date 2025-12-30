@@ -1,7 +1,6 @@
 package com.carlink.ui
 
 import android.view.MotionEvent
-import android.view.Surface
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -17,6 +16,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -28,14 +28,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -72,6 +69,11 @@ import kotlinx.coroutines.launch
  * - Video Rendering: Displays H.264 video stream via SurfaceView (HWC overlay)
  * - Touch Input: Captures multitouch gestures and forwards to adapter
  * - Connection Lifecycle: Manages adapter state and displays status
+ *
+ * Display Handling:
+ * - GM pane constraints: Uses systemBars insets for AAOS system UI areas
+ * - Curved/contoured edges: Uses displayCutout insets for GM RST/Equinox curved displays
+ * - H.264 alignment: Forces even width/height for macroblock compatibility
  *
  * OPTIMIZATION: Uses SurfaceView for direct HWC overlay rendering:
  * - Lower latency than TextureView (no GPU composition)
@@ -113,10 +115,21 @@ fun MainScreen(
             // Only initialize if we have valid dimensions
             if (surfaceState.width <= 0 || surfaceState.height <= 0) return@let
 
+            // Force even dimensions - required for H.264 macroblock alignment
+            // Curved display cutouts can result in odd dimensions after inset subtraction
+            val adapterWidth = surfaceState.width and 1.inv()
+            val adapterHeight = surfaceState.height and 1.inv()
+
+            logInfo(
+                "[CARLINK_RESOLUTION] Sending to adapter: ${adapterWidth}x$adapterHeight " +
+                    "(raw: ${surfaceState.width}x${surfaceState.height}, mode=$displayMode)",
+                tag = "UI",
+            )
+
             carlinkManager.initialize(
                 surface = surface,
-                surfaceWidth = surfaceState.width,
-                surfaceHeight = surfaceState.height,
+                surfaceWidth = adapterWidth,
+                surfaceHeight = adapterHeight,
                 callback =
                     object : CarlinkManager.Callback {
                         override fun onStateChanged(newState: CarlinkManager.State) {
@@ -151,20 +164,24 @@ fun MainScreen(
     val isLoading = state != CarlinkManager.State.STREAMING
     val colorScheme = MaterialTheme.colorScheme
 
-    // Apply system bar insets based on display mode
-    // This matches Flutter's SafeArea behavior with _disableSafeArea flag:
-    // - FULLSCREEN_IMMERSIVE: No insets, video fills entire screen (1920x1080)
-    // - Other modes: Apply insets to constrain video to usable area
+    // Apply system bar and display cutout insets based on display mode
+    // - FULLSCREEN_IMMERSIVE: No insets, video fills entire screen
+    // - Other modes: Apply systemBars (AAOS panes) AND displayCutout (GM curved edges)
     val baseModifier =
         Modifier
             .fillMaxSize()
             .background(Color.Black)
 
+    // Key fix for GM curved displays (RST, Equinox): Apply BOTH systemBars AND displayCutout
+    // - systemBars: Handles AAOS status bar, nav bar, and system panes
+    // - displayCutout: Handles physical curved/contoured display edges
     val boxModifier =
         if (displayMode == DisplayMode.FULLSCREEN_IMMERSIVE) {
             baseModifier // No insets in fullscreen immersive mode - fill entire screen
         } else {
-            baseModifier.windowInsetsPadding(WindowInsets.systemBars) // Apply insets
+            baseModifier
+                .windowInsetsPadding(WindowInsets.systemBars)
+                .windowInsetsPadding(WindowInsets.displayCutout) // Handles GM curved right edge
         }
 
     Box(modifier = boxModifier) {
@@ -250,12 +267,13 @@ fun MainScreen(
             }
 
             // Control buttons (visible when loading)
-            // Apply system bar insets to avoid overlap when not in immersive mode
+            // Apply system bar and display cutout insets to avoid overlap with system UI and curved edges
             Row(
                 modifier =
                     Modifier
                         .align(Alignment.TopStart)
                         .windowInsetsPadding(WindowInsets.systemBars)
+                        .windowInsetsPadding(WindowInsets.displayCutout)
                         .padding(24.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {

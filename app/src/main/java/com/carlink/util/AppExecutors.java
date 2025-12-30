@@ -30,6 +30,7 @@ package com.carlink.util;
    */
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
 
 import androidx.annotation.NonNull;
 
@@ -78,41 +79,37 @@ public class AppExecutors
     }
 
     // Optimized thread pool for Intel Atom x7-A3960 quad-core
-    private static class OptimizedMediaCodecExecutor implements Executor
-    {
+    private static class OptimizedMediaCodecExecutor implements Executor {
         private final ThreadPoolExecutor executor;
-
-        public OptimizedMediaCodecExecutor(String threadName, int androidPriority)
-        {
-            // Get available CPU cores for Intel Atom x7-A3960 (should be 4)
-            int numberOfCores = Runtime.getRuntime().availableProcessors();
-            
-            // Create optimized thread pool based on Android best practices
-            // Core pool: half cores, Max pool: all cores to utilize quad-core efficiently  
-            executor = new ThreadPoolExecutor(
-                Math.max(1, numberOfCores / 2), // corePoolSize - utilize half cores initially
-                numberOfCores, // maximumPoolSize - can scale to all cores under load
-                60L, // keepAliveTime - standard Android recommendation
-                TimeUnit.SECONDS,
-                new LinkedBlockingQueue<>(128), // Larger queue for 6GB RAM system
-                r -> {
-                    Thread t = new Thread(r, threadName);
-                    // Don't set Thread priority here - it will be set in the execute method
-                    return t;
-                }
-            );
-            executor.allowCoreThreadTimeOut(true); // Allow core threads to timeout for efficiency
-            this.androidPriority = androidPriority;
-        }
-        
         private final int androidPriority;
 
+        private OptimizedMediaCodecExecutor(String executorName, int androidPriority) {
+            // Get available CPU cores for Intel Atom x7-A3960 (should be 4)
+            int numberOfCores = Runtime.getRuntime().availableProcessors();
+
+            // Create optimized thread pool based on Android best practices
+            // Core pool: half cores, Max pool: all cores to utilize quad-core efficiently
+            this.executor = new ThreadPoolExecutor(
+                    Math.max(1, numberOfCores / 2), // corePoolSize - utilize half cores initially
+                    numberOfCores, // maximumPoolSize - can scale to all cores under load
+                    60L, // keepAliveTime - standard Android recommendation
+                    TimeUnit.SECONDS,
+                    new LinkedBlockingQueue<>(128), // Larger queue for 6GB RAM system
+                    r -> {
+                        Thread t = new Thread(r, executorName);
+                        // Don't set Thread priority here - it will be set in the execute method
+                        return t;
+                    }
+            );
+            this.executor.allowCoreThreadTimeOut(true); // Allow core threads to timeout for efficiency
+            this.androidPriority = androidPriority;
+        }
+
         @Override
-        public void execute(@NonNull Runnable command)
-        {
+        public void execute(@NonNull Runnable command) {
             // Wrap command to set Android thread priority properly
             executor.execute(() -> {
-                android.os.Process.setThreadPriority(androidPriority);
+                Process.setThreadPriority(androidPriority);
                 command.run();
             });
         }
@@ -133,7 +130,7 @@ public class AppExecutors
 
     private static class MainThreadExecutor implements Executor
     {
-        private Handler mainThreadHandler = new Handler(Looper.getMainLooper());
+        private final Handler mainThreadHandler = new Handler(Looper.getMainLooper());
 
         @Override
         public void execute(@NonNull Runnable command)

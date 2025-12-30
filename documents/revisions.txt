@@ -49,3 +49,5 @@
 [33] :: DualStreamAudioManager.kt WRITE_NON_BLOCKING for all streams Prevents thread starvation during multi-stream playback. minBufferLevelMs reduced. AudioConfig.kt Buffer multiplier reduced across all platforms. Pre-fill threshold reduced.
 [34] :: Testing why oemIcon in CarPlay does not have label.
 [35] :: Navigation Audio changes.
+[36] :: XDA@RWerksman mainscreen.kt fix for GM EV or non rectangular display and edge runoff. Some code cleanup, unused imports.
+[37] :: Fixed App file logging not working. Added Video logging of frames for weird degradation overtime of video stream

@@ -403,7 +403,7 @@ class MainActivity : ComponentActivity() {
     private fun registerUsbDetachReceiver() {
         val filter = IntentFilter(UsbManager.ACTION_USB_DEVICE_DETACHED)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(usbDetachReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(usbDetachReceiver, filter, RECEIVER_NOT_EXPORTED)
         } else {
             registerReceiver(usbDetachReceiver, filter)
         }

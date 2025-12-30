@@ -87,6 +87,9 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, false)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
+            // Restore release-build default when switching away from diagnostic presets
+            Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
+            com.carlink.util.VideoDebugLogger.setDebugEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
         LogPreset.MINIMAL -> {
@@ -97,6 +100,9 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.enableAllTags()
             Logger.setTagsEnabled(listOf(Logger.Tags.SERIALIZE, Logger.Tags.TOUCH, Logger.Tags.AUDIO, Logger.Tags.MEDIA), false)
+            // Restore release-build default when switching away from diagnostic presets
+            Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
+            com.carlink.util.VideoDebugLogger.setDebugEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
         LogPreset.NORMAL -> {
@@ -107,6 +113,9 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.enableAllTags()
             Logger.setTagsEnabled(listOf(Logger.Tags.SERIALIZE, Logger.Tags.TOUCH, Logger.Tags.MEDIA), false)
+            // Restore release-build default when switching away from diagnostic presets
+            Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
+            com.carlink.util.VideoDebugLogger.setDebugEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
         LogPreset.DEBUG -> {
@@ -150,7 +159,8 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
             // Enable only video-related logging
-            Logger.setTagsEnabled(listOf(Logger.Tags.VIDEO, Logger.Tags.USB, Logger.Tags.PLATFORM, Logger.Tags.CONFIG), true)
+            // Include ADAPTR tag because H264Renderer logs route through CarlinkManager.log() which uses ADAPTR tag
+            Logger.setTagsEnabled(listOf(Logger.Tags.VIDEO, Logger.Tags.H264_RENDERER, Logger.Tags.ADAPTR, Logger.Tags.USB, Logger.Tags.PLATFORM, Logger.Tags.CONFIG), true)
         }
 
         LogPreset.AUDIO_ONLY -> {
@@ -161,8 +171,9 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
             // Enable only audio-related logging
+            // Include ADAPTR tag because audio manager logs may route through CarlinkManager.log()
             Logger.setTagsEnabled(
-                listOf(Logger.Tags.AUDIO, Logger.Tags.MIC, Logger.Tags.USB, Logger.Tags.PLATFORM, Logger.Tags.CONFIG),
+                listOf(Logger.Tags.AUDIO, Logger.Tags.MIC, Logger.Tags.ADAPTR, Logger.Tags.USB, Logger.Tags.PLATFORM, Logger.Tags.CONFIG),
                 true,
             )
         }
@@ -190,9 +201,10 @@ fun LogPreset.apply() {
                 ),
                 true,
             )
-            // Also enable debug logging flag for VideoDebugLogger (Java)
-            com.carlink.util.VideoDebugLogger
-                .setDebugEnabled(true)
+            // CRITICAL: Override release-build restriction when user explicitly enables diagnostic preset
+            // This allows logDebugOnly() functions to work in release builds for field diagnostics
+            Logger.setDebugLoggingEnabled(true)
+            com.carlink.util.VideoDebugLogger.setDebugEnabled(true)
         }
     }
 }

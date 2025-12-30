@@ -486,7 +486,7 @@ Time      Payload                                    Meaning
 **Characteristics:**
 - **decType**: 4 (48kHz stereo) or 2 (44.1kHz stereo) - depends on host BoxSettings.mediaSound config
 - **audType**: 2 (navigation stream)
-- **Commands**: NAVI_START (0x06), OUTPUT_START (0x01), NAVI_STOP (0x07), NAVI_COMPLETE (0x10)
+- **Commands**: PHONECALL_STOP (0x06 - channel clear), OUTPUT_START (0x01), NAVI_START (0x07), NAVI_COMPLETE (0x10)
 
 **Sample Rate Discovery (Dec 2025):**
 - **48kHz config (mediaSound=1)**: Navigation uses decType=4, 60ms packet intervals
@@ -498,14 +498,15 @@ Time      Payload                                    Meaning
 Time       Payload                                    Meaning
 ──────────────────────────────────────────────────────────────
 23398ms    04 00 00 00 cd cc 4c 3e 01 00 00 00 [vol]  Volume duck (vol=0.20) - duck media
-23399ms    02 00 00 00 00 00 00 00 02 00 00 00 06     NAVI_START (decType=2 in cmd)
-23492ms    04 00 00 00 00 00 00 00 02 00 00 00 01     OUTPUT_START (decType=4 in cmd)
+23399ms    02 00 00 00 00 00 00 00 02 00 00 00 06     PHONECALL_STOP (channel clear, decType=2)
+23492ms    04 00 00 00 00 00 00 00 02 00 00 00 01     OUTPUT_START (decType=4)
+23500ms    04 00 00 00 00 00 00 00 02 00 00 00 07     NAVI_START (cmd=7, decType=4)
 23673ms    04 00 00 00 00 00 00 00 02 ... [PCM]       First data packet (decType=4, silence)
 ...        (navigation audio @ ~60ms intervals)
 25173ms    04 00 00 00 00 00 00 00 02 ... [0xFFFF]   End marker pattern
 25233ms    04 00 00 00 00 00 00 00 02 ... [silence]  Silence packets continue
-...        (~2 seconds of post-NAVI_STOP silence)
-[later]    04 00 00 00 00 00 00 00 02 00 00 00 10     NAVI_COMPLETE (cmd=16) **NEW**
+...        (~2 seconds silence after nav ends)
+[later]    04 00 00 00 00 00 00 00 02 00 00 00 10     NAVI_COMPLETE (cmd=16)
 [later]    04 00 00 00 00 00 00 00 02 00 00 00 02     OUTPUT_STOP
 ```
 
@@ -536,20 +537,22 @@ from causing playback artifacts.
 **Characteristics:**
 - **decType**: 5 (16kHz mono)
 - **audType**: 1 (speaker output), 3 (microphone input)
-- **Commands**: SIRI_START (0x08), INPUT_CONFIG (0x03), OUTPUT_START (0x01), SIRI_STOP (0x09)
+- **Commands**: NAVI_STOP (0x08 - triggers Siri mode), INPUT_START (0x03), OUTPUT_START (0x01), SIRI_START (0x09)
 - **Bidirectional**: Yes - uses SendAudio for microphone capture
+- **Note**: No SIRI_STOP exists - session ends via OUTPUT_STOP
 
 **Full Captured Sequence (from `siri_invocation` @ 19.174s):**
 ```
 Time      Direction  Payload                                 Meaning
 ──────────────────────────────────────────────────────────────────────────────
-19.174s   D2H        05 00 00 00 ... 01 00 00 00 08         SIRI_START
-19.314s   D2H        05 00 00 00 ... 01 00 00 00 03         INPUT_CONFIG
+19.174s   D2H        05 00 00 00 ... 01 00 00 00 08         NAVI_STOP (triggers Siri mode)
+19.314s   D2H        05 00 00 00 ... 01 00 00 00 03         INPUT_START (mic capture begins)
 19.315s   D2H        Command: 01 00 00 00                   Acknowledgment
 19.316s   D2H        05 00 00 00 ... 01 00 00 00 01         OUTPUT_START
 19.495s   D2H        AudioData (988 bytes, audType=1)       Siri speaking
 19.640s   H2D        SendAudio (8220 bytes, audType=3)      User voice (mic)
 ...       (interleaved bidirectional audio @ ~30ms intervals)
+19.xxx    D2H        05 00 00 00 ... 01 00 00 00 09         SIRI_START (Siri responding)
 ```
 
 **Voice Audio Packets:**
@@ -565,19 +568,20 @@ Time      Direction  Payload                                 Meaning
 **Characteristics:**
 - **decType**: 5 (16kHz mono) - same as Siri
 - **audType**: 1 (speaker output), 3 (microphone input)
-- **Commands**: PHONECALL_START (0x04), INPUT_CONFIG (0x03), OUTPUT_START (0x01), PHONECALL_STOP (0x05)
+- **Commands**: INPUT_START (0x03), INPUT_STOP (0x04), PHONECALL_START (0x05), PHONECALL_STOP (0x06)
 - **Bidirectional**: Yes - uses SendAudio for microphone capture
 
-**Full Captured Sequence (from `phone_call` @ 13.630s):**
+**Full Captured Sequence (from `phone_call` @ 13.630s - outgoing call):**
 ```
 Time      Direction  Payload                                 Meaning
 ──────────────────────────────────────────────────────────────────────────────
-13.630s   D2H        05 00 00 00 ... 01 00 00 00 04         PHONECALL_START
-14.008s   D2H        05 00 00 00 ... 01 00 00 00 03         INPUT_CONFIG
+13.630s   D2H        05 00 00 00 ... 01 00 00 00 04         INPUT_STOP (clear mic state)
+14.008s   D2H        05 00 00 00 ... 01 00 00 00 03         INPUT_START (mic capture begins)
 14.009s   D2H        Command: 01 00 00 00                   Acknowledgment
 14.010s   D2H        05 00 00 00 ... 01 00 00 00 01         OUTPUT_START
 14.060s   H2D        SendAudio (8220 bytes, audType=3)      User voice (mic)
 14.191s   D2H        AudioData (988 bytes, audType=1)       Caller voice
+...       D2H        05 00 00 00 ... 01 00 00 00 05         PHONECALL_START (call connected)
 ...       (interleaved bidirectional audio continues)
 ```
 
@@ -799,19 +803,22 @@ Time       decType  audType  Event
 |-------|------|-----------|------------------|
 | 1 | OUTPUT_START | D2H | `@ 75.690s: cmd byte 01` |
 | 2 | OUTPUT_STOP | D2H | Documented |
-| 3 | INPUT_CONFIG | D2H | `@ 14.008s: cmd byte 03` (phone/Siri) |
-| 4 | PHONECALL_START | D2H | `@ 13.630s: cmd byte 04` (outgoing), `@ 85.656s` (incoming) |
-| 5 | PHONECALL_STOP | D2H | Documented |
-| 6 | NAVI_START | D2H | `@ 75.665s: cmd byte 06` |
-| 7 | NAVI_STOP | D2H | Documented |
-| 8 | SIRI_START | D2H | `@ 19.174s: cmd byte 08` |
-| 9 | SIRI_STOP | D2H | Documented |
+| 3 | INPUT_START | D2H | `@ 14.008s: cmd byte 03` (mic capture start) |
+| 4 | INPUT_STOP | D2H | `@ 13.630s: cmd byte 04` (mic state transition) |
+| 5 | PHONECALL_START | D2H | Call connected (after mic setup) |
+| 6 | PHONECALL_STOP | D2H | Channel clear / nav prep signal |
+| 7 | NAVI_START | D2H | `@ 75.665s: cmd byte 07` (audio_type=2) |
+| 8 | NAVI_STOP | D2H | `@ 19.174s: cmd byte 08` - Activates Siri mode (misleading name!) |
+| 9 | SIRI_START | D2H | Siri responding with audio |
 | 10 | MEDIA_START | D2H | Documented |
 | 11 | MEDIA_STOP | D2H | Documented |
 | 12 | ALERT_START | D2H | `@ 54.514s: cmd byte 0c` (ringtone) |
 | 13 | ALERT_STOP | D2H | Documented |
 | 14 | INCOMING_CALL_INIT | D2H | `@ 48.918s: cmd byte 0e` |
-| 16 | NAVI_COMPLETE | D2H | `@ 40.166s: cmd byte 10` (notification done) **NEW** |
+| 16 | NAVI_COMPLETE | D2H | `@ 40.166s: cmd byte 10` (navigation done) |
+
+**IMPORTANT:** No SIRI_STOP command (0x0F) exists. Siri sessions end via OUTPUT_STOP.
+Command 0x08 (NAVI_STOP) actually triggers Siri/voice mode - the name is misleading.
 
 ### Verified PCM Data Characteristics
 
@@ -968,25 +975,37 @@ Speaker:    960 bytes / 2 bytes per sample / 16000 Hz = 30ms
 Microphone: 8192 bytes / 2 bytes per sample / 16000 Hz = 256ms
 ```
 
-### INPUT_CONFIG Command (0x03)
+### INPUT_START Command (0x03) and INPUT_STOP (0x04)
 
-**Discovery**: The `INPUT_CONFIG` command (value 0x03) was discovered in December 2025 captures. It appears in the initialization sequence for bidirectional voice sessions, between the session start command (PHONECALL_START or SIRI_START) and OUTPUT_START.
+**Discovery**: Commands 0x03 and 0x04 control microphone capture state. They appear in voice session initialization sequences.
 
-**Purpose**: Signals that the host should prepare microphone input. After receiving INPUT_CONFIG, the host begins sending `SendAudio` packets with `audType=3`.
+**Purpose**:
+- `INPUT_START` (0x03): Signals microphone capture should begin. Host starts sending `SendAudio` packets with `audType=3`.
+- `INPUT_STOP` (0x04): Signals microphone state transition. Often appears to clear state before a new voice session.
 
-**Sequence:**
-1. Session start (cmd=0x04 or cmd=0x08)
-2. INPUT_CONFIG (cmd=0x03) → **Host prepares microphone capture**
+**Siri Sequence:**
+1. NAVI_STOP (cmd=0x08) → Triggers Siri/voice mode
+2. INPUT_START (cmd=0x03) → **Host begins microphone capture**
 3. Acknowledgment (Command type, value=0x01)
 4. OUTPUT_START (cmd=0x01) → Audio streaming begins
-5. Bidirectional audio (AudioData + SendAudio interleaved)
+5. SIRI_START (cmd=0x09) → Siri responding with audio
+6. Bidirectional audio (AudioData + SendAudio interleaved)
+7. OUTPUT_STOP (cmd=0x02) → Session ends (no SIRI_STOP exists)
+
+**Phone Call Sequence (outgoing):**
+1. INPUT_STOP (cmd=0x04) → Clear previous mic state
+2. INPUT_START (cmd=0x03) → Begin microphone capture
+3. OUTPUT_START (cmd=0x01) → Audio begins
+4. PHONECALL_START (cmd=0x05) → Call connected
+5. Bidirectional audio continues
+6. OUTPUT_STOP (cmd=0x02) → Call ends
 
 ### Implementation Notes
 
-- **Host Responsibility**: The Carlink app must capture microphone audio and send it via SendAudio packets when INPUT_CONFIG is received
+- **Host Responsibility**: The Carlink app must capture microphone audio and send it via SendAudio packets when INPUT_START is received
 - **Packet Interleaving**: Speaker and microphone packets are interleaved during active voice sessions
 - **Silence Detection**: Initial microphone packets may contain near-silence (0x0000, 0xFFFF patterns)
-- **Session End**: When session stops (cmd=0x05 or cmd=0x09), bidirectional audio ceases
+- **Session End**: Sessions end via OUTPUT_STOP (0x02). No SIRI_STOP command exists - Siri ends with OUTPUT_STOP.
 
 ---
 
@@ -1027,6 +1046,48 @@ lsmod | grep snd                         # Audio modules
 i2cdetect -y -a 0                       # I2C devices
 ps | grep -E "(hfpd|mdnsd|boxNetworkService)"  # Processes
 ```
+
+## Android Auto Audio Differences (Dec 2025 Research)
+
+Captures comparing CarPlay and Android Auto sessions revealed key differences in audio packet behavior:
+
+### Volume Field Behavior
+
+| Platform | Volume Field | Behavior |
+|----------|--------------|----------|
+| **CarPlay** | Variable (0.0 - 1.0) | Used for ducking (0.2 during nav), restore (1.0 after) |
+| **Android Auto** | Always 0.0 | Volume field not used by adapter |
+
+**Implication:** Android Auto relies on the host app to handle volume ducking independently, while CarPlay sends explicit ducking commands via the volume field.
+
+### audio_type Usage
+
+| Platform | audio_type Values | Observed Usage |
+|----------|-------------------|----------------|
+| **CarPlay** | 1, 2, 3 | Main (1), Navigation/ducking (2), Mic (3) |
+| **Android Auto** | 1 only | All output streams use main channel |
+
+**Implication:** Android Auto does not send navigation audio on a separate channel (audio_type=2). All audio goes through the main channel (audio_type=1). Navigation ducking must be handled by the host app or Android Auto's own audio routing.
+
+### Audio Command Format
+
+Both platforms use the **same 13-byte command structure**:
+```
+Offset  Size  Field      CarPlay         Android Auto
+────────────────────────────────────────────────────────
+0x00    4     decType    4, 5, 2         4, 5, 2 (same)
+0x04    4     volume     0.0 - 1.0       Always 0.0
+0x08    4     audType    1, 2, 3         Always 1
+0x0C    1     command    0x01-0x10       0x01-0x10 (same)
+```
+
+### Implementation Notes for carlink_native
+
+1. **Volume Ducking**: For Android Auto, implement app-side ducking logic since adapter doesn't send volume packets
+2. **Stream Routing**: Can use single audio track for Android Auto (no need for nav track demuxing)
+3. **audio_type Detection**: Check for audio_type=2 to identify CarPlay navigation; Android Auto won't use it
+
+---
 
 ## Conclusion
 

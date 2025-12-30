@@ -3,7 +3,6 @@ package com.carlink.audio
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
-import android.os.Build
 import android.os.Process
 import android.util.Log
 import com.carlink.BuildConfig
@@ -715,9 +714,8 @@ class DualStreamAudioManager(
         log("[NAV_STOP] stopNavTrack() called")
 
         synchronized(lock) {
-            val trackState = navTrack?.playState
             val trackStateStr =
-                when (trackState) {
+                when (val trackState = navTrack?.playState) {
                     AudioTrack.PLAYSTATE_PLAYING -> "PLAYING"
                     AudioTrack.PLAYSTATE_PAUSED -> "PAUSED"
                     AudioTrack.PLAYSTATE_STOPPED -> "STOPPED"

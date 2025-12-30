@@ -212,6 +212,55 @@ These parameters are typically set by the host app during connection initializat
 
 ---
 
+## AndroidWorkMode Deep Dive
+
+### Critical Discovery (Dec 2025)
+
+`AndroidWorkMode` controls whether the adapter starts the Android Auto daemon. **This is a dynamic toggle, not a persistent setting.**
+
+### Behavior
+
+| Event | AndroidWorkMode Value | Effect |
+|-------|----------------------|--------|
+| Host sends `android_work_mode=1` | `0 → 1` | `Start Link Deamon: AndroidAuto` |
+| Phone disconnects | `1 → 0` (firmware auto-reset) | Android Auto daemon stops |
+| Host reconnects | Must re-send `android_work_mode=1` | Daemon restarts |
+
+### How to Set via Host App
+
+**File Path**: `/etc/android_work_mode`
+**Protocol**: `SendFile` (type 0x99) with 4-byte payload
+
+```typescript
+// Pi-Carplay example (DongleDriver.ts)
+new SendBoolean(true, FileAddress.ANDROID_WORK_MODE)
+// FileAddress.ANDROID_WORK_MODE = '/etc/android_work_mode'
+```
+
+**Firmware Log Evidence**:
+```
+UPLOAD FILE: /etc/android_work_mode, 4 byte
+OnAndroidWorkModeChanged: 0 → 1
+Start Link Deamon: AndroidAuto
+```
+
+### Impact on Android Auto Pairing
+
+| AndroidWorkMode | Android Auto Daemon | Fresh Pairing |
+|-----------------|---------------------|---------------|
+| 0 (default) | NOT started | ❌ Fails |
+| 1 | Started | ✅ Works |
+
+**Key Finding**: Open-source projects (Pi-Carplay, carlink_native) that don't send `android_work_mode=1` during initialization cannot perform Android Auto pairing, even if Bluetooth pairing succeeds.
+
+### riddle.conf vs Runtime State
+
+- `AndroidWorkMode` in riddle.conf: May show `1` if previously set by Autokit
+- **Runtime state**: Always resets to `0` on phone disconnect
+- Host app must send on **every connection**, not just first time
+
+---
+
 ## Configuration Commands
 
 ### CLI Examples

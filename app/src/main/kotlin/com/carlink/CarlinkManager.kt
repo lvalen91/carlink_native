@@ -551,7 +551,7 @@ class CarlinkManager(
      */
     suspend fun restart() {
         stop()
-        kotlinx.coroutines.delay(2000)
+        delay(2000)
         start()
     }
 
@@ -810,7 +810,7 @@ class CarlinkManager(
 
             if (device == null) {
                 attempts++
-                kotlinx.coroutines.delay(USB_WAIT_PERIOD_MS)
+                delay(USB_WAIT_PERIOD_MS)
             }
         }
 
@@ -1199,7 +1199,7 @@ class CarlinkManager(
 
         reconnectJob =
             scope.launch {
-                kotlinx.coroutines.delay(delay)
+                delay(delay)
 
                 // Only attempt if still disconnected
                 if (state == State.DISCONNECTED) {

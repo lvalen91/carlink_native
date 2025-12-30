@@ -37,11 +37,6 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -85,15 +80,11 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -106,7 +97,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -324,7 +314,7 @@ private fun ControlTabContent(carlinkManager: CarlinkManager) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var isProcessing by remember { mutableStateOf(false) }
-    val colorScheme = MaterialTheme.colorScheme
+    MaterialTheme.colorScheme
 
     // Check device connection state - Matches Flutter _isDeviceConnected()
     val isDeviceConnected = carlinkManager.state != CarlinkManager.State.DISCONNECTED
@@ -1874,7 +1864,7 @@ private fun LogsTabContent(
                         style = MaterialTheme.typography.bodySmall,
                         color = colorScheme.onSurfaceVariant,
                         modifier = Modifier.fillMaxWidth(),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        textAlign = TextAlign.Center,
                     )
                 }
             }
@@ -1979,7 +1969,7 @@ private fun LogsTabContent(
                             MaterialTheme.typography.headlineSmall.copy(
                                 fontWeight = FontWeight.Bold,
                             ),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        textAlign = TextAlign.Center,
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
@@ -2264,7 +2254,7 @@ private fun LogPresetChip(
         shape = MaterialTheme.shapes.medium,
         color = if (isSelected) preset.color.copy(alpha = 0.15f) else colorScheme.surfaceContainerHighest,
         border =
-            androidx.compose.foundation.BorderStroke(
+            BorderStroke(
                 width = if (isSelected) 2.dp else 1.dp,
                 color = if (isSelected) preset.color else colorScheme.outline,
             ),
@@ -2280,14 +2270,14 @@ private fun LogPresetChip(
                         .size(20.dp)
                         .then(
                             if (isSelected) {
-                                Modifier.background(preset.color, shape = androidx.compose.foundation.shape.CircleShape)
+                                Modifier.background(preset.color, shape = CircleShape)
                             } else {
-                                Modifier.background(Color.Transparent, shape = androidx.compose.foundation.shape.CircleShape)
+                                Modifier.background(Color.Transparent, shape = CircleShape)
                             },
                         ).border(
                             width = 2.dp,
                             color = preset.color,
-                            shape = androidx.compose.foundation.shape.CircleShape,
+                            shape = CircleShape,
                         ),
                 contentAlignment = Alignment.Center,
             ) {

@@ -127,12 +127,7 @@ class VideoSurfaceView
             return callback?.onTouchEvent(event) ?: super.onTouchEvent(event)
         }
 
-        override fun performClick(): Boolean {
-            // Required for accessibility - call super to handle accessibility events
-            return super.performClick()
-        }
-
-        // ==================== SurfaceHolder.Callback ====================
+    // ==================== SurfaceHolder.Callback ====================
 
         override fun surfaceCreated(holder: SurfaceHolder) {
             isSurfaceCreated = true

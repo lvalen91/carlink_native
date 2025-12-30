@@ -15,5 +15,5 @@ package com.carlink.util;
  */
 public interface LogCallback {
 
-    public void log(String message);
+    void log(String message);
 }

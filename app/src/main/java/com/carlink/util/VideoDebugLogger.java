@@ -208,6 +208,13 @@ public class VideoDebugLogger {
 
     // ==================== MediaCodec Logging ====================
 
+    // NAL unit type tracking for IDR frame detection
+    private static long idrFrameCount = 0;
+    private static long pFrameCount = 0;
+    private static long spsCount = 0;
+    private static long ppsCount = 0;
+    private static long lastIdrTime = 0;
+
     /**
      * Log MediaCodec input buffer queued.
      * High frequency - throttled.
@@ -222,6 +229,93 @@ public class VideoDebugLogger {
             Log.d(TAG, "[VIDEO_CODEC] Input #" + codecInputCount +
                     ": buffer=" + bufferIndex + ", size=" + dataSize + "B");
         }
+    }
+
+    /**
+     * Log NAL unit type detection - CRITICAL for diagnosing video degradation.
+     * IDR frames are always logged (not throttled) since they're rare and important.
+     * P-frames are throttled to prevent spam.
+     *
+     * NAL unit types:
+     *   1 = Non-IDR slice (P-frame)
+     *   5 = IDR slice (keyframe)
+     *   6 = SEI (Supplemental Enhancement Information)
+     *   7 = SPS (Sequence Parameter Set)
+     *   8 = PPS (Picture Parameter Set)
+     *
+     * @param nalType the NAL unit type (lower 5 bits of NAL header)
+     * @param dataSize the size of the NAL unit data
+     */
+    public static void logNalUnitType(int nalType, int dataSize) {
+        if (!debugEnabled) return;
+
+        long now = System.currentTimeMillis();
+
+        switch (nalType) {
+            case 5: // IDR frame - ALWAYS log (critical for diagnostics)
+                idrFrameCount++;
+                long timeSinceLastIdr = (lastIdrTime > 0) ? (now - lastIdrTime) : 0;
+                lastIdrTime = now;
+                Log.i(TAG, "[VIDEO_NAL] *** IDR KEYFRAME #" + idrFrameCount +
+                        " received *** size=" + dataSize + "B" +
+                        (timeSinceLastIdr > 0 ? ", interval=" + timeSinceLastIdr + "ms" : " (first)"));
+                break;
+
+            case 7: // SPS - always log
+                spsCount++;
+                Log.i(TAG, "[VIDEO_NAL] SPS #" + spsCount + " received, size=" + dataSize + "B");
+                break;
+
+            case 8: // PPS - always log
+                ppsCount++;
+                Log.i(TAG, "[VIDEO_NAL] PPS #" + ppsCount + " received, size=" + dataSize + "B");
+                break;
+
+            case 1: // P-frame - throttled (very high frequency)
+                pFrameCount++;
+                // Log every 100th P-frame or every second
+                if (pFrameCount % 100 == 0) {
+                    long timeSinceIdr = (lastIdrTime > 0) ? (now - lastIdrTime) : -1;
+                    Log.d(TAG, "[VIDEO_NAL] P-frame #" + pFrameCount +
+                            ", size=" + dataSize + "B" +
+                            ", IDR count=" + idrFrameCount +
+                            (timeSinceIdr >= 0 ? ", time since IDR=" + timeSinceIdr + "ms" : ""));
+                }
+                break;
+
+            case 6: // SEI - throttled
+                if (now - lastCodecLogTime >= THROTTLE_INTERVAL_MS) {
+                    Log.v(TAG, "[VIDEO_NAL] SEI received, size=" + dataSize + "B");
+                }
+                break;
+
+            default:
+                // Other NAL types - throttled
+                if (now - lastCodecLogTime >= THROTTLE_INTERVAL_MS) {
+                    Log.d(TAG, "[VIDEO_NAL] Type " + nalType + " received, size=" + dataSize + "B");
+                }
+                break;
+        }
+    }
+
+    /**
+     * Get NAL frame statistics summary.
+     */
+    public static String getNalStatsSummary() {
+        long timeSinceIdr = (lastIdrTime > 0) ? (System.currentTimeMillis() - lastIdrTime) : -1;
+        return String.format(Locale.US, "IDR:%d, P:%d, SPS:%d, PPS:%d, lastIDR=%dms ago",
+                idrFrameCount, pFrameCount, spsCount, ppsCount, timeSinceIdr);
+    }
+
+    /**
+     * Reset NAL counters (call at session start).
+     */
+    public static void resetNalCounters() {
+        idrFrameCount = 0;
+        pFrameCount = 0;
+        spsCount = 0;
+        ppsCount = 0;
+        lastIdrTime = 0;
     }
 
     /**
@@ -407,5 +501,7 @@ public class VideoDebugLogger {
         ringReadCount = 0;
         codecInputCount = 0;
         codecOutputCount = 0;
+        // Also reset NAL counters
+        resetNalCounters();
     }
 }

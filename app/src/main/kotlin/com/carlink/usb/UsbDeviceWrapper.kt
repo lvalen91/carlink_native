@@ -224,7 +224,7 @@ class UsbDeviceWrapper(
      * @return true if reset was successful
      */
     fun reset(): Boolean {
-        val conn = connection ?: return false
+        connection ?: return false
 
         return try {
             // Note: controlTransfer with USB_DEVICE_RESET is not directly available

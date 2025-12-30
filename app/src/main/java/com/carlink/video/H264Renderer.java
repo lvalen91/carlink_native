@@ -89,21 +89,21 @@ public class H264Renderer {
     private final Object codecLock = new Object();
 
     private volatile MediaCodec mCodec;  // volatile for visibility across threads
-    private MediaCodec.Callback codecCallback;
+    private final MediaCodec.Callback codecCallback;
     private MediaCodecInfo codecInfo;  // Store codec info for capability checks
     private final ConcurrentLinkedQueue<Integer> codecAvailableBufferIndexes = new ConcurrentLinkedQueue<>();
-    private int width;
-    private int height;
+    private final int width;
+    private final int height;
     private Surface surface;
     private volatile boolean running = false;  // volatile for callback thread visibility
     private volatile boolean isPaused = false;  // Track if codec is in Flushed state after pause()
-    private boolean bufferLoopRunning = false;
-    private LogCallback logCallback;
+    private final boolean bufferLoopRunning = false;
+    private final LogCallback logCallback;
     private KeyframeRequestCallback keyframeCallback;
 
     private final AppExecutors executors;
 
-    private PacketRingByteBuffer ringBuffer;
+    private final PacketRingByteBuffer ringBuffer;
 
     // Preferred hardware decoder name (detected by PlatformDetector)
     // e.g., "OMX.Intel.hw_vd.h264" for GM gminfo37
@@ -341,7 +341,7 @@ public class H264Renderer {
             log("codec started successfully");
             VideoDebugLogger.logCodecStarted();
         } catch (Exception e) {
-            log("start error " + e.toString());
+            log("start error " + e);
             e.printStackTrace();
 
             log("restarting in 5s ");
@@ -420,7 +420,7 @@ public class H264Renderer {
                     }
                 }
             } catch (Exception e) {
-                log("[Media Codec] fill input buffer error:" + e.toString());
+                log("[Media Codec] fill input buffer error:" + e);
                 // Let MediaCodec.Callback.onError() handle recovery properly
             }
         });
@@ -442,7 +442,7 @@ public class H264Renderer {
                     mCodec = null;
                 }
             } catch (Exception e) {
-                log("STOP: MediaCodec cleanup failed - " + e.toString());
+                log("STOP: MediaCodec cleanup failed - " + e);
                 mCodec = null; // Force null to prevent further issues
             } finally {
                 // Always clean up additional resources regardless of MediaCodec cleanup success
@@ -575,14 +575,14 @@ public class H264Renderer {
                     log("[RESET] Codec flush+start completed - callbacks should resume");
                     VideoDebugLogger.logCodecStarted();
                 } catch (Exception e) {
-                    log("[RESET] flush+start failed: " + e.toString() + " - falling back to full recreate");
+                    log("[RESET] flush+start failed: " + e + " - falling back to full recreate");
                     // Fallback: full codec recreation if flush fails
                     try {
                         mCodec.stop();
                         mCodec.release();
                         mCodec = null;
                     } catch (Exception e2) {
-                        log("[RESET] Fallback cleanup failed: " + e2.toString());
+                        log("[RESET] Fallback cleanup failed: " + e2);
                         mCodec = null;
                     }
                     // Recreate codec
@@ -593,7 +593,7 @@ public class H264Renderer {
                         log("[RESET] Fallback codec recreation completed");
                         VideoDebugLogger.logCodecStarted();
                     } catch (Exception e3) {
-                        log("[RESET] Fallback codec creation failed: " + e3.toString());
+                        log("[RESET] Fallback codec creation failed: " + e3);
                     }
                 }
             } else {
@@ -615,7 +615,7 @@ public class H264Renderer {
                 keyframeCallback.onKeyframeNeeded();
                 lastKeyframeRequestTime = System.currentTimeMillis();
             } catch (Exception e) {
-                log("[RESET] Immediate keyframe request failed: " + e.toString() + " - will retry via detection");
+                log("[RESET] Immediate keyframe request failed: " + e + " - will retry via detection");
             }
         }
     }
@@ -658,7 +658,7 @@ public class H264Renderer {
 
                 log("[LIFECYCLE] Codec paused - buffers flushed, ready for background");
             } catch (Exception e) {
-                log("[LIFECYCLE] pause() failed: " + e.toString());
+                log("[LIFECYCLE] pause() failed: " + e);
             }
         }
     }
@@ -761,7 +761,7 @@ public class H264Renderer {
                 keyframeCallback.onKeyframeNeeded();
                 lastKeyframeRequestTime = System.currentTimeMillis();
             } catch (Exception e) {
-                log("[LIFECYCLE] Keyframe request after resume failed: " + e.toString());
+                log("[LIFECYCLE] Keyframe request after resume failed: " + e);
             }
         }
     }
@@ -811,7 +811,7 @@ public class H264Renderer {
                 lastKeyframeRequestTime = System.currentTimeMillis();
             }
         } catch (Exception e) {
-            log("[LIFECYCLE] Failed to recreate codec: " + e.toString());
+            log("[LIFECYCLE] Failed to recreate codec: " + e);
             // Mark as not running so next attempt will try again
             running = false;
         }
@@ -1184,6 +1184,14 @@ public class H264Renderer {
                                 return;
                             }
 
+                            // Detect NAL unit type for diagnostic logging
+                            // This is critical for diagnosing video degradation - we need to know
+                            // when IDR frames arrive (or don't arrive)
+                            int nalType = detectNalUnitType(byteBuffer, dataSize);
+                            if (nalType >= 0) {
+                                VideoDebugLogger.logNalUnitType(nalType, dataSize);
+                            }
+
                             // Use monotonic presentation timestamp for proper frame ordering
                             long pts = presentationTimeUs.getAndAdd(FRAME_DURATION_US);
 
@@ -1456,5 +1464,63 @@ public class H264Renderer {
             }
         }
         return closest;
+    }
+
+    /**
+     * Detects the NAL unit type from H.264 data in a ByteBuffer.
+     *
+     * H.264 NAL units start with a start code (0x00 0x00 0x01 or 0x00 0x00 0x00 0x01)
+     * followed by a NAL header byte. The lower 5 bits of the header contain the NAL type:
+     *   1 = Non-IDR slice (P-frame or B-frame)
+     *   5 = IDR slice (keyframe - Instantaneous Decoder Refresh)
+     *   6 = SEI (Supplemental Enhancement Information)
+     *   7 = SPS (Sequence Parameter Set)
+     *   8 = PPS (Picture Parameter Set)
+     *
+     * @param buffer The ByteBuffer containing H.264 data (position at start of data)
+     * @param dataSize The size of valid data in the buffer
+     * @return The NAL unit type (1-31), or -1 if no valid NAL header found
+     */
+    private int detectNalUnitType(java.nio.ByteBuffer buffer, int dataSize) {
+        if (dataSize < 5) return -1; // Need at least start code + NAL header
+
+        // Save and restore buffer position
+        int originalPosition = buffer.position();
+
+        try {
+            // Look for NAL start code: 0x00 0x00 0x01 or 0x00 0x00 0x00 0x01
+            // Check first 10 bytes for start code (handle potential leading zeros)
+            int searchLimit = Math.min(dataSize, 10);
+
+            for (int i = 0; i < searchLimit - 3; i++) {
+                int b0 = buffer.get(i) & 0xFF;
+                int b1 = buffer.get(i + 1) & 0xFF;
+                int b2 = buffer.get(i + 2) & 0xFF;
+
+                if (b0 == 0x00 && b1 == 0x00) {
+                    if (b2 == 0x01) {
+                        // 3-byte start code: 00 00 01
+                        if (i + 3 < dataSize) {
+                            int nalHeader = buffer.get(i + 3) & 0xFF;
+                            return nalHeader & 0x1F; // Lower 5 bits = NAL type
+                        }
+                    } else if (b2 == 0x00 && i + 3 < searchLimit) {
+                        int b3 = buffer.get(i + 3) & 0xFF;
+                        if (b3 == 0x01) {
+                            // 4-byte start code: 00 00 00 01
+                            if (i + 4 < dataSize) {
+                                int nalHeader = buffer.get(i + 4) & 0xFF;
+                                return nalHeader & 0x1F; // Lower 5 bits = NAL type
+                            }
+                        }
+                    }
+                }
+            }
+
+            return -1; // No valid start code found
+        } finally {
+            // Restore buffer position (important - codec will read from this position)
+            buffer.position(originalPosition);
+        }
     }
 }

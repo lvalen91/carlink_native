@@ -13,6 +13,7 @@ trim_trailing_whitespace = true
 indent_size = 4
 
 # ktlint configuration
+ktlint_standard_no-unused-imports = enabled
 # Composable functions use PascalCase per Jetpack Compose API Guidelines
 # https://github.com/androidx/androidx/blob/androidx-main/compose/docs/compose-api-guidelines.md
 ktlint_function_naming_ignore_when_annotated_with = Composable

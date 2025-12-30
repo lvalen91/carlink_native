@@ -182,17 +182,23 @@ object Logger {
         enabled: Boolean,
     ) {
         logLevelEnabled[level] = enabled
-        // Also update minLevel for Android logging
-        if (!enabled) {
-            val newMinLevel =
-                when {
-                    logLevelEnabled[LogLevel.DEBUG] == true -> Level.DEBUG
-                    logLevelEnabled[LogLevel.INFO] == true -> Level.INFO
-                    logLevelEnabled[LogLevel.WARN] == true -> Level.WARN
-                    logLevelEnabled[LogLevel.ERROR] == true -> Level.ERROR
-                    else -> Level.ERROR
-                }
-            minLevel = newMinLevel
+        // Always recalculate minLevel based on what's currently enabled
+        // FIX: Previously only recalculated when disabling, causing release builds
+        // to stay at ERROR level even after user selected a different preset
+        recalculateMinLevel()
+    }
+
+    /**
+     * Recalculates minLevel based on currently enabled log levels.
+     * Called after any change to logLevelEnabled map.
+     */
+    private fun recalculateMinLevel() {
+        minLevel = when {
+            logLevelEnabled[LogLevel.DEBUG] == true -> Level.DEBUG
+            logLevelEnabled[LogLevel.INFO] == true -> Level.INFO
+            logLevelEnabled[LogLevel.WARN] == true -> Level.WARN
+            logLevelEnabled[LogLevel.ERROR] == true -> Level.ERROR
+            else -> Level.ERROR
         }
     }
 

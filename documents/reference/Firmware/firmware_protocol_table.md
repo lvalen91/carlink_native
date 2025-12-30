@@ -121,19 +121,20 @@ data_streams:
     audio_commands:          # When payload has 1-byte command (13-byte total payload)
       - 0x01: OUTPUT_START   # Audio output starting
       - 0x02: OUTPUT_STOP    # Audio output stopping
-      - 0x03: INPUT_CONFIG   # Microphone configuration request
-      - 0x04: PHONECALL_START # Phone call audio beginning
-      - 0x05: PHONECALL_STOP  # Phone call audio ending
-      - 0x06: NAVI_START     # Navigation prompt beginning
-      - 0x07: NAVI_STOP      # Navigation prompt stopping (audio may continue)
-      - 0x08: SIRI_START     # Siri/voice assistant beginning
-      - 0x09: SIRI_STOP      # Siri/voice assistant ending
+      - 0x03: INPUT_START    # Microphone capture starting (voice sessions)
+      - 0x04: INPUT_STOP     # Microphone capture stopping (state transition)
+      - 0x05: PHONECALL_START # Phone call connected (after mic setup)
+      - 0x06: PHONECALL_STOP  # Channel clear signal (also used before nav)
+      - 0x07: NAVI_START     # Navigation prompt beginning (audio_type=2)
+      - 0x08: NAVI_STOP      # Activates Siri/voice mode (misleading name!)
+      - 0x09: SIRI_START     # Siri responding with audio
       - 0x0A: MEDIA_START    # Media playback beginning
       - 0x0B: MEDIA_STOP     # Media playback ending
       - 0x0C: ALERT_START    # Alert/ringtone beginning
       - 0x0D: ALERT_STOP     # Alert/ringtone ending
       - 0x0E: INCOMING_CALL_INIT  # Incoming call notification (Dec 2025)
       - 0x10: NAVI_COMPLETE  # Navigation prompt fully complete (Dec 2025)
+      # NOTE: No SIRI_STOP (0x0F) exists - Siri ends via OUTPUT_STOP
     decode_type_semantics:   # (Dec 2025 Research)
       - 2: Stop/cleanup operations (MEDIA_STOP, PHONECALL_STOP)
       - 4: Standard CarPlay audio (MEDIA, NAVI, ALERT, OUTPUT)
