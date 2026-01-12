@@ -68,45 +68,32 @@ class AudioPlaybackManager(
     private var currentFormat: AudioFormatConfig? = null
     private var isPlaying = false
 
-    // Performance tracking
     private var totalBytesPlayed: Long = 0
     private var totalFramesPlayed: Long = 0
     private var underrunCount: Int = 0
     private var formatSwitchCount: Int = 0
     private var startTime: Long = 0
 
-    // Buffer management
     private var minBufferSize: Int = 0
     private var actualBufferSize: Int = 0
-
-    // Volume control (0.0 to 1.0)
     private var currentVolume: Float = 1.0f
 
     private val lock = Any()
 
-    /**
-     * Initialize audio playback with the specified format.
-     *
-     * @param format Audio format configuration
-     * @return true if initialization succeeded, false otherwise
-     */
     fun initialize(format: AudioFormatConfig = AudioFormats.FORMAT_4): Boolean {
         synchronized(lock) {
             try {
-                // Release existing track if format changed
                 if (currentFormat != null && currentFormat != format) {
                     log("[AUDIO] Format change detected: ${currentFormat?.sampleRate}Hz -> ${format.sampleRate}Hz")
                     release()
                     formatSwitchCount++
                 }
 
-                // Skip if already initialized with same format
                 if (audioTrack != null && currentFormat == format) {
                     log("[AUDIO] Already initialized with same format")
                     return true
                 }
 
-                // Calculate buffer size
                 minBufferSize =
                     AudioTrack.getMinBufferSize(
                         format.sampleRate,
@@ -115,17 +102,12 @@ class AudioPlaybackManager(
                     )
 
                 if (minBufferSize == AudioTrack.ERROR || minBufferSize == AudioTrack.ERROR_BAD_VALUE) {
-                    log(
-                        "[AUDIO] ERROR: Invalid buffer size for format: " +
-                            "${format.sampleRate}Hz ${format.channelCount}ch",
-                    )
+                    log("[AUDIO] ERROR: Invalid buffer size for format: ${format.sampleRate}Hz ${format.channelCount}ch")
                     return false
                 }
 
-                // Use 2x minimum buffer for stability
                 actualBufferSize = minBufferSize * 2
 
-                // Build AudioAttributes for media playback
                 val audioAttributes =
                     AudioAttributes
                         .Builder()
@@ -133,7 +115,6 @@ class AudioPlaybackManager(
                         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
                         .build()
 
-                // Build AudioFormat
                 val audioFormat =
                     AudioFormat
                         .Builder()
@@ -142,7 +123,6 @@ class AudioPlaybackManager(
                         .setEncoding(format.encoding)
                         .build()
 
-                // Create AudioTrack
                 audioTrack =
                     AudioTrack
                         .Builder()
@@ -155,14 +135,10 @@ class AudioPlaybackManager(
 
                 currentFormat = format
                 startTime = System.currentTimeMillis()
-
-                // Apply current volume
                 audioTrack?.setVolume(currentVolume)
 
-                // Log initialization details
                 log(
-                    "[AUDIO] Initialized: ${format.sampleRate}Hz ${format.channelCount}ch " +
-                        "buffer=${actualBufferSize}B (min=${minBufferSize}B)",
+                    "[AUDIO] Initialized: ${format.sampleRate}Hz ${format.channelCount}ch buffer=${actualBufferSize}B (min=${minBufferSize}B)",
                 )
                 return true
             } catch (e: IllegalArgumentException) {
@@ -178,11 +154,6 @@ class AudioPlaybackManager(
         }
     }
 
-    /**
-     * Start audio playback.
-     *
-     * @return true if playback started, false if not initialized
-     */
     fun start(): Boolean {
         synchronized(lock) {
             val track =
@@ -207,46 +178,27 @@ class AudioPlaybackManager(
         }
     }
 
-    /**
-     * Write PCM audio data to the AudioTrack.
-     *
-     * @param data PCM audio samples (16-bit)
-     * @param decodeType CPC200-CCPA decode type for format detection
-     * @param volume Volume level (0.0 to 1.0)
-     * @return Number of bytes written, or negative error code
-     */
+    /** Write PCM audio data. Returns bytes written or negative error code. */
     fun write(
         data: ByteArray,
         decodeType: Int = 4,
         volume: Float = 1.0f,
     ): Int {
         synchronized(lock) {
-            // Check if format needs to change
             val targetFormat = AudioFormats.fromDecodeType(decodeType)
             if (currentFormat != targetFormat) {
-                log(
-                    "[AUDIO] Format switch required: type $decodeType -> " +
-                        "${targetFormat.sampleRate}Hz ${targetFormat.channelCount}ch",
-                )
-                if (!initialize(targetFormat)) {
-                    return -1
-                }
+                log("[AUDIO] Format switch required: type $decodeType -> ${targetFormat.sampleRate}Hz ${targetFormat.channelCount}ch")
+                if (!initialize(targetFormat)) return -1
             }
 
-            // Ensure track is initialized and playing
             val track =
                 audioTrack ?: run {
-                    if (!initialize(targetFormat)) {
-                        return -1
-                    }
+                    if (!initialize(targetFormat)) return -1
                     audioTrack!!
                 }
 
-            if (!isPlaying) {
-                start()
-            }
+            if (!isPlaying) start()
 
-            // Update volume if changed
             if (volume != currentVolume) {
                 currentVolume = volume.coerceIn(0.0f, 1.0f)
                 track.setVolume(currentVolume)
@@ -257,7 +209,7 @@ class AudioPlaybackManager(
 
                 if (bytesWritten > 0) {
                     totalBytesPlayed += bytesWritten
-                    totalFramesPlayed += bytesWritten / (currentFormat?.channelCount ?: 2) / 2 // 16-bit = 2 bytes
+                    totalFramesPlayed += bytesWritten / (currentFormat?.channelCount ?: 2) / 2
                 } else if (bytesWritten == AudioTrack.ERROR_DEAD_OBJECT) {
                     log("[AUDIO] ERROR: AudioTrack dead, reinitializing")
                     release()
@@ -266,7 +218,6 @@ class AudioPlaybackManager(
                     return track.write(data, 0, data.size)
                 }
 
-                // Check for underruns
                 val underruns = track.underrunCount
                 if (underruns > underrunCount) {
                     val newUnderruns = underruns - underrunCount
@@ -282,9 +233,6 @@ class AudioPlaybackManager(
         }
     }
 
-    /**
-     * Pause audio playback.
-     */
     fun pause() {
         synchronized(lock) {
             try {
@@ -299,9 +247,6 @@ class AudioPlaybackManager(
         }
     }
 
-    /**
-     * Stop audio playback and flush buffers.
-     */
     fun stop() {
         synchronized(lock) {
             try {
@@ -319,9 +264,6 @@ class AudioPlaybackManager(
         }
     }
 
-    /**
-     * Release all audio resources.
-     */
     fun release() {
         synchronized(lock) {
             try {
@@ -342,11 +284,6 @@ class AudioPlaybackManager(
         }
     }
 
-    /**
-     * Set playback volume.
-     *
-     * @param volume Volume level (0.0 to 1.0)
-     */
     fun setVolume(volume: Float) {
         synchronized(lock) {
             currentVolume = volume.coerceIn(0.0f, 1.0f)
@@ -358,18 +295,12 @@ class AudioPlaybackManager(
         }
     }
 
-    /**
-     * Get current playback state.
-     */
     fun isPlaying(): Boolean {
         synchronized(lock) {
             return isPlaying && audioTrack?.playState == AudioTrack.PLAYSTATE_PLAYING
         }
     }
 
-    /**
-     * Get performance statistics.
-     */
     fun getStats(): Map<String, Any> {
         synchronized(lock) {
             val durationMs = if (startTime > 0) System.currentTimeMillis() - startTime else 0
@@ -395,9 +326,6 @@ class AudioPlaybackManager(
         }
     }
 
-    /**
-     * Perform emergency cleanup for error recovery.
-     */
     fun performEmergencyCleanup() {
         synchronized(lock) {
             log("[AUDIO] Emergency cleanup")

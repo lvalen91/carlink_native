@@ -14,10 +14,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-/**
- * DataStore instance for adapter configuration preferences.
- * Following Android best practices: singleton instance at top level.
- */
 private val Context.adapterConfigDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "carlink_adapter_config_preferences",
 )
@@ -139,41 +135,13 @@ enum class SampleRateConfig(
 }
 
 /**
- * Manages persistent storage of adapter configuration preferences.
- *
- * Overview:
- * Stores user's adapter configuration preferences that are applied during
- * adapter initialization. Changes take effect on the next connection/restart.
- *
- * Design Philosophy:
- * - All options have sensible defaults (ADAPTER for audio source)
- * - FULL init sends all settings, minimal init only sends changed settings
- * - Adapter firmware retains most settings through power cycles
- *
- * Storage:
- * - Uses DataStore Preferences for persistence with SharedPreferences sync cache
- * - Sync Cache: SharedPreferences for instant startup reads (avoids ANR)
- * - Preferences survive app restarts
- * - Applied during AdapterConfig creation in MainActivity
- *
- * ANR Prevention:
- * Uses SharedPreferences as a synchronous cache per Android Developer guidance.
- * DataStore I/O can block the main thread causing ANR if read synchronously.
- * SharedPreferences provides instant cached reads at startup while DataStore
- * remains the source of truth for Flow-based observation.
- *
- * Extensibility:
- * - New configuration options can be added by:
- *   1. Adding a preference key (both DataStore and sync cache)
- *   2. Adding getter/setter methods (update sync cache in setter)
- *   3. Adding Flow for UI observation
- *   4. Updating getUserConfigSync() and getUserConfig() methods
+ * Adapter config preferences with DataStore + SharedPreferences sync cache for ANR-free startup reads.
+ * Tracks pending changes for minimal re-initialization on reconnect.
  */
-@Suppress("StaticFieldLeak") // Uses applicationContext, not Activity context - no leak
+@Suppress("StaticFieldLeak")
 class AdapterConfigPreference private constructor(
     context: Context,
 ) {
-    // Store applicationContext to avoid Activity leaks
     private val appContext: Context = context.applicationContext
 
     companion object {
@@ -232,20 +200,12 @@ class AdapterConfigPreference private constructor(
 
     private val dataStore = appContext.adapterConfigDataStore
 
-    // SharedPreferences sync cache for instant startup reads
-    // Per Android Developer guidance: use SharedPreferences for synchronous access
-    // to avoid blocking main thread with DataStore I/O
     private val syncCache =
         appContext.getSharedPreferences(
             SYNC_CACHE_PREFS_NAME,
             Context.MODE_PRIVATE,
         )
 
-    // ==================== Audio Source ====================
-
-    /**
-     * Flow for observing audio source configuration changes.
-     */
     val audioSourceFlow: Flow<AudioSourceConfig> =
         dataStore.data.map { preferences ->
             val isBluetooth = preferences[KEY_AUDIO_SOURCE_BLUETOOTH] ?: false
@@ -300,11 +260,6 @@ class AdapterConfigPreference private constructor(
         }
     }
 
-    // ==================== Sample Rate ====================
-
-    /**
-     * Flow for observing sample rate configuration changes.
-     */
     val sampleRateFlow: Flow<SampleRateConfig> =
         dataStore.data.map { preferences ->
             val hz = preferences[KEY_SAMPLE_RATE] ?: SampleRateConfig.DEFAULT.hz
@@ -358,11 +313,6 @@ class AdapterConfigPreference private constructor(
         }
     }
 
-    // ==================== Mic Source ====================
-
-    /**
-     * Flow for observing mic source configuration changes.
-     */
     val micSourceFlow: Flow<MicSourceConfig> =
         dataStore.data.map { preferences ->
             val code = preferences[KEY_MIC_SOURCE] ?: MicSourceConfig.DEFAULT.commandCode
@@ -394,11 +344,6 @@ class AdapterConfigPreference private constructor(
         }
     }
 
-    // ==================== WiFi Band ====================
-
-    /**
-     * Flow for observing WiFi band configuration changes.
-     */
     val wifiBandFlow: Flow<WiFiBandConfig> =
         dataStore.data.map { preferences ->
             val code = preferences[KEY_WIFI_BAND] ?: WiFiBandConfig.DEFAULT.commandCode
@@ -430,11 +375,6 @@ class AdapterConfigPreference private constructor(
         }
     }
 
-    // ==================== Call Quality ====================
-
-    /**
-     * Flow for observing call quality configuration changes.
-     */
     val callQualityFlow: Flow<CallQualityConfig> =
         dataStore.data.map { preferences ->
             val value = preferences[KEY_CALL_QUALITY] ?: CallQualityConfig.DEFAULT.value
@@ -466,11 +406,6 @@ class AdapterConfigPreference private constructor(
         }
     }
 
-    // ==================== Configuration Summary ====================
-
-    /**
-     * Data class containing all user-configured adapter settings.
-     */
     data class UserConfig(
         /** Audio transfer mode: true = bluetooth, false = adapter (default) */
         val audioTransferMode: Boolean,
@@ -584,11 +519,6 @@ class AdapterConfigPreference private constructor(
         )
     }
 
-    // ==================== Initialization Tracking ====================
-
-    /**
-     * Initialization mode for adapter configuration.
-     */
     enum class InitMode {
         /** First launch - send full configuration */
         FULL,

@@ -24,56 +24,21 @@ import android.media.AudioTrack
  * - https://developer.android.com/reference/android/media/AudioTrack
  */
 data class AudioConfig(
-    /**
-     * Target sample rate in Hz.
-     * GM AAOS native rate is 48000Hz; using this avoids resampling.
-     * Standard Android devices typically use 44100Hz.
-     */
+    /** Target sample rate (48000Hz avoids resampling on GM AAOS). */
     val sampleRate: Int,
-    /**
-     * Buffer size multiplier applied to AudioTrack.getMinBufferSize().
-     * Higher values provide more jitter tolerance at the cost of latency.
-     * - 5x: Standard (good for FAST track path)
-     * - 8x: GM AAOS (compensates for non-FAST path latency)
-     */
+    /** Buffer multiplier on minBufferSize (4x typical, higher = more jitter tolerance). */
     val bufferMultiplier: Int,
-    /**
-     * AudioTrack performance mode.
-     * - PERFORMANCE_MODE_LOW_LATENCY: Requests FAST track (may be denied)
-     * - PERFORMANCE_MODE_NONE: No preference (appropriate when FAST denied anyway)
-     *
-     * Reference: https://developer.android.com/reference/android/media/AudioTrack#PERFORMANCE_MODE_LOW_LATENCY
-     */
+    /** AudioTrack performance mode (LOW_LATENCY or NONE for GM AAOS). */
     val performanceMode: Int,
-    /**
-     * Pre-fill threshold in milliseconds.
-     * Minimum buffer level before starting playback to prevent initial underruns.
-     * Higher values on GM AAOS due to longer latency path.
-     */
+    /** Min buffer level before playback starts (prevents initial underruns). */
     val prefillThresholdMs: Int,
-    /**
-     * Media stream ring buffer capacity in milliseconds.
-     * Larger on GM AAOS to absorb USB packet jitter during video stalls.
-     */
+    /** Media ring buffer capacity (larger on GM AAOS for stall absorption). */
     val mediaBufferCapacityMs: Int,
-    /**
-     * Navigation stream ring buffer capacity in milliseconds.
-     * Navigation prompts have lower latency requirements than media.
-     */
+    /** Nav ring buffer capacity (lower latency requirements than media). */
     val navBufferCapacityMs: Int,
 ) {
     companion object {
-        /**
-         * Default configuration for ARM platforms (Raspberry Pi, standard Android devices).
-         * Uses low-latency mode which works well when FAST track is available.
-         *
-         * Buffer multiplier reduced from 5x to 4x based on USB capture analysis showing
-         * consistent packet delivery with P99 jitter of only 7ms. Ring buffer provides
-         * primary jitter absorption; AudioTrack buffer is secondary safety net.
-         *
-         * Pre-fill threshold reduced from 150ms to 80ms (slightly > 1 packet at 60-65ms)
-         * based on observed consistent packet timing.
-         */
+        /** ARM platforms. FAST track available, 4x buffer, 80ms prefill (P99 jitter ~7ms). */
         val DEFAULT =
             AudioConfig(
                 sampleRate = 44100,
@@ -84,20 +49,7 @@ data class AudioConfig(
                 navBufferCapacityMs = 200,
             )
 
-        /**
-         * Configuration for Intel GM AAOS devices.
-         * Optimized for FAST track denial and 48kHz native rate.
-         *
-         * Key differences from DEFAULT:
-         * - sampleRate = 48000: Matches GM native rate, avoids resampling
-         * - bufferMultiplier = 4: Reduced from 8x based on USB capture analysis
-         *   showing consistent packet delivery. Ring buffer handles jitter.
-         * - performanceMode = NONE: FAST denied anyway, don't request it
-         * - prefillThresholdMs = 80: Reduced from 200ms based on observed
-         *   consistent 60ms packet timing
-         * - mediaBufferCapacityMs = 750: Larger ring buffer for stall absorption
-         * - navBufferCapacityMs = 300: Larger nav buffer for reliability
-         */
+        /** Intel GM AAOS. 48kHz native, FAST denied, larger buffers for stall absorption. */
         val GM_AAOS =
             AudioConfig(
                 sampleRate = 48000,
@@ -109,33 +61,20 @@ data class AudioConfig(
             )
 
         /**
-         * Select appropriate configuration based on platform detection.
-         *
-         * CRITICAL: Only applies GM AAOS audio fixes when BOTH conditions are true:
-         * 1. Intel x86/x86_64 architecture
-         * 2. GM AAOS device (Harman_Samsung / gminfo)
-         *
-         * ARM-based GM AAOS devices will use DEFAULT config.
-         *
-         * @param platformInfo Platform detection results
-         * @param userSampleRate Optional user-configured sample rate (overrides platform default)
-         * @return Appropriate AudioConfig for the platform
+         * Select config based on platform. GM AAOS audio fixes require BOTH:
+         * (1) Intel x86/x86_64 architecture, (2) GM AAOS device.
          */
         fun forPlatform(
             platformInfo: PlatformDetector.PlatformInfo,
             userSampleRate: Int? = null,
         ): AudioConfig {
-            // Determine effective sample rate: user preference > platform native
             val effectiveSampleRate = userSampleRate ?: platformInfo.nativeSampleRate
 
             return when {
-                // Intel GM AAOS - apply all audio optimizations
                 platformInfo.requiresGmAaosAudioFixes() -> {
                     GM_AAOS.copy(sampleRate = effectiveSampleRate)
                 }
 
-                // Intel non-GM - use native rate with optimized buffers
-                // Reduced from 6x to 4x based on USB capture analysis
                 platformInfo.requiresIntelMediaCodecFixes() -> {
                     DEFAULT.copy(
                         sampleRate = effectiveSampleRate,
@@ -143,17 +82,13 @@ data class AudioConfig(
                     )
                 }
 
-                // ARM (including ARM-based GM AAOS) - use native sample rate to avoid resampling
-                // Pi AAOS native rate is 48000Hz; using DEFAULT's 44100Hz causes resampling artifacts
-                // Buffer multiplier reduced from 10x to 4x, prefill from 250ms to 80ms based on
-                // USB capture analysis showing consistent packet delivery with P99 jitter of 7ms.
-                // Ring buffer capacity kept larger for additional safety on varied ARM platforms.
+                // ARM: larger ring buffers for platform variance
                 else -> {
                     DEFAULT.copy(
                         sampleRate = effectiveSampleRate,
                         bufferMultiplier = 4,
                         prefillThresholdMs = 80,
-                        mediaBufferCapacityMs = 1000, // Keep larger ring buffer for ARM platform variance
+                        mediaBufferCapacityMs = 1000,
                         navBufferCapacityMs = 400,
                     )
                 }

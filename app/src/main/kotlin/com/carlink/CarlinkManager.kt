@@ -387,6 +387,8 @@ class CarlinkManager(
                         },
                     )
                 }
+            // Share session token with MediaBrowserService for AAOS cluster integration
+            CarlinkMediaBrowserService.mediaSessionToken = mediaSessionManager?.getSessionToken()
             logInfo("MediaSession initialized (ADAPTER audio mode)", tag = Logger.Tags.ADAPTR)
         } else {
             logInfo("MediaSession skipped (BLUETOOTH audio mode - audio via phone BT)", tag = Logger.Tags.ADAPTR)
@@ -578,6 +580,102 @@ class CarlinkManager(
      */
     fun sendMultiTouch(touches: List<MessageSerializer.TouchPoint>): Boolean = adapterDriver?.sendMultiTouch(touches) ?: false
 
+    // ========== Capture Playback Injection Methods ==========
+
+    /**
+     * Check if the video renderer is ready for data injection.
+     * Used by capture playback to verify the pipeline is ready.
+     */
+    fun isRendererReady(): Boolean = h264Renderer != null && videoInitialized
+
+    // Track injected video count
+    private var injectedVideoCount = 0
+
+    /**
+     * Inject raw H.264 video data directly into the renderer.
+     * Used by capture playback to replay captured video frames.
+     *
+     * @param data Raw H.264 NAL data (without protocol headers)
+     * @param flags Optional flags (e.g., keyframe indicator)
+     */
+    fun injectVideoData(data: ByteArray, flags: Int = 0) {
+        if (!videoInitialized) {
+            logDebug("[PLAYBACK_INJECT] Video not initialized, discarding frame", tag = Logger.Tags.VIDEO)
+            return
+        }
+        injectedVideoCount++
+        if (injectedVideoCount <= 5 || injectedVideoCount % 100 == 0) {
+            logDebug("[PLAYBACK_INJECT] Injecting video #$injectedVideoCount: ${data.size} bytes", tag = Logger.Tags.VIDEO)
+        }
+        h264Renderer?.processData(data, flags)
+    }
+
+    // Track injected audio count for debugging
+    private var injectedAudioCount = 0
+
+    /**
+     * Inject audio data directly into the audio manager.
+     * Used by capture playback to replay captured audio.
+     *
+     * @param data Raw PCM audio data
+     * @param audioType Audio type (1=media, 2=nav, 3=voice, etc.)
+     * @param decodeType Decode type (audio format/sample rate indicator)
+     */
+    fun injectAudioData(data: ByteArray, audioType: Int, decodeType: Int) {
+        if (!audioInitialized) {
+            logDebug("[PLAYBACK_INJECT] Audio not initialized, discarding audio", tag = Logger.Tags.AUDIO)
+            return
+        }
+        injectedAudioCount++
+        if (injectedAudioCount <= 5 || injectedAudioCount % 500 == 0) {
+            logDebug(
+                "[PLAYBACK_INJECT] Injecting audio #$injectedAudioCount: ${data.size} bytes, " +
+                    "type=$audioType, decode=$decodeType",
+                tag = Logger.Tags.AUDIO,
+            )
+        }
+        audioManager?.writeAudio(data, audioType, decodeType)
+    }
+
+    /**
+     * Prepare for capture playback mode.
+     * Stops USB adapter search but keeps renderers alive and ensures audio is initialized.
+     */
+    fun prepareForPlayback() {
+        logInfo("[PLAYBACK_INJECT] Preparing for playback mode", tag = Logger.Tags.VIDEO)
+        // Stop USB communication but keep renderers
+        adapterDriver?.stop()
+        adapterDriver = null
+        usbDevice?.close()
+        usbDevice = null
+        cancelReconnect()
+        clearPairTimeout()
+        stopFrameInterval()
+
+        // Ensure audio is initialized for playback
+        if (!audioInitialized && audioManager != null) {
+            audioInitialized = audioManager?.initialize() ?: false
+            if (audioInitialized) {
+                logInfo("[PLAYBACK_INJECT] Audio initialized for playback", tag = Logger.Tags.AUDIO)
+            } else {
+                logError("[PLAYBACK_INJECT] Failed to initialize audio for playback", tag = Logger.Tags.AUDIO)
+            }
+        }
+    }
+
+    /**
+     * Resume normal adapter mode after playback.
+     */
+    fun resumeAdapterMode() {
+        logInfo("[PLAYBACK_INJECT] Resuming adapter mode", tag = Logger.Tags.VIDEO)
+        // Restart will reinitialize USB connection
+        scope.launch {
+            start()
+        }
+    }
+
+    // ========== End Playback Injection Methods ==========
+
     /**
      * Release all resources.
      */
@@ -594,6 +692,7 @@ class CarlinkManager(
         microphoneManager = null
 
         mediaSessionManager?.release()
+        CarlinkMediaBrowserService.mediaSessionToken = null
         mediaSessionManager = null
 
         logInfo("CarlinkManager released", tag = Logger.Tags.ADAPTR)
@@ -1328,15 +1427,16 @@ class CarlinkManager(
      * Safe to call multiple times - will not create duplicate jobs.
      * Uses coroutines for better lifecycle management and error handling.
      *
-     * Per CPC200-CCPA protocol, FRAME command should be sent every 5 seconds
-     * during active CarPlay sessions to maintain decoder stability.
+     * FRAME command interval reduced from 5s to 2s to improve video recovery
+     * after H.264 decoder drift. Since adapter only sends SPS+PPS at session start,
+     * more frequent keyframe requests help recover from progressive pixelation faster.
      */
     @Synchronized
     private fun ensureFrameIntervalRunning() {
         val phoneType = currentPhoneType
         val jobActive = frameIntervalJob?.isActive == true
 
-        // Only for CarPlay - protocol specifies 5s keyframe interval
+        // Only for CarPlay - using 2s keyframe interval for faster recovery
         if (phoneType != PhoneType.CARPLAY) {
             logDebug("[FRAME_INTERVAL] Skipping - phoneType=$phoneType (not CarPlay)", tag = Logger.Tags.VIDEO)
             return
@@ -1348,19 +1448,19 @@ class CarlinkManager(
             return
         }
 
-        logInfo("[FRAME_INTERVAL] Starting periodic keyframe request (every 5s) for CarPlay", tag = Logger.Tags.VIDEO)
+        logInfo("[FRAME_INTERVAL] Starting periodic keyframe request (every 2s) for CarPlay", tag = Logger.Tags.VIDEO)
 
         frameIntervalJob =
             scope.launch(Dispatchers.IO) {
                 // OPTIMIZATION: Send immediate keyframe request on start for faster video recovery
                 // Research: pi-carplay-main achieves near-instant recovery by not delaying first request
-                // This ensures keyframe is requested immediately after reset/resume, not after 5s delay
+                // This ensures keyframe is requested immediately after reset/resume, not after 2s delay
                 val immediateSent = adapterDriver?.sendCommand(CommandMapping.FRAME) ?: false
                 logInfo("[FRAME_INTERVAL] Immediate keyframe request sent=$immediateSent", tag = Logger.Tags.VIDEO)
 
                 var requestCount = 0
                 while (isActive) {
-                    delay(5000)
+                    delay(2000)
                     requestCount++
                     val sent = adapterDriver?.sendCommand(CommandMapping.FRAME) ?: false
                     logDebug("[FRAME_INTERVAL] Keyframe request #$requestCount sent=$sent", tag = Logger.Tags.VIDEO)

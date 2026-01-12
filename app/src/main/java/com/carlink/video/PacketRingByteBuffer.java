@@ -1,40 +1,11 @@
 package com.carlink.video;
 
 /**
-   * PacketRingByteBuffer - Thread-safe circular buffer for streaming packet data
-   *
-   * Purpose:
-   * Manages high-throughput video/audio packet streams from the CPC200-CCPA adapter
-   * in a memory-efficient ring buffer. Designed for automotive environments where
-   * memory constraints and stability are critical.
-   *
-   * Key Features:
-   * - Circular buffer with automatic resizing (1MB min, 64MB max)
-   * - Thread-safe packet write/read operations with wrap-around support
-   * - Safe-copy reads to prevent race conditions with MediaCodec
-   * - Zero-copy direct write callback for performance-critical paths
-   * - Emergency reset mechanisms to prevent OutOfMemoryError
-   * - Extensive bounds validation to prevent buffer corruption
-   *
-   * Packet Structure:
-   * Each packet consists of:
-   *   [4 bytes: packet length] [4 bytes: skip offset] [n bytes: data]
-   *
-   * Usage:
-   * - writePacket() - Add complete packet data to buffer
-   * - directWriteToBuffer() - Zero-copy write via callback (preferred for H.264)
-   * - readPacketInto(ByteBuffer) - Direct copy to target buffer (preferred for MediaCodec)
-   * - readPacket() - Retrieve next packet as new ByteBuffer (legacy, allocates memory)
-   * - availablePacketsToRead() - Check queued packet count
-   *
-   * Thread Safety:
-   * All read/write operations are synchronized. Multiple threads can safely
-   * write packets while a decoder thread reads them.
-   *
-   * Safety Limits:
-   * MIN: 1MB | MAX: 64MB | EMERGENCY_RESET: 32MB
-   * Exceeding limits triggers automatic reorganization or emergency reset.
-   */
+ * Thread-safe ring buffer for video/audio packet streaming.
+ *
+ * Packet format: [4B length][4B skip offset][data]
+ * Limits: 1MB min, 64MB max, 32MB emergency reset threshold.
+ */
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
@@ -46,11 +17,14 @@ public class PacketRingByteBuffer {
          void write(byte[] bytes, int offset);
     }
 
-    // Java memory management best practices - prevent OutOfMemoryError
-    // Adjusted for automotive environment following project documentation specs
-    private static final int MAX_BUFFER_SIZE = 64 * 1024 * 1024; // 64MB maximum for automotive safety
-    private static final int MIN_BUFFER_SIZE = 1024 * 1024; // 1MB minimum for efficiency
-    private static final int EMERGENCY_RESET_THRESHOLD = 32 * 1024 * 1024; // 32MB emergency threshold
+    /** Callback invoked when emergency reset occurs, signaling all buffered data was lost. */
+    public interface EmergencyResetCallback {
+        void onEmergencyReset();
+    }
+
+    private static final int MAX_BUFFER_SIZE = 64 * 1024 * 1024;
+    private static final int MIN_BUFFER_SIZE = 1024 * 1024;
+    private static final int EMERGENCY_RESET_THRESHOLD = 32 * 1024 * 1024;
 
     private byte[] buffer;
     private int readPosition = 0;
@@ -59,18 +33,16 @@ public class PacketRingByteBuffer {
     private int lastWritePositionBeforeEnd = 0;
 
     private int packetCount = 0;
-    private int resizeAttemptCount = 0; // Track resize attempts for monitoring
+    private int resizeAttemptCount = 0;
 
     private LogCallback logCallback;
+    private EmergencyResetCallback emergencyResetCallback;
 
     public PacketRingByteBuffer(int initialSize) {
-        // Enforce minimum and maximum size limits following Java best practices
         int safeSize = Math.max(MIN_BUFFER_SIZE, Math.min(initialSize, MAX_BUFFER_SIZE));
         buffer = new byte[safeSize];
-
         if (safeSize != initialSize) {
-            log("Buffer size adjusted from " + initialSize + " to " + safeSize +
-                " (min: " + MIN_BUFFER_SIZE + ", max: " + MAX_BUFFER_SIZE + ")");
+            log("Buffer adjusted: " + initialSize + " -> " + safeSize);
         }
     }
 
@@ -78,6 +50,11 @@ public class PacketRingByteBuffer {
         if (logCallback != null) {
             logCallback.log(message);
         }
+    }
+
+    /** Set callback to be notified when emergency reset occurs (all data lost). */
+    public void setEmergencyResetCallback(EmergencyResetCallback callback) {
+        this.emergencyResetCallback = callback;
     }
 
     public boolean isEmpty() {
@@ -98,13 +75,11 @@ public class PacketRingByteBuffer {
             available = readPosition - writePosition;
         }
 
-        // Resize with safety limits following Java memory management best practices
         int newLength = buffer.length;
         if (available < buffer.length / 2) {
             int proposedSize = newLength * 2;
             resizeAttemptCount++;
 
-            // Check against maximum size limit to prevent OutOfMemoryError
             if (proposedSize > MAX_BUFFER_SIZE) {
                 if (buffer.length >= EMERGENCY_RESET_THRESHOLD) {
                     log("EMERGENCY: Buffer at " + (buffer.length / (1024*1024)) + "MB, performing emergency reset");
@@ -128,10 +103,8 @@ public class PacketRingByteBuffer {
         if (writePosition < readPosition) {
             int dataAtEndLength = lastWritePositionBeforeEnd - readPosition;
 
-            // Validate parameters to prevent ArrayIndexOutOfBoundsException
             if (dataAtEndLength < 0 || dataAtEndLength > buffer.length || readPosition < 0 || readPosition + dataAtEndLength > buffer.length) {
-                log("CRITICAL: Invalid end copy parameters - readPosition: " + readPosition + ", dataAtEndLength: " + dataAtEndLength + ", bufferLength: " + buffer.length);
-                // Reset to safe state
+                log("CRITICAL: Invalid end copy parameters");
                 readPosition = 0;
                 writePosition = 0;
                 packetCount = 0;
@@ -316,20 +289,7 @@ public class PacketRingByteBuffer {
                 return ByteBuffer.allocate(0); // Return empty buffer
             }
 
-            // CRITICAL FIX: Safe copy instead of zero-copy wrap
-            //
-            // Previously used ByteBuffer.wrap() which shared memory with ring buffer.
-            // This caused a race condition: USB write thread could overwrite data before
-            // MediaCodec finished reading it, causing H.264 reference frame corruption.
-            //
-            // Symptoms: Progressive video quality degradation (MPEG-like artifacts) that
-            // only recovered after codec reset (which clears the ring buffer).
-            //
-            // The copy ensures data integrity at the cost of ~1-2% CPU overhead.
-            // This is acceptable for stable video quality.
-            //
-            // See: https://developer.android.com/reference/android/media/MediaCodec
-            // "The client needs to copy the data before modifying the buffer"
+            // Safe copy prevents race condition with ring buffer writes
             byte[] packetData = new byte[actualLength];
             System.arraycopy(buffer, startPos, packetData, 0, actualLength);
             ByteBuffer result = ByteBuffer.wrap(packetData);
@@ -344,16 +304,7 @@ public class PacketRingByteBuffer {
         }
     }
 
-    /**
-     * Read next packet directly into a target ByteBuffer (zero-intermediate-allocation).
-     *
-     * OPTIMIZATION: This method copies directly from the ring buffer into the target
-     * ByteBuffer, eliminating the intermediate byte[] allocation that readPacket() requires.
-     * Use this when the target buffer is already available (e.g., MediaCodec input buffer).
-     *
-     * @param target The ByteBuffer to copy packet data into (must have sufficient capacity)
-     * @return Number of bytes written to target, or 0 if no packet available or error
-     */
+    /** Read packet directly into target buffer. Returns bytes written or 0 if empty/error. */
     int readPacketInto(ByteBuffer target) {
         synchronized (this) {
             if (packetCount == 0) {
@@ -450,10 +401,7 @@ public class PacketRingByteBuffer {
     }
 
     private void performEmergencyReset() {
-        log("EMERGENCY RESET: Resetting buffer to prevent OutOfMemoryError - was " +
-            (buffer.length / (1024*1024)) + "MB, resetting to " + (MIN_BUFFER_SIZE / (1024*1024)) + "MB");
-
-        // Reset to minimum safe size following Java memory management guidelines
+        log("EMERGENCY RESET: " + (buffer.length / (1024*1024)) + "MB -> " + (MIN_BUFFER_SIZE / (1024*1024)) + "MB");
         buffer = new byte[MIN_BUFFER_SIZE];
         readPosition = 0;
         writePosition = 0;
@@ -461,9 +409,13 @@ public class PacketRingByteBuffer {
         packetCount = 0;
         resizeAttemptCount = 0;
 
-        // Note: Explicit System.gc() removed per Android best practices
-        // Android runtime manages GC timing; explicit calls can cause unpredictable pauses
-        // Reference: https://developer.android.com/topic/performance/memory
-        log("Emergency reset complete");
+        // Notify listener that all data was lost - typically used to request keyframe
+        if (emergencyResetCallback != null) {
+            try {
+                emergencyResetCallback.onEmergencyReset();
+            } catch (Exception e) {
+                log("Emergency reset callback failed: " + e.getMessage());
+            }
+        }
     }
 }

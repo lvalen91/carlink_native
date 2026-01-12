@@ -1,43 +1,15 @@
 package com.carlink.video;
 
 /**
-  * H264Renderer - Hardware-Accelerated H.264 Video Decoder & Renderer
-  *
-  * PURPOSE:
-  * Decodes and renders H.264 video streams from CarPlay/Android Auto projection sessions
-  * using Android MediaCodec API with hardware acceleration (Intel Quick Sync preferred).
-  *
-  * KEY RESPONSIBILITIES:
-  * - Hardware-accelerated H.264 video decoding via MediaCodec
-  * - Real-time video stream buffering using ring buffer architecture
-  * - Resolution-adaptive memory management (800x480 to 4K+)
-  * - Direct Surface rendering via HWC overlay for optimal performance
-  * - Performance monitoring (FPS, throughput, buffer health)
-  *
-  * OPTIMIZATION TARGETS:
-  * - Primary: GM GMinfo3.7 (2400x960@60fps, Intel HD Graphics 505, 6GB RAM)
-  * - Adaptive: Standard automotive displays (800x480 to 1080p)
-  * - Extended: High-resolution displays (up to 4K)
-  *
-  * ARCHITECTURE:
-  * - Asynchronous MediaCodec callback pipeline for low-latency decoding
-  * - Multi-threaded codec feeding using dedicated high-priority executors
-  * - Graduated memory pools (small/medium/large buffers) for efficient reuse
-  * - Direct ByteBuffer allocation for zero-copy DMA operations
-  * - SurfaceView direct rendering (HWC overlay path, no GPU composition)
-  *
-  * HARDWARE INTEGRATION:
-  * - Input: Video packets from CPC200-CCPA adapter via USB
-  * - Decoder: Intel Quick Sync (OMX.Intel.VideoDecoder.AVC) or fallback to generic
-  * - Output: Direct to SurfaceView via HWC overlay
-  *
-  * LIFECYCLE:
-  * start() -> Initialize codec -> Feed packets -> Decode -> Render -> stop() -> Cleanup
-  * Supports reset() for recovery from codec errors or configuration changes
-  *
-  * @see PacketRingByteBuffer for video packet buffering implementation
-  * @see AppExecutors for thread pool management
-  */
+ * Hardware-accelerated H.264 decoder using MediaCodec async mode.
+ *
+ * Decodes video from CPC200-CCPA adapter and renders to SurfaceView via HWC overlay.
+ * Uses ring buffer for packet buffering and graduated memory pools for efficiency.
+ * Optimized for GM GMinfo3.7 (Intel HD Graphics 505) with fallback for other platforms.
+ *
+ * @see PacketRingByteBuffer
+ * @see AppExecutors
+ */
 import android.content.Context;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
@@ -68,35 +40,22 @@ import com.carlink.util.VideoDebugLogger;
 public class H264Renderer {
     private static final String LOG_TAG = "CARLINK";
 
-    /**
-     * Callback interface for requesting keyframes (IDR frames) from the video source.
-     *
-     * After codec reset (flush+start), the H.264 decoder loses its SPS/PPS context
-     * and cannot decode P-frames without a new keyframe. This callback allows the
-     * renderer to request an immediate keyframe from the adapter.
-     */
+    /** Callback to request keyframe (IDR) from adapter after codec reset. */
     public interface KeyframeRequestCallback {
-        /**
-         * Called when the renderer needs a new keyframe (IDR frame).
-         * Implementation should send CommandMapping.FRAME to the adapter.
-         */
         void onKeyframeNeeded();
     }
 
-    // Thread safety lock for codec lifecycle operations
-    // Prevents race conditions between callbacks and reset/stop operations
-    // See: https://android.googlesource.com/platform/cts/+/0e8a8a0%5E!/
-    private final Object codecLock = new Object();
+    private final Object codecLock = new Object(); // Synchronizes codec lifecycle with callbacks
 
-    private volatile MediaCodec mCodec;  // volatile for visibility across threads
+    private volatile MediaCodec mCodec;
     private final MediaCodec.Callback codecCallback;
-    private MediaCodecInfo codecInfo;  // Store codec info for capability checks
+    private MediaCodecInfo codecInfo;
     private final ConcurrentLinkedQueue<Integer> codecAvailableBufferIndexes = new ConcurrentLinkedQueue<>();
     private final int width;
     private final int height;
     private Surface surface;
-    private volatile boolean running = false;  // volatile for callback thread visibility
-    private volatile boolean isPaused = false;  // Track if codec is in Flushed state after pause()
+    private volatile boolean running = false;
+    private volatile boolean isPaused = false;
     private final boolean bufferLoopRunning = false;
     private final LogCallback logCallback;
     private KeyframeRequestCallback keyframeCallback;
@@ -105,34 +64,25 @@ public class H264Renderer {
 
     private final PacketRingByteBuffer ringBuffer;
 
-    // Preferred hardware decoder name (detected by PlatformDetector)
-    // e.g., "OMX.Intel.hw_vd.h264" for GM gminfo37
-    private final String preferredDecoderName;
+    private final String preferredDecoderName; // From PlatformDetector (e.g., "OMX.Intel.hw_vd.h264")
 
-    // Safe optimization parameters - no aggressive frame skipping during startup
-    // ADB analysis: gminfo37 display is 2400x960@60.001434fps, VSYNC period = 16.666268ms
-    private static final int TARGET_FPS = 60; // 2400x960@60fps target
-    private static final long DYNAMIC_TIMEOUT_US = 16666; // 16.666ms per frame (matches gminfo37 VSYNC)
-    private boolean decoderInitialized = false; // Track if decoder has started outputting frames
-    private int consecutiveOutputFrames = 0; // Count successful decoder outputs
+    private static final int TARGET_FPS = 60;
+    private static final long DYNAMIC_TIMEOUT_US = 16666; // ~60fps frame duration
+    private boolean decoderInitialized = false;
+    private int consecutiveOutputFrames = 0;
 
-    // Dynamic resolution-aware memory pool sizing for automotive displays
-    private int bufferPoolSize; // Calculated based on resolution and device capabilities
-    private static final int BUFFER_POOL_MIN_FREE = 2; // Maintain 2 free buffers for headroom
-
-    // Resolution-based buffer pool scaling
-    // Increased from 6/20 to 8/24 based on POOL_CRITICAL warnings in logcat
-    private static final int MIN_POOL_SIZE = 8;  // Small displays (800x480)
-    private static final int MAX_POOL_SIZE = 24; // Ultra-high res (4K+)
-    // Improved buffer pool with size buckets for better reuse
-    private final ConcurrentLinkedQueue<ByteBuffer> smallBuffers = new ConcurrentLinkedQueue<>();  // <= 64KB
-    private final ConcurrentLinkedQueue<ByteBuffer> mediumBuffers = new ConcurrentLinkedQueue<>(); // <= 256KB
-    private final ConcurrentLinkedQueue<ByteBuffer> largeBuffers = new ConcurrentLinkedQueue<>();  // > 256KB
+    // Resolution-adaptive buffer pool
+    private int bufferPoolSize;
+    private static final int BUFFER_POOL_MIN_FREE = 2;
+    private static final int MIN_POOL_SIZE = 8;
+    private static final int MAX_POOL_SIZE = 24;
+    private final ConcurrentLinkedQueue<ByteBuffer> smallBuffers = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<ByteBuffer> mediumBuffers = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<ByteBuffer> largeBuffers = new ConcurrentLinkedQueue<>();
     private boolean poolInitialized = false;
 
-    // Size thresholds for buffer buckets
-    private static final int SMALL_BUFFER_THRESHOLD = 64 * 1024;   // 64KB
-    private static final int MEDIUM_BUFFER_THRESHOLD = 256 * 1024; // 256KB
+    private static final int SMALL_BUFFER_THRESHOLD = 64 * 1024;
+    private static final int MEDIUM_BUFFER_THRESHOLD = 256 * 1024;
 
     // Performance monitoring
     private long totalFramesReceived = 0;
@@ -142,147 +92,94 @@ public class H264Renderer {
     private long codecResetCount = 0;
     private long totalBytesProcessed = 0;
 
-    // Recovery metrics - tracks video recovery performance for optimization analysis
+    // Recovery metrics
     private long totalRecoveryTimeMs = 0;
     private int recoveryCount = 0;
-    private long lastRecoveryTimeMs = 0; // Most recent recovery time for logging
+    private long lastRecoveryTimeMs = 0;
 
-    // Adaptive FPS detection - tracks actual stream frame rate
-    // Common rates: 30fps (some adapters), 60fps (CarPlay default), 25fps (PAL regions)
-    private int detectedTargetFps = 60; // Initial assumption, updated based on actual rate
-    private static final int[] COMMON_FPS_TARGETS = {25, 30, 50, 60}; // Standard video frame rates
+    // Adaptive FPS detection
+    private int detectedTargetFps = 60;
+    private static final int[] COMMON_FPS_TARGETS = {25, 30, 50, 60};
 
-    // Performance logging interval (30 seconds)
     private static final long PERF_LOG_INTERVAL_MS = 30000;
     private long lastPerfLogTime = 0;
 
-    // Codec reset rate limiting - prevents rapid reset loops during startup
-    // OPTIMIZED: Reduced intervals for faster recovery while still preventing thrashing
-    // Research: Allows quicker legitimate recovery while catching actual reset loops
-    private static final long MIN_RESET_INTERVAL_MS = 200; // Minimum 200ms between resets (was 500)
-    private static final int MAX_RAPID_RESETS = 5; // Max resets within window before cooldown (was 3)
-    private static final long RESET_WINDOW_MS = 10000; // 10 second window for tracking rapid resets (was 5000)
-    private static final long RESET_COOLDOWN_MS = 1000; // 1 second cooldown after rapid resets (was 2000)
+    // Codec reset rate limiting with exponential backoff
+    private static final long MIN_RESET_INTERVAL_MS = 200;
+    private static final int MAX_RAPID_RESETS = 5;
+    private static final long RESET_WINDOW_MS = 10000;
+    private static final long MAX_BACKOFF_MS = 5000;  // Cap backoff at 5 seconds
+    private static final int MAX_BACKOFF_EXPONENT = 4; // 2^4 = 16x multiplier max
     private long lastResetTime = 0;
     private int resetsInWindow = 0;
     private long windowStartTime = 0;
-    private boolean inCooldown = false;
+    private int consecutiveResetAttempts = 0;  // For exponential backoff calculation
 
-    // Startup stabilization - don't reset during initial codec warmup
-    // Prevents rapid resets during Surface sizing that corrupt callback state
-    // OPTIMIZED: Reduced from 2000ms to 500ms for faster recovery
-    // Research: MediaCodec callback thread typically stabilizes within 100-200ms
-    private static final long MIN_STARTUP_TIME_MS = 500; // 500ms for codec to stabilize (was 2000)
+    // Startup stabilization
+    private static final long MIN_STARTUP_TIME_MS = 500;
     private long codecStartTime = 0;
 
-    // Post-reset keyframe detection - request keyframe if receiving frames but not decoding
-    // This handles the case where keyframe request fails during adapter reconnection
-    // OPTIMIZED: Reduced thresholds for faster video recovery (was 15/5000/2000)
-    // Research: pi-carplay-main achieves near-instant recovery with simpler approach
-    // See: https://developer.android.com/reference/android/media/MediaCodec (CSD resubmission)
-    private static final int KEYFRAME_REQUEST_THRESHOLD = 5; // Request after 5 frames with no output (~83ms at 60fps)
-    private static final long KEYFRAME_REQUEST_TIME_THRESHOLD_MS = 1000; // OR after 1 second with no output
-    private static final long KEYFRAME_REQUEST_COOLDOWN_MS = 500; // 500ms between requests (was 2000)
+    // Post-reset keyframe detection
+    private static final int KEYFRAME_REQUEST_THRESHOLD = 5;
+    private static final long KEYFRAME_REQUEST_TIME_THRESHOLD_MS = 1000;
+    private static final long KEYFRAME_REQUEST_COOLDOWN_MS = 500;
     private long framesReceivedSinceReset = 0;
     private long framesDecodedSinceReset = 0;
     private long lastKeyframeRequestTime = 0;
-    private long resetTimestamp = 0; // Timestamp when reset occurred, for time-based detection
+    private long resetTimestamp = 0;
     private boolean pendingKeyframeRequest = false;
 
-    // Monotonic presentation timestamp for proper frame ordering
-    // MediaCodec requires incrementing timestamps to maintain decode order
+    // Presentation timestamp for frame ordering
     private final AtomicLong presentationTimeUs = new AtomicLong(0);
-    private static final long FRAME_DURATION_US = 16667; // ~60fps in microseconds
+    private static final long DEFAULT_FRAME_DURATION_US = 16667; // ~60fps
+    private volatile long frameDurationUs = DEFAULT_FRAME_DURATION_US;
 
-    // Dedicated HandlerThread for MediaCodec callbacks
-    // Per Android documentation, callbacks run on the codec's internal looper when no Handler is specified.
-    // Using a dedicated HandlerThread ensures callbacks are delivered reliably regardless of main thread state.
-    // See: https://developer.android.com/reference/android/media/MediaCodec#setCallback
+    // SPS/PPS caching for codec recovery after flush/reset AND continuous operation
+    // H.264 decoders require SPS+PPS before any IDR frame can be decoded.
+    // The CPC200-CCPA adapter only sends SPS+PPS at session start, not on FRAME command.
+    // We cache these NAL units and:
+    //   1. Resubmit with BUFFER_FLAG_CODEC_CONFIG after flush() (async callback-based)
+    //   2. Prepend to every IDR frame to prevent decoder drift during continuous operation
+    private final Object spsLock = new Object(); // Protects SPS/PPS access
+    private byte[] cachedSps = null;
+    private byte[] cachedPps = null;
+    private volatile boolean codecConfigPending = false;
+
+    // Temporary buffer for SPS+PPS+IDR combination (reused to avoid allocation)
+    private byte[] combinedBuffer = null;
+
+    // Dedicated callback thread for reliable MediaCodec event delivery
     private HandlerThread codecCallbackThread;
     private Handler codecCallbackHandler;
 
     private int calculateOptimalBufferSize(int width, int height) {
-        // Base calculation for different resolutions - this is for the ring buffer
         int pixels = width * height;
-
-        if (pixels <= 1920 * 1080) {
-            // 1080p and below: 8MB buffer (standard)
-            return 8 * 1024 * 1024;
-        } else if (pixels <= 2400 * 960) {
-            // Native GMinfo3.7 resolution: 16MB buffer (2x standard)
-            return 16 * 1024 * 1024;
-        } else if (pixels <= 3840 * 2160) {
-            // 4K: 32MB buffer for high bitrate content
-            return 32 * 1024 * 1024;
-        } else {
-            // Ultra-high resolution: 64MB buffer
-            return 64 * 1024 * 1024;
-        }
+        if (pixels <= 1920 * 1080) return 8 * 1024 * 1024;
+        if (pixels <= 2400 * 960) return 16 * 1024 * 1024;
+        if (pixels <= 3840 * 2160) return 32 * 1024 * 1024;
+        return 64 * 1024 * 1024;
     }
 
     private int calculateOptimalPoolSize(int width, int height) {
-        // Resolution-based buffer pool count calculation
-        // Increased pool sizes based on POOL_CRITICAL warnings in production logs
         int pixels = width * height;
-
-        if (pixels <= 800 * 480) {
-            // Small automotive displays (7-8 inch): minimal buffering
-            return MIN_POOL_SIZE; // 8 buffers (increased from 6)
-        } else if (pixels <= 1024 * 600) {
-            // Standard automotive displays (8-10 inch): basic buffering
-            return 10; // 10 buffers (increased from 8)
-        } else if (pixels <= 1920 * 1080) {
-            // HD automotive displays: standard buffering
-            return 14; // 14 buffers (increased from 10)
-        } else if (pixels <= 2400 * 960) {
-            // Native GMinfo3.7 resolution: optimized for Intel HD Graphics 505
-            // ADB analysis: Intel Broxton platform with 5.5GB RAM, 48kHz audio
-            // Increased from 12 to 16 based on POOL_CRITICAL: 0/12 warnings
-            // Device supports 4K@60 via OMX.Intel.hw_vd.h264 but has adaptive-playback latency issues
-            return 16; // 16 buffers
-        } else if (pixels <= 3840 * 2160) {
-            // 4K displays: high buffering for stability
-            return 20; // 20 buffers (increased from 16)
-        } else {
-            // Ultra-high resolution: maximum buffering
-            return MAX_POOL_SIZE; // 24 buffers (increased from 20)
-        }
+        if (pixels <= 800 * 480) return MIN_POOL_SIZE;
+        if (pixels <= 1024 * 600) return 10;
+        if (pixels <= 1920 * 1080) return 14;
+        if (pixels <= 2400 * 960) return 16;
+        if (pixels <= 3840 * 2160) return 20;
+        return MAX_POOL_SIZE;
     }
 
     private int calculateOptimalFrameBufferSize(int width, int height) {
-        // Per-frame buffer size calculation based on resolution
         int pixels = width * height;
-
-        // Base calculation: assume 4 bytes per pixel for worst case + compression overhead
-        // Research shows MediaCodec needs headroom for different frame types (I, P, B)
-        int baseSize = (pixels * 4) / 10; // Compressed H.264 is typically ~10:1 ratio
-
-        // Minimum sizes based on research findings
-        if (pixels <= 800 * 480) {
-            return Math.max(baseSize, 64 * 1024);   // 64KB minimum for small displays
-        } else if (pixels <= 1920 * 1080) {
-            return Math.max(baseSize, 128 * 1024);  // 128KB minimum for HD
-        } else if (pixels <= 2400 * 960) {
-            return Math.max(baseSize, 256 * 1024);  // 256KB minimum for gminfo3.7
-        } else if (pixels <= 3840 * 2160) {
-            return Math.max(baseSize, 512 * 1024);  // 512KB minimum for 4K
-        } else {
-            return Math.max(baseSize, 1024 * 1024); // 1MB minimum for ultra-high res
-        }
+        int baseSize = (pixels * 4) / 10; // ~10:1 H.264 compression ratio
+        if (pixels <= 800 * 480) return Math.max(baseSize, 64 * 1024);
+        if (pixels <= 1920 * 1080) return Math.max(baseSize, 128 * 1024);
+        if (pixels <= 2400 * 960) return Math.max(baseSize, 256 * 1024);
+        if (pixels <= 3840 * 2160) return Math.max(baseSize, 512 * 1024);
+        return Math.max(baseSize, 1024 * 1024);
     }
 
-    /**
-     * Creates a new H264Renderer for hardware-accelerated video decoding.
-     *
-     * @param context Android context for accessing system services
-     * @param width Video width in pixels
-     * @param height Video height in pixels
-     * @param surface Surface from SurfaceView for direct HWC rendering
-     * @param logCallback Callback for logging messages
-     * @param executors Thread pool for codec operations
-     * @param preferredDecoderName Optional preferred decoder name from PlatformDetector
-     *                             (e.g., "OMX.Intel.hw_vd.h264" for GM gminfo37)
-     */
     public H264Renderer(Context context, int width, int height, Surface surface, LogCallback logCallback, AppExecutors executors, String preferredDecoderName) {
         this.width = width;
         this.height = height;
@@ -291,24 +188,46 @@ public class H264Renderer {
         this.executors = executors;
         this.preferredDecoderName = preferredDecoderName;
 
-        // Optimize buffer size for 6GB RAM system and 2400x960@60fps target
-        // Calculate optimal buffer: ~2-3 seconds of 4K video = 32MB for safety margin
         int bufferSize = calculateOptimalBufferSize(width, height);
         ringBuffer = new PacketRingByteBuffer(bufferSize);
+        // Request keyframe when ring buffer emergency resets (all data lost)
+        ringBuffer.setEmergencyResetCallback(() -> {
+            log("[RING_BUFFER] Emergency reset - requesting keyframe");
+            if (keyframeCallback != null) {
+                try {
+                    keyframeCallback.onKeyframeNeeded();
+                    lastKeyframeRequestTime = System.currentTimeMillis();
+                } catch (Exception e) {
+                    log("[RING_BUFFER] Keyframe request failed: " + e.getMessage());
+                }
+            }
+        });
         log("Ring buffer initialized: " + (bufferSize / (1024*1024)) + "MB for " + width + "x" + height);
 
-        // Initialize memory pool after successful codec startup - research shows 30x performance improvement
         initializeBufferPool();
 
         codecCallback = createCallback();
     }
 
-    /**
-     * Sets the callback for requesting keyframes after codec reset.
-     * @param callback The callback to invoke when a keyframe is needed
-     */
     public void setKeyframeRequestCallback(KeyframeRequestCallback callback) {
         this.keyframeCallback = callback;
+    }
+
+    /**
+     * Set the target FPS for presentation timestamp calculation.
+     * Called when adapter reports video parameters (e.g., from OpenedMessage.fps).
+     * Default is 60fps if not set.
+     *
+     * @param fps Target frames per second (e.g., 25, 30, 50, 60)
+     */
+    public void setTargetFps(int fps) {
+        if (fps > 0 && fps <= 120) {
+            this.frameDurationUs = 1_000_000L / fps;
+            log("Target FPS set to " + fps + " (frame duration: " + frameDurationUs + "us)");
+        } else {
+            log("Invalid FPS value: " + fps + ", using default 60fps");
+            this.frameDurationUs = DEFAULT_FRAME_DURATION_US;
+        }
     }
 
     private void log(String message) {
@@ -369,16 +288,11 @@ public class H264Renderer {
 
         ByteBuffer byteBuffer = mCodec.getInputBuffer(index);
         if (byteBuffer == null) {
-            // Buffer became invalid (codec reset), discard index
             log("[CODEC] getInputBuffer returned null for index " + index);
             return false;
         }
 
-        // OPTIMIZATION: Use readPacketInto() for direct single-copy from ring buffer to codec buffer
-        // This eliminates the intermediate byte[] allocation that readPacket() requires.
-        // Note: BUFFER_FLAG_CODEC_CONFIG is NOT used because packets may contain
-        // combined SPS+PPS+IDR data. The codec auto-detects config data from the
-        // H.264 NAL unit headers.
+        // Direct copy from ring buffer to codec buffer (no intermediate allocation)
         int bytesWritten = ringBuffer.readPacketInto(byteBuffer);
         if (bytesWritten == 0) {
             // No packet available or error - return index for later use
@@ -386,9 +300,23 @@ public class H264Renderer {
             return false;
         }
 
-        // Use monotonic presentation timestamp for proper frame ordering
-        long pts = presentationTimeUs.getAndAdd(FRAME_DURATION_US);
+        // Detect NAL type and cache SPS/PPS if present
+        int nalType = detectNalUnitType(byteBuffer, bytesWritten);
+        if (nalType == 7 || nalType == 8 || nalType == 5) {
+            cacheCodecConfigData(byteBuffer, bytesWritten);
+        }
 
+        // Use monotonic presentation timestamp for proper frame ordering
+        long pts = presentationTimeUs.getAndAdd(frameDurationUs);
+
+        // For IDR frames: prepend cached SPS/PPS to ensure decoder refresh
+        boolean isIdrFrame = (nalType == 5) || containsIdrFrame(byteBuffer, bytesWritten);
+        if (isIdrFrame && queueIdrWithSpsPps(codec, index, byteBuffer, bytesWritten, pts)) {
+            // Successfully queued IDR with SPS/PPS prepended
+            return true;
+        }
+
+        // Normal frame or IDR injection failed - queue as-is
         mCodec.queueInputBuffer(index, 0, bytesWritten, pts, 0);
 
         return true;
@@ -403,25 +331,18 @@ public class H264Renderer {
     }
 
     private void feedCodec() {
-        // Optimize for Intel Atom x7-A3960 quad-core
-        // Use dedicated high-priority thread for codec feeding to reduce latency
         executors.mediaCodec1().execute(() -> {
-            // Thread priority already set by OptimizedMediaCodecExecutor
-            // No need to set it again here
-
             try {
                 fillAllAvailableCodecBuffers(mCodec);
 
-                // Buffer health monitoring for automotive stability
                 if (ringBuffer != null) {
                     int packetCount = ringBuffer.availablePacketsToRead();
-                    if (packetCount > 20) { // Warn if buffer is getting full
+                    if (packetCount > 20) {
                         log("[BUFFER_WARNING] High buffer usage: " + packetCount + " packets");
                     }
                 }
             } catch (Exception e) {
                 log("[Media Codec] fill input buffer error:" + e);
-                // Let MediaCodec.Callback.onError() handle recovery properly
             }
         });
     }
@@ -432,8 +353,6 @@ public class H264Renderer {
         running = false;
         VideoDebugLogger.logCodecStopped();
 
-        // Clean up MediaCodec resources following official Android guidelines
-        // Use codecLock to prevent race with callbacks
         synchronized (codecLock) {
             try {
                 if (mCodec != null) {
@@ -452,43 +371,28 @@ public class H264Renderer {
     }
 
     private void cleanupResources() {
-        // NOTE: Surface is NOT released here - it is owned by SurfaceView
-        // The SurfaceView manages the Surface lifecycle through SurfaceHolder.Callback
-        // We just null our reference to prevent use after the view is destroyed
+        // Surface lifecycle managed by SurfaceView
         surface = null;
-        log("Surface reference cleared (lifecycle managed by SurfaceView)");
 
-        // Clean up the dedicated callback HandlerThread
-        // Use quitSafely() to allow pending callbacks to complete before stopping
         if (codecCallbackThread != null) {
             codecCallbackThread.quitSafely();
             try {
-                // Wait briefly for thread to terminate
                 codecCallbackThread.join(500);
             } catch (InterruptedException e) {
-                log("Interrupted while waiting for callback thread to terminate");
+                log("Interrupted waiting for callback thread");
             }
             codecCallbackThread = null;
             codecCallbackHandler = null;
-            log("Callback HandlerThread cleaned up");
         }
 
-        // Clear all buffer pools to prevent memory accumulation
         int totalCleared = smallBuffers.size() + mediumBuffers.size() + largeBuffers.size();
-
-        // Secure clear of pooled buffers on session end (security best practice)
         secureBufferPoolClear(smallBuffers);
         secureBufferPoolClear(mediumBuffers);
         secureBufferPoolClear(largeBuffers);
-        log("Buffer pools securely cleared - " + totalCleared + " buffers released");
+        log("Buffer pools cleared - " + totalCleared + " buffers");
 
-        // Clear codec buffer indexes (ConcurrentLinkedQueue.clear() is thread-safe)
         codecAvailableBufferIndexes.clear();
-
-        // Reset pool initialization flag to allow re-initialization
         poolInitialized = false;
-
-        // Reset presentation timestamp for next session
         presentationTimeUs.set(0);
     }
 
@@ -496,44 +400,32 @@ public class H264Renderer {
     public void reset() {
         long currentTime = System.currentTimeMillis();
 
-        // CRITICAL: Don't reset during startup stabilization period
-        // Rapid resets during Surface sizing corrupt the callback thread state
-        // causing onInputBufferAvailable to stop firing (D:0 frames decoded)
+        // Don't reset during startup stabilization
         if (codecStartTime > 0 && (currentTime - codecStartTime) < MIN_STARTUP_TIME_MS) {
-            log("[RESET_THROTTLE] Skipping reset during startup stabilization (" +
-                (currentTime - codecStartTime) + "ms since start, need " + MIN_STARTUP_TIME_MS + "ms)");
+            log("[RESET_THROTTLE] Skipping - startup stabilization");
             return;
         }
 
-        // Rate limiting: Check if we're in cooldown period after rapid resets
-        if (inCooldown) {
-            if (currentTime - lastResetTime < RESET_COOLDOWN_MS) {
-                log("[RESET_THROTTLE] In cooldown period, skipping reset request");
-                return;
-            }
-            inCooldown = false;
-            resetsInWindow = 0;
-            log("[RESET_THROTTLE] Cooldown period ended");
-        }
+        // Calculate exponential backoff interval based on consecutive reset attempts
+        // Backoff formula: MIN_RESET_INTERVAL_MS * 2^min(attempts, MAX_EXPONENT)
+        int exponent = Math.min(consecutiveResetAttempts, MAX_BACKOFF_EXPONENT);
+        long backoffIntervalMs = Math.min(MIN_RESET_INTERVAL_MS * (1L << exponent), MAX_BACKOFF_MS);
 
-        // Rate limiting: Enforce minimum interval between resets
-        if (currentTime - lastResetTime < MIN_RESET_INTERVAL_MS) {
-            log("[RESET_THROTTLE] Reset requested too soon (" + (currentTime - lastResetTime) + "ms), skipping");
+        if (currentTime - lastResetTime < backoffIntervalMs) {
+            log("[RESET_THROTTLE] Backoff active - waiting " + backoffIntervalMs + "ms (attempt " + consecutiveResetAttempts + ")");
             return;
         }
 
-        // Track resets within window for rapid reset detection
+        // Reset window tracking
         if (currentTime - windowStartTime > RESET_WINDOW_MS) {
-            // Start new window
             windowStartTime = currentTime;
             resetsInWindow = 1;
+            consecutiveResetAttempts = 0;  // Reset backoff after quiet period
         } else {
             resetsInWindow++;
-            // Check for rapid reset pattern
+            consecutiveResetAttempts++;
             if (resetsInWindow >= MAX_RAPID_RESETS) {
-                log("[RESET_THROTTLE] Rapid reset detected (" + resetsInWindow + " resets in " +
-                    (currentTime - windowStartTime) + "ms), entering cooldown");
-                inCooldown = true;
+                log("[RESET_THROTTLE] Max resets reached (" + MAX_RAPID_RESETS + "), backoff: " + backoffIntervalMs + "ms");
                 lastResetTime = currentTime;
                 return;
             }
@@ -541,321 +433,245 @@ public class H264Renderer {
 
         lastResetTime = currentTime;
         codecResetCount++;
-        log("reset codec - Reset count: " + codecResetCount + ", Frames decoded: " + totalFramesDecoded +
-            ", Resets in window: " + resetsInWindow);
+        log("reset codec - count: " + codecResetCount + ", decoded: " + totalFramesDecoded);
         VideoDebugLogger.logCodecReset(codecResetCount);
 
-        // Use codecLock to synchronize with callbacks
         synchronized (codecLock) {
-            // Clear codec buffer indexes FIRST - they become invalid after flush
-            // ConcurrentLinkedQueue.clear() is thread-safe
             codecAvailableBufferIndexes.clear();
-
-            // Clear ring buffer - stale data may confuse decoder after reset
-            // New SPS/PPS will arrive from the adapter
             ringBuffer.reset();
-            log("[RESET] Ring buffer cleared");
 
-            // Reset keyframe detection counters - will request keyframe if we receive
-            // frames but can't decode them (handles case where immediate request fails)
             framesReceivedSinceReset = 0;
             framesDecodedSinceReset = 0;
-            resetTimestamp = System.currentTimeMillis(); // Record reset time for time-based detection
-            pendingKeyframeRequest = true;  // Enable detection mode
+            resetTimestamp = System.currentTimeMillis();
+            pendingKeyframeRequest = true;
 
-            // CRITICAL FIX: Use flush() + start() instead of stop/release/recreate
-            // Per Android docs: In async mode, you MUST call start() after flush()
-            // to resume receiving input buffer callbacks.
-            // See: https://developer.android.com/reference/android/media/MediaCodec#flush()
+            // flush() + start() required in async mode to resume callbacks
             if (mCodec != null) {
                 try {
                     mCodec.flush();
-                    mCodec.start();  // REQUIRED in async mode after flush!
-                    codecStartTime = System.currentTimeMillis();  // Reset stabilization timer
-                    log("[RESET] Codec flush+start completed - callbacks should resume");
+                    mCodec.start();
+                    codecStartTime = System.currentTimeMillis();
+                    log("[RESET] Codec flush+start completed");
                     VideoDebugLogger.logCodecStarted();
+
+                    // Request SPS+PPS injection on next available buffer (async-safe)
+                    requestCodecConfigInjection();
                 } catch (Exception e) {
-                    log("[RESET] flush+start failed: " + e + " - falling back to full recreate");
-                    // Fallback: full codec recreation if flush fails
+                    log("[RESET] flush+start failed: " + e + " - recreating codec");
                     try {
                         mCodec.stop();
                         mCodec.release();
                         mCodec = null;
                     } catch (Exception e2) {
-                        log("[RESET] Fallback cleanup failed: " + e2);
+                        log("[RESET] Cleanup failed: " + e2);
                         mCodec = null;
                     }
-                    // Recreate codec
                     try {
                         initCodec(width, height, surface);
                         mCodec.start();
                         codecStartTime = System.currentTimeMillis();
-                        log("[RESET] Fallback codec recreation completed");
+                        log("[RESET] Codec recreated");
                         VideoDebugLogger.logCodecStarted();
+
+                        // Request SPS+PPS injection on next available buffer (async-safe)
+                        requestCodecConfigInjection();
                     } catch (Exception e3) {
-                        log("[RESET] Fallback codec creation failed: " + e3);
+                        log("[RESET] Codec creation failed: " + e3);
                     }
                 }
             } else {
-                // Codec was null - need full start
-                log("[RESET] Codec was null, performing full start");
-                running = false;  // Allow start() to proceed
+                log("[RESET] Codec was null, full start");
+                running = false;
                 start();
             }
         }
 
-        // Request keyframe AFTER reset completes (outside codecLock to avoid deadlock)
-        // The H.264 decoder loses SPS/PPS context after flush() and cannot decode
-        // P-frames without a new keyframe (IDR frame).
-        // NOTE: This immediate request may fail if adapter is reconnecting - the
-        // detection logic in onInputBufferAvailable will retry if needed.
+        // Request keyframe after reset (decoder lost SPS/PPS context)
         if (keyframeCallback != null) {
-            log("[RESET] Requesting keyframe from adapter (immediate attempt)");
+            log("[RESET] Requesting keyframe");
             try {
                 keyframeCallback.onKeyframeNeeded();
                 lastKeyframeRequestTime = System.currentTimeMillis();
             } catch (Exception e) {
-                log("[RESET] Immediate keyframe request failed: " + e + " - will retry via detection");
+                log("[RESET] Keyframe request failed: " + e);
             }
         }
     }
 
-    /**
-     * Pause video decoding when app goes to background.
-     *
-     * On AAOS, when the app is covered by another app, the Surface may remain valid
-     * but SurfaceFlinger stops consuming frames. This causes the BufferQueue to fill up,
-     * stalling the decoder. When the user returns, video appears blank.
-     *
-     * This method flushes the codec to clear pending buffers and prevents new frames
-     * from being queued until resume() is called.
-     *
-     * Call this from Activity.onStop() to prevent BufferQueue stalls.
-     */
+    /** Pause decoding and flush codec. Call from Activity.onStop(). */
     public void pause() {
         log("[LIFECYCLE] pause() called - flushing codec for background");
 
         synchronized (codecLock) {
             if (mCodec == null || !running) {
-                log("[LIFECYCLE] Codec not running, nothing to pause");
                 return;
             }
 
             try {
-                // Flush codec to clear all pending input/output buffers
-                // This prevents BufferQueue from filling up while in background
                 mCodec.flush();
-
-                // Mark as paused - codec is now in Flushed state
-                // resume() will need to call start() to transition back to Running state
                 isPaused = true;
-
-                // Clear our buffer tracking (ConcurrentLinkedQueue.clear() is thread-safe)
                 codecAvailableBufferIndexes.clear();
-
-                // Clear ring buffer - stale data should not be decoded on resume
                 ringBuffer.reset();
-
-                log("[LIFECYCLE] Codec paused - buffers flushed, ready for background");
+                log("[LIFECYCLE] Codec paused");
             } catch (Exception e) {
                 log("[LIFECYCLE] pause() failed: " + e);
             }
         }
     }
 
-    /**
-     * Resume video decoding when app returns to foreground.
-     *
-     * After pause(), the codec is in a flushed state. This method restarts the codec
-     * and requests a keyframe so video can resume immediately.
-     *
-     * Call this from Activity.onStart() to resume video playback.
-     *
-     * @param newSurface The current Surface from SurfaceView (may be different after recreation)
-     */
+    /** Resume decoding with surface. Call from Activity.onStart(). */
     public void resume(Surface newSurface) {
-        log("[LIFECYCLE] resume() called with surface - restarting codec for foreground");
+        log("[LIFECYCLE] resume() called");
 
         synchronized (codecLock) {
             if (mCodec == null) {
-                log("[LIFECYCLE] Codec is null, triggering full start with new surface");
+                log("[LIFECYCLE] Codec null, full start");
                 this.surface = newSurface;
-                running = false;  // Allow start() to proceed
+                running = false;
                 start();
                 return;
             }
 
             if (!running) {
-                log("[LIFECYCLE] Codec not running, triggering full start");
+                log("[LIFECYCLE] Not running, full start");
                 this.surface = newSurface;
                 start();
                 return;
             }
 
-            // CRITICAL FIX: ALWAYS update output surface via setOutputSurface() (API 23+)
-            //
-            // Even if the Surface Java reference is the same, the native BufferQueue may have
-            // been destroyed and recreated when the app went to background. The codec would
-            // then be rendering to a dead buffer → "BufferQueue has been abandoned" error.
-            //
-            // We must call setOutputSurface() unconditionally to ensure the codec has a valid
-            // native surface connection.
-            // See: https://developer.android.com/reference/android/media/MediaCodec#setOutputSurface
+            // Always update surface (native BufferQueue may have been recreated)
             if (newSurface != null && newSurface.isValid()) {
+                boolean surfaceChanged = (newSurface != this.surface);
+
                 try {
-                    // setOutputSurface requires API 23+ (minSdk 32, so always available)
                     mCodec.setOutputSurface(newSurface);
                     this.surface = newSurface;
-                    log("[LIFECYCLE] Output surface updated via setOutputSurface()");
+                    log("[LIFECYCLE] Surface updated");
 
-                    // If codec was paused (flush() was called), it's in Flushed state.
-                    // We need to call start() to transition back to Running state so
-                    // onInputBufferAvailable callbacks will fire again.
-                    if (isPaused) {
-                        log("[LIFECYCLE] Codec was paused - calling start() to resume from Flushed state");
-
-                        // CRITICAL: Clear ring buffer BEFORE starting codec.
-                        // While backgrounded, P-frames accumulated in the buffer.
-                        // These P-frames cannot be decoded without reference frames (lost on flush).
-                        // If we feed them to the codec, it will consume input but produce no output,
-                        // causing input buffer starvation and black screen.
-                        // We must discard stale frames and wait for fresh keyframe.
+                    // In async mode, flush/start required after pause OR surface change
+                    // This ensures clean state and proper callback resumption
+                    if (isPaused || surfaceChanged) {
+                        // Flush to clear any stale frames from old surface or paused state
+                        mCodec.flush();
                         ringBuffer.reset();
                         codecAvailableBufferIndexes.clear();
-                        log("[LIFECYCLE] Ring buffer cleared - discarding stale P-frames");
-
-                        mCodec.start();
+                        mCodec.start();  // Required after flush() in async mode
                         isPaused = false;
                         codecStartTime = System.currentTimeMillis();
-                        log("[LIFECYCLE] Codec restarted from Flushed state");
+                        log("[LIFECYCLE] Codec resumed with flush/start (paused=" + !surfaceChanged + ", surfaceChanged=" + surfaceChanged + ")");
+
+                        // Request SPS+PPS injection on next available buffer (async-safe)
+                        requestCodecConfigInjection();
                     }
 
-                    // Reset keyframe detection and request a new keyframe
                     framesReceivedSinceReset = 0;
                     framesDecodedSinceReset = 0;
                     resetTimestamp = System.currentTimeMillis();
                     pendingKeyframeRequest = true;
-                    log("[LIFECYCLE] Surface updated - awaiting keyframe");
 
                 } catch (IllegalArgumentException e) {
-                    // Surface type incompatible - need full codec restart
-                    log("[LIFECYCLE] setOutputSurface() failed (incompatible): " + e.getMessage() + " - recreating codec");
+                    log("[LIFECYCLE] setOutputSurface failed: " + e.getMessage());
                     recreateCodecWithSurface(newSurface);
                     return;
                 } catch (IllegalStateException e) {
-                    // Codec in wrong state (crashed/released) - need full codec restart
-                    log("[LIFECYCLE] setOutputSurface() failed (wrong state): " + e.getMessage() + " - recreating codec");
+                    log("[LIFECYCLE] setOutputSurface failed: " + e.getMessage());
                     recreateCodecWithSurface(newSurface);
                     return;
                 }
             } else {
-                log("[LIFECYCLE] WARNING: Resume called with invalid surface - cannot update codec");
+                log("[LIFECYCLE] Invalid surface");
                 return;
             }
         }
 
-        // Request keyframe outside lock to avoid deadlock
         if (keyframeCallback != null) {
-            log("[LIFECYCLE] Requesting keyframe after surface update");
+            log("[LIFECYCLE] Requesting keyframe");
             try {
                 keyframeCallback.onKeyframeNeeded();
                 lastKeyframeRequestTime = System.currentTimeMillis();
             } catch (Exception e) {
-                log("[LIFECYCLE] Keyframe request after resume failed: " + e);
+                log("[LIFECYCLE] Keyframe request failed: " + e);
             }
         }
     }
 
-    /**
-     * Recreate the codec with a new surface when recovery from errors fails.
-     * This is the nuclear option when setOutputSurface() or start() fails.
-     */
+    /** Full codec recreation when setOutputSurface() fails. */
     private void recreateCodecWithSurface(Surface newSurface) {
-        log("[LIFECYCLE] Recreating codec with new surface");
+        log("[LIFECYCLE] Recreating codec");
 
-        // Clean up old codec
         try {
             if (mCodec != null) {
                 mCodec.stop();
                 mCodec.release();
             }
         } catch (Exception e) {
-            log("[LIFECYCLE] Error cleaning up old codec: " + e.getMessage());
+            log("[LIFECYCLE] Cleanup error: " + e.getMessage());
         }
         mCodec = null;
 
-        // Clear state (ConcurrentLinkedQueue.clear() is thread-safe)
         codecAvailableBufferIndexes.clear();
         ringBuffer.reset();
         presentationTimeUs.set(0);
 
-        // Create new codec with new surface
         this.surface = newSurface;
         try {
             initCodec(width, height, newSurface);
             mCodec.start();
             codecStartTime = System.currentTimeMillis();
 
-            // Reset keyframe detection
             framesReceivedSinceReset = 0;
             framesDecodedSinceReset = 0;
             resetTimestamp = System.currentTimeMillis();
             pendingKeyframeRequest = true;
 
-            log("[LIFECYCLE] Codec recreated successfully");
+            log("[LIFECYCLE] Codec recreated");
             VideoDebugLogger.logCodecStarted();
 
-            // Request keyframe
+            // Request SPS+PPS injection on next available buffer (async-safe)
+            requestCodecConfigInjection();
+
             if (keyframeCallback != null) {
                 keyframeCallback.onKeyframeNeeded();
                 lastKeyframeRequestTime = System.currentTimeMillis();
             }
         } catch (Exception e) {
-            log("[LIFECYCLE] Failed to recreate codec: " + e);
-            // Mark as not running so next attempt will try again
+            log("[LIFECYCLE] Recreate failed: " + e);
             running = false;
         }
     }
 
-    /**
-     * Resume video decoding (legacy overload without surface parameter).
-     * Attempts to resume with existing surface reference.
-     */
+    /** Resume with existing surface. */
     public void resume() {
         resume(this.surface);
     }
 
 
     private void initCodec(int width, int height, Surface surface) throws Exception {
-        log("init media codec - Resolution: " + width + "x" + height);
+        log("init codec: " + width + "x" + height);
 
-        // Codec selection using PlatformDetector-provided decoder name
-        // This ensures we use the correct codec for the platform (e.g., OMX.Intel.hw_vd.h264 for gminfo37)
         MediaCodec codec = null;
         String codecName = null;
         MediaCodecInfo selectedCodecInfo = null;
 
-        // Try preferred decoder first (from PlatformDetector)
+        // Try preferred decoder from PlatformDetector
         if (preferredDecoderName != null && !preferredDecoderName.isEmpty()) {
             try {
                 codec = MediaCodec.createByCodecName(preferredDecoderName);
                 codecName = preferredDecoderName;
-                // Find codec info for capability checks
                 selectedCodecInfo = findCodecInfo(preferredDecoderName);
-                log("Using platform-detected decoder: " + codecName);
+                log("Using decoder: " + codecName);
             } catch (Exception e) {
-                log("Preferred decoder '" + preferredDecoderName + "' not available: " + e.getMessage());
+                log("Preferred decoder unavailable: " + e.getMessage());
             }
         }
 
-        // Fallback to generic hardware decoder if preferred not available
+        // Fallback to generic decoder
         if (codec == null) {
             try {
                 codec = MediaCodec.createDecoderByType("video/avc");
                 codecName = codec.getName();
-                // Find codec info for capability checks
                 selectedCodecInfo = findCodecInfo(codecName);
-                log("Using generic decoder: " + codecName);
+                log("Using decoder: " + codecName);
             } catch (Exception e2) {
                 throw new Exception("No H.264 decoder available", e2);
             }
@@ -863,100 +679,67 @@ public class H264Renderer {
 
         mCodec = codec;
         codecInfo = selectedCodecInfo;
-        log("codec created: " + codecName);
         VideoDebugLogger.logCodecInit(codecName, width, height);
 
         final MediaFormat mediaformat = MediaFormat.createVideoFormat("video/avc", width, height);
 
-        // Intel HD Graphics 505 optimization for 2400x960@60fps
-        // Low latency decoding - check capability before enabling (best practice)
+        // Low latency mode - only enable if codec supports it
         boolean lowLatencySupported = false;
         if (codecInfo != null) {
             try {
                 CodecCapabilities caps = codecInfo.getCapabilitiesForType("video/avc");
                 lowLatencySupported = caps.isFeatureSupported(CodecCapabilities.FEATURE_LowLatency);
             } catch (Exception e) {
-                log("Could not check low latency capability: " + e.getMessage());
+                // Ignore
             }
         }
-
         if (lowLatencySupported) {
-            mediaformat.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
-            log("Low latency mode enabled (FEATURE_LowLatency supported)");
-        } else {
-            // Try anyway on API 30+ as it may still work
             try {
                 mediaformat.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
-                log("Low latency mode enabled (capability not confirmed)");
+                log("Low latency: enabled");
             } catch (Exception e) {
-                log("Low latency mode not supported: " + e.getMessage());
+                log("Low latency: failed to set key");
             }
+        } else {
+            log("Low latency: not supported by decoder, skipping");
         }
 
-        // Set realtime priority (0 = realtime, 1 = best effort)
         try {
-            mediaformat.setInteger(MediaFormat.KEY_PRIORITY, 0);
-            log("Realtime priority set");
+            mediaformat.setInteger(MediaFormat.KEY_PRIORITY, 0); // Realtime
         } catch (Exception e) {
-            log("Priority setting not supported on this API level");
+            // Ignore
         }
 
-        // Intel Quick Sync specific optimizations
-        // Research: Intel decoders have high latency when Adaptive Playback is enabled
-        // See: https://community.intel.com/t5/Software-Archive/High-Video-Latency-using-MediaCodec-on-Moorefield-H264-Decoder/m-p/998290
+        // Intel-specific: disable Adaptive Playback (causes high latency)
         if (codecName != null && codecName.contains("Intel")) {
             try {
-                // Optimize buffer count for Intel Quick Sync (typically 8-16 buffers)
                 mediaformat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, width * height);
-                mediaformat.setInteger("max-concurrent-instances", 1); // Single instance for automotive
-
-                // CRITICAL: Do NOT set FEATURE_AdaptivePlayback for Intel decoders
-                // Research shows this triggers the "high latency" code path in Intel's libmix
-                // Instead, we handle resolution changes by codec reset (already implemented)
-                log("Intel Quick Sync optimizations applied (Adaptive Playback disabled for low latency)");
+                mediaformat.setInteger("max-concurrent-instances", 1);
+                log("Intel optimizations applied");
             } catch (Exception e) {
-                log("Intel-specific optimizations not supported: " + e.getMessage());
+                // Ignore
             }
         }
 
-        // For non-Intel decoders, we could enable Adaptive Playback if supported
-        // But for automotive use case with fixed resolution, it's not needed
+        log("format: " + mediaformat);
 
-        log("media format created: " + mediaformat);
-
-        // Create dedicated HandlerThread for MediaCodec callbacks
-        // This ensures callbacks are delivered reliably on a dedicated thread with high priority
-        // Previously, callbacks were delivered on the codec's internal looper which could be blocked
+        // Create callback thread
         if (codecCallbackThread == null || !codecCallbackThread.isAlive()) {
-            codecCallbackThread = new HandlerThread("MediaCodecCallbackThread", Process.THREAD_PRIORITY_URGENT_AUDIO);
+            codecCallbackThread = new HandlerThread("MediaCodecCallback", Process.THREAD_PRIORITY_URGENT_AUDIO);
             codecCallbackThread.start();
             codecCallbackHandler = new Handler(codecCallbackThread.getLooper());
-            log("Created dedicated callback thread with URGENT_AUDIO priority");
         }
 
-        // CRITICAL: setCallback() MUST be called BEFORE configure() for asynchronous mode
-        // Per Android documentation: "if the client intends to use the component in asynchronous mode,
-        // a valid callback should be provided before configure() is called"
-        // See: https://developer.android.com/reference/android/media/MediaCodec#setCallback
-        // Using dedicated Handler ensures callbacks are delivered regardless of main thread state
-        log("media codec setting async callback (before configure) with dedicated Handler");
+        // setCallback must be called before configure for async mode
         mCodec.setCallback(codecCallback, codecCallbackHandler);
 
         codecAvailableBufferIndexes.clear();
 
-        log("configure media codec");
         mCodec.configure(mediaformat, surface, null, 0);
         VideoDebugLogger.logCodecConfigured(mediaformat.toString());
         VideoDebugLogger.logSurfaceBound(surface != null && surface.isValid());
     }
 
-    /**
-     * Finds MediaCodecInfo for a codec by name using MediaCodecList.
-     * Used for capability checks like FEATURE_LowLatency support.
-     *
-     * @param codecName The name of the codec to find info for
-     * @return MediaCodecInfo or null if not found
-     */
     private MediaCodecInfo findCodecInfo(String codecName) {
         if (codecName == null) return null;
 
@@ -969,13 +752,6 @@ public class H264Renderer {
         return null;
     }
 
-    /**
-     * Process video data directly from a ByteArray.
-     * This is a convenience method for native Android apps.
-     *
-     * @param data H.264 NAL unit data
-     * @param flags Frame flags (unused, for API compatibility)
-     */
     public void processData(byte[] data, int flags) {
         if (data == null || data.length == 0) return;
 
@@ -988,11 +764,6 @@ public class H264Renderer {
         totalFramesReceived++;
         totalBytesProcessed += length;
 
-        // CRITICAL FIX: Never drop frames during decoder initialization
-        // Research shows SPS/PPS frames are essential for decoder startup
-        // Frame skipping should only happen AFTER successful streaming has begun
-
-        // Log performance stats every 30 seconds (time-based for accuracy)
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastPerfLogTime >= PERF_LOG_INTERVAL_MS) {
             logPerformanceStats();
@@ -1007,33 +778,29 @@ public class H264Renderer {
     private void initializeBufferPool() {
         if (poolInitialized) return;
 
-        // Calculate optimal pool size based on resolution and research findings
         bufferPoolSize = calculateOptimalPoolSize(width, height);
-
-        // Research-based buffer sizing per frame for automotive streaming
-        // ByteBuffer.allocateDirect provides maximum efficiency per research
         int bufferSize = calculateOptimalFrameBufferSize(width, height);
 
-        // Initialize buffers across different size buckets for optimal reuse
-        int smallCount = bufferPoolSize / 3;
-        int mediumCount = bufferPoolSize / 3;
+        // Distribution 50:30:20 based on typical H.264 frame size patterns:
+        // - Small (50%): P-frames (~10-50KB) are most common
+        // - Medium (30%): Some P-frames and smaller I-frames
+        // - Large (20%): IDR+SPS+PPS frames (~100-300KB) are least frequent
+        int smallCount = (bufferPoolSize * 50) / 100;
+        int mediumCount = (bufferPoolSize * 30) / 100;
         int largeCount = bufferPoolSize - smallCount - mediumCount;
 
-        // Small buffers (64KB) - for headers and small frames
         for (int i = 0; i < smallCount; i++) {
             ByteBuffer buffer = ByteBuffer.allocateDirect(SMALL_BUFFER_THRESHOLD);
             buffer.order(ByteOrder.LITTLE_ENDIAN);
             smallBuffers.offer(buffer);
         }
 
-        // Medium buffers (256KB) - for standard frames
         for (int i = 0; i < mediumCount; i++) {
             ByteBuffer buffer = ByteBuffer.allocateDirect(MEDIUM_BUFFER_THRESHOLD);
             buffer.order(ByteOrder.LITTLE_ENDIAN);
             mediumBuffers.offer(buffer);
         }
 
-        // Large buffers (calculated size) - for high-quality frames
         for (int i = 0; i < largeCount; i++) {
             ByteBuffer buffer = ByteBuffer.allocateDirect(bufferSize);
             buffer.order(ByteOrder.LITTLE_ENDIAN);
@@ -1041,41 +808,30 @@ public class H264Renderer {
         }
 
         poolInitialized = true;
-        log("Resolution-adaptive memory pool initialized: " + bufferPoolSize + " buffers (" +
-            smallCount + " small/" + mediumCount + " medium/" + largeCount + " large) for " + width + "x" + height);
+        log("Pool: " + smallCount + "/" + mediumCount + "/" + largeCount + " buffers for " + width + "x" + height);
     }
 
     private ByteBuffer getPooledBuffer(int minimumSize) {
         ByteBuffer buffer = null;
 
-        // Select appropriate buffer bucket based on size requirement
         if (minimumSize <= SMALL_BUFFER_THRESHOLD) {
             buffer = smallBuffers.poll();
-            if (buffer == null) {
-                // Try next size up if small pool is empty
-                buffer = mediumBuffers.poll();
-            }
+            if (buffer == null) buffer = mediumBuffers.poll();
         } else if (minimumSize <= MEDIUM_BUFFER_THRESHOLD) {
             buffer = mediumBuffers.poll();
-            if (buffer == null) {
-                // Try large pool if medium is empty
-                buffer = largeBuffers.poll();
-            }
+            if (buffer == null) buffer = largeBuffers.poll();
         } else {
             buffer = largeBuffers.poll();
         }
 
-        // If no suitable buffer found in pools, allocate new one
         if (buffer == null || buffer.capacity() < minimumSize) {
             int newSize = Math.max(minimumSize, 128 * 1024);
             buffer = ByteBuffer.allocateDirect(newSize);
             buffer.order(ByteOrder.LITTLE_ENDIAN);
-
-            log("[POOL_EXPAND] Allocated " + (newSize / 1024) + "KB direct buffer for size requirement: " + (minimumSize / 1024) + "KB");
+            log("[POOL_EXPAND] " + (newSize / 1024) + "KB");
         }
 
         buffer.clear();
-        // Clear buffer contents for security before first use
         secureBufferClear(buffer);
         return buffer;
     }
@@ -1083,58 +839,42 @@ public class H264Renderer {
     private void returnPooledBuffer(ByteBuffer buffer) {
         if (buffer == null) return;
 
-        // Just reset position/limit for reuse - secure clearing only happens on session end
-        // This is safe because buffers are only used internally within the same session
         buffer.clear();
-
-        // Return buffer to appropriate size bucket
         int capacity = buffer.capacity();
         boolean returned = false;
 
-        if (capacity <= SMALL_BUFFER_THRESHOLD && smallBuffers.size() < bufferPoolSize / 3) {
+        // Use same 50:30:20 distribution as initializeBufferPool
+        int maxSmall = (bufferPoolSize * 50) / 100;
+        int maxMedium = (bufferPoolSize * 30) / 100;
+        int maxLarge = bufferPoolSize - maxSmall - maxMedium;
+
+        if (capacity <= SMALL_BUFFER_THRESHOLD && smallBuffers.size() < maxSmall) {
             smallBuffers.offer(buffer);
             returned = true;
-        } else if (capacity <= MEDIUM_BUFFER_THRESHOLD && mediumBuffers.size() < bufferPoolSize / 3) {
+        } else if (capacity <= MEDIUM_BUFFER_THRESHOLD && mediumBuffers.size() < maxMedium) {
             mediumBuffers.offer(buffer);
             returned = true;
-        } else if (capacity > MEDIUM_BUFFER_THRESHOLD && largeBuffers.size() < bufferPoolSize / 3) {
+        } else if (capacity > MEDIUM_BUFFER_THRESHOLD && largeBuffers.size() < maxLarge) {
             largeBuffers.offer(buffer);
             returned = true;
         }
 
-        if (!returned) {
-            // Pool bucket is full - log for monitoring
-            String bucketType = capacity <= SMALL_BUFFER_THRESHOLD ? "small" :
-                               capacity <= MEDIUM_BUFFER_THRESHOLD ? "medium" : "large";
-            log("[POOL_FULL] " + bucketType + " buffer pool at capacity, discarding " + (capacity / 1024) + "KB buffer");
-        }
+        // !returned: buffer discarded, will be GC'd
     }
 
-    /**
-     * Securely clears ByteBuffer contents to prevent data leakage between sessions.
-     * Uses efficient zero-filling for direct buffers according to Android security best practices.
-     * NOTE: Only called on session end, not during buffer pool operations (performance optimization).
-     */
+    /** Zero buffer contents (called on session end). */
     private void secureBufferClear(ByteBuffer buffer) {
         if (buffer != null && buffer.isDirect()) {
-            // Clear entire buffer capacity
             buffer.clear();
-
-            // Zero-fill the buffer for security using larger chunks for better performance
-            byte[] zeros = new byte[Math.min(32768, buffer.capacity())]; // 32KB chunks
+            byte[] zeros = new byte[Math.min(32768, buffer.capacity())];
             while (buffer.hasRemaining()) {
                 int toWrite = Math.min(zeros.length, buffer.remaining());
                 buffer.put(zeros, 0, toWrite);
             }
-
             buffer.clear();
         }
     }
 
-    /**
-     * Securely clears all buffers in a pool and drains the queue.
-     * Called only on session end to prevent data leakage between sessions.
-     */
     private void secureBufferPoolClear(ConcurrentLinkedQueue<ByteBuffer> pool) {
         ByteBuffer buffer;
         while ((buffer = pool.poll()) != null) {
@@ -1149,61 +889,61 @@ public class H264Renderer {
         return new MediaCodec.Callback() {
             @Override
             public void onInputBufferAvailable(@NonNull MediaCodec codec, int index) {
-                // Thread-safe check using codecLock to prevent race with reset/stop
                 synchronized (codecLock) {
-                    // Double-check codec validity inside lock
                     if (codec != mCodec || mCodec == null || !running) {
-                        log("[CALLBACK] onInputBufferAvailable ignored - codec=" +
-                            (codec == mCodec ? "current" : "STALE") + ", running=" + running);
                         return;
                     }
 
-                    // Log callback receipt (lock-free queue size is approximate but acceptable for logging)
                     VideoDebugLogger.logCodecInputAvailable(index, codecAvailableBufferIndexes.size());
-                    log("[CALLBACK] onInputBufferAvailable index=" + index +
-                        ", ringBuffer=" + (ringBuffer.isEmpty() ? "empty" : "has data") +
-                        ", savedIndices=" + codecAvailableBufferIndexes.size());
+
+                    // Priority 1: Inject SPS/PPS after codec reset (before any frame data)
+                    if (codecConfigPending) {
+                        if (injectCodecConfigToBuffer(codec, index)) {
+                            // Successfully injected, this buffer is consumed
+                            return;
+                        }
+                        // Injection failed, fall through to process normal data
+                    }
 
                     if (!ringBuffer.isEmpty()) {
-                        // Data available - feed directly to codec
                         try {
                             ByteBuffer byteBuffer = mCodec.getInputBuffer(index);
-                            if (byteBuffer == null) {
-                                log("[CALLBACK] getInputBuffer returned null for index " + index);
-                                return;
-                            }
+                            if (byteBuffer == null) return;
 
-                            // OPTIMIZATION: Use readPacketInto() for direct single-copy from ring buffer to codec buffer
-                            // This eliminates the intermediate byte[] allocation that readPacket() requires.
-                            // Note: flags=0 because combined SPS+PPS+IDR packets should not be
-                            // flagged as CODEC_CONFIG (codec auto-detects from NAL headers)
                             int dataSize = ringBuffer.readPacketInto(byteBuffer);
                             if (dataSize == 0) {
-                                // No packet or error - save index for later
                                 codecAvailableBufferIndexes.offer(index);
                                 return;
                             }
 
-                            // Detect NAL unit type for diagnostic logging
-                            // This is critical for diagnosing video degradation - we need to know
-                            // when IDR frames arrive (or don't arrive)
                             int nalType = detectNalUnitType(byteBuffer, dataSize);
                             if (nalType >= 0) {
                                 VideoDebugLogger.logNalUnitType(nalType, dataSize);
                             }
 
-                            // Use monotonic presentation timestamp for proper frame ordering
-                            long pts = presentationTimeUs.getAndAdd(FRAME_DURATION_US);
+                            // Cache SPS/PPS from incoming data for later use
+                            // Must be done before any buffer modifications
+                            if (nalType == 7 || nalType == 8 || nalType == 5) {
+                                cacheCodecConfigData(byteBuffer, dataSize);
+                            }
 
-                            mCodec.queueInputBuffer(index, 0, dataSize, pts, 0);
-                            VideoDebugLogger.logCodecInputQueued(index, dataSize);
-                            log("[CALLBACK] Queued input buffer #" + index + " with " + dataSize + " bytes");
+                            long pts = presentationTimeUs.getAndAdd(frameDurationUs);
 
-                            // Track frames received since reset for keyframe detection
-                            framesReceivedSinceReset++;
+                            // For IDR frames: prepend cached SPS/PPS to ensure decoder refresh
+                            // This prevents progressive degradation during continuous operation
+                            boolean isIdrFrame = (nalType == 5) || containsIdrFrame(byteBuffer, dataSize);
+                            if (isIdrFrame && queueIdrWithSpsPps(codec, index, byteBuffer, dataSize, pts)) {
+                                // Successfully queued IDR with SPS/PPS prepended
+                                VideoDebugLogger.logCodecInputQueued(index, dataSize);
+                                framesReceivedSinceReset++;
+                            } else {
+                                // Normal frame or IDR injection failed - queue as-is
+                                mCodec.queueInputBuffer(index, 0, dataSize, pts, 0);
+                                VideoDebugLogger.logCodecInputQueued(index, dataSize);
+                                framesReceivedSinceReset++;
+                            }
 
-                            // Check if we need to request keyframe (receiving frames but not decoding)
-                            // Trigger on EITHER: frame count threshold OR time threshold (whichever comes first)
+                            // Keyframe detection: receiving frames but not decoding
                             if (pendingKeyframeRequest && framesDecodedSinceReset == 0) {
                                 long now = System.currentTimeMillis();
                                 long timeSinceReset = now - resetTimestamp;
@@ -1212,12 +952,7 @@ public class H264Renderer {
 
                                 if ((frameThresholdMet || timeThresholdMet) &&
                                     (now - lastKeyframeRequestTime) > KEYFRAME_REQUEST_COOLDOWN_MS) {
-                                    // We've received frames but decoded none - need keyframe
-                                    String trigger = frameThresholdMet ?
-                                        "frame count (" + framesReceivedSinceReset + " frames)" :
-                                        "time elapsed (" + timeSinceReset + "ms)";
-                                    log("[KEYFRAME_DETECT] Triggered by " + trigger +
-                                        " - decoded " + framesDecodedSinceReset + " - requesting keyframe");
+                                    log("[KEYFRAME_DETECT] Requesting keyframe");
                                     if (keyframeCallback != null) {
                                         try {
                                             keyframeCallback.onKeyframeNeeded();
@@ -1226,18 +961,16 @@ public class H264Renderer {
                                             log("[KEYFRAME_DETECT] Keyframe request failed: " + ke.getMessage());
                                         }
                                     }
-                                    // Reset counters to avoid spamming, but keep detection active
                                     framesReceivedSinceReset = 0;
-                                    resetTimestamp = now; // Reset time window for next attempt
+                                    resetTimestamp = now;
                                 }
                             }
                         } catch (Exception e) {
-                            // Buffer might be invalid after codec reset, save index for later
                             log("[CALLBACK] Failed to queue buffer #" + index + ": " + e.getMessage());
                             codecAvailableBufferIndexes.offer(index);
                         }
                     } else {
-                        // No data yet - save buffer index for when data arrives (lock-free)
+                        // No data yet - save buffer index for when data arrives
                         codecAvailableBufferIndexes.offer(index);
                     }
                 }
@@ -1273,6 +1006,7 @@ public class H264Renderer {
                             log("[RECOVERY] Video recovered in " + recoveryTime + "ms " +
                                 "(avg: " + avgRecoveryTime + "ms, count: " + recoveryCount + ")");
                             pendingKeyframeRequest = false;
+                            consecutiveResetAttempts = 0;  // Reset exponential backoff on successful recovery
                         }
 
                         // Log first decoded frame for debugging
@@ -1522,5 +1256,256 @@ public class H264Renderer {
             // Restore buffer position (important - codec will read from this position)
             buffer.position(originalPosition);
         }
+    }
+
+    /**
+     * Scans H.264 data for SPS and PPS NAL units and caches them for later injection.
+     *
+     * The CPC200-CCPA adapter only sends SPS+PPS at session start (with the first IDR frame).
+     * After codec flush(), the decoder loses this configuration and cannot decode frames
+     * until it receives SPS+PPS again. Since FRAME command only triggers IDR (not SPS+PPS),
+     * we must cache and re-inject the original SPS+PPS after each flush.
+     *
+     * Additionally, cached SPS+PPS is prepended to every IDR frame to prevent decoder
+     * drift during continuous operation without resets.
+     *
+     * @param buffer ByteBuffer containing H.264 Annex B stream data
+     * @param dataSize Size of valid data in buffer
+     */
+    private void cacheCodecConfigData(ByteBuffer buffer, int dataSize) {
+        if (dataSize < 8) return; // Need at least start code + NAL header + some data
+
+        synchronized (spsLock) {
+            // Only cache if we don't have SPS/PPS yet
+            if (cachedSps != null && cachedPps != null) return;
+
+            try {
+                // Use absolute get() to avoid modifying buffer position/limit
+                // This is safer and avoids IllegalArgumentException on limit changes
+
+                // Scan for NAL units and extract SPS (7) and PPS (8)
+                int pos = 0;
+                while (pos < dataSize - 4) {
+                    // Find start code using absolute get
+                    int startCodeLen = 0;
+                    if (pos + 3 < dataSize &&
+                        buffer.get(pos) == 0 && buffer.get(pos + 1) == 0 && buffer.get(pos + 2) == 1) {
+                        startCodeLen = 3;
+                    } else if (pos + 4 < dataSize &&
+                        buffer.get(pos) == 0 && buffer.get(pos + 1) == 0 &&
+                        buffer.get(pos + 2) == 0 && buffer.get(pos + 3) == 1) {
+                        startCodeLen = 4;
+                    }
+
+                    if (startCodeLen > 0) {
+                        int nalStart = pos;
+                        int nalHeaderPos = pos + startCodeLen;
+                        if (nalHeaderPos >= dataSize) break;
+
+                        int nalType = buffer.get(nalHeaderPos) & 0x1F;
+
+                        // Find the end of this NAL unit (next start code or end of data)
+                        int nalEnd = dataSize;
+                        int searchPos = nalHeaderPos + 1;
+                        while (searchPos < dataSize - 3) {
+                            if (buffer.get(searchPos) == 0 && buffer.get(searchPos + 1) == 0 &&
+                                (buffer.get(searchPos + 2) == 1 ||
+                                 (searchPos + 3 < dataSize && buffer.get(searchPos + 2) == 0 && buffer.get(searchPos + 3) == 1))) {
+                                nalEnd = searchPos;
+                                break;
+                            }
+                            searchPos++;
+                        }
+
+                        // Cache SPS (NAL type 7) or PPS (NAL type 8)
+                        if (nalType == 7 && cachedSps == null) {
+                            int nalSize = nalEnd - nalStart;
+                            cachedSps = new byte[nalSize];
+                            // Use absolute get to copy bytes without modifying buffer state
+                            for (int i = 0; i < nalSize; i++) {
+                                cachedSps[i] = buffer.get(nalStart + i);
+                            }
+                            log("[SPS_CACHE] Cached SPS: " + nalSize + " bytes");
+                        } else if (nalType == 8 && cachedPps == null) {
+                            int nalSize = nalEnd - nalStart;
+                            cachedPps = new byte[nalSize];
+                            for (int i = 0; i < nalSize; i++) {
+                                cachedPps[i] = buffer.get(nalStart + i);
+                            }
+                            log("[PPS_CACHE] Cached PPS: " + nalSize + " bytes");
+                        }
+
+                        pos = nalEnd;
+                    } else {
+                        pos++;
+                    }
+                }
+
+                if (cachedSps != null && cachedPps != null) {
+                    log("[CODEC_CONFIG] SPS+PPS cached successfully - will prepend to IDR frames");
+                }
+            } catch (Exception e) {
+                log("[CODEC_CONFIG] Error caching SPS/PPS: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Signals that codec config (SPS/PPS) should be injected on the next available input buffer.
+     * This is called after flush/reset to ensure decoder has codec-specific data.
+     *
+     * In async mode, we cannot use dequeueInputBuffer(). Instead, we set a flag and
+     * inject via the onInputBufferAvailable callback.
+     *
+     * If SPS/PPS is not cached, proactively requests a keyframe from the adapter since
+     * the adapter only sends SPS/PPS at session start (not on FRAME command).
+     */
+    private void requestCodecConfigInjection() {
+        synchronized (spsLock) {
+            if (cachedSps == null || cachedPps == null) {
+                log("[CODEC_CONFIG] No cached SPS/PPS - requesting keyframe from adapter");
+                // Proactively request keyframe since adapter only sends SPS/PPS at session start
+                if (keyframeCallback != null) {
+                    try {
+                        keyframeCallback.onKeyframeNeeded();
+                        lastKeyframeRequestTime = System.currentTimeMillis();
+                    } catch (Exception e) {
+                        log("[CODEC_CONFIG] Keyframe request failed: " + e.getMessage());
+                    }
+                }
+                return;
+            }
+            codecConfigPending = true;
+            log("[CODEC_CONFIG] Codec config injection requested - will inject on next available buffer");
+        }
+    }
+
+    /**
+     * Injects cached SPS+PPS into the provided codec buffer.
+     * Called from onInputBufferAvailable when codecConfigPending is true.
+     *
+     * @param codec The MediaCodec instance
+     * @param bufferIndex The available input buffer index
+     * @return true if injection was successful, false otherwise
+     */
+    private boolean injectCodecConfigToBuffer(MediaCodec codec, int bufferIndex) {
+        synchronized (spsLock) {
+            if (cachedSps == null || cachedPps == null) {
+                codecConfigPending = false;
+                return false;
+            }
+
+            try {
+                ByteBuffer inputBuffer = codec.getInputBuffer(bufferIndex);
+                if (inputBuffer == null) {
+                    log("[CODEC_CONFIG] getInputBuffer returned null");
+                    return false;
+                }
+
+                int totalSize = cachedSps.length + cachedPps.length;
+                if (inputBuffer.capacity() < totalSize) {
+                    log("[CODEC_CONFIG] Buffer too small: " + inputBuffer.capacity() + " < " + totalSize);
+                    return false;
+                }
+
+                inputBuffer.clear();
+                inputBuffer.put(cachedSps);
+                inputBuffer.put(cachedPps);
+
+                // Submit with BUFFER_FLAG_CODEC_CONFIG
+                codec.queueInputBuffer(bufferIndex, 0, totalSize, 0, MediaCodec.BUFFER_FLAG_CODEC_CONFIG);
+
+                log("[CODEC_CONFIG] Injected SPS+PPS (" + totalSize + " bytes) via callback");
+                codecConfigPending = false;
+                return true;
+            } catch (Exception e) {
+                log("[CODEC_CONFIG] Injection failed: " + e.getMessage());
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Prepends cached SPS+PPS to IDR frame data and queues to codec.
+     * This ensures decoder always has fresh configuration with each keyframe,
+     * preventing video degradation during continuous operation.
+     *
+     * @param codec The MediaCodec instance
+     * @param bufferIndex The available input buffer index
+     * @param frameData The original IDR frame data
+     * @param frameSize Size of the IDR frame data
+     * @param pts Presentation timestamp
+     * @return true if successful, false otherwise
+     */
+    private boolean queueIdrWithSpsPps(MediaCodec codec, int bufferIndex,
+                                        ByteBuffer frameData, int frameSize, long pts) {
+        synchronized (spsLock) {
+            if (cachedSps == null || cachedPps == null) {
+                // No cached SPS/PPS, queue frame as-is
+                return false;
+            }
+
+            try {
+                ByteBuffer inputBuffer = codec.getInputBuffer(bufferIndex);
+                if (inputBuffer == null) {
+                    return false;
+                }
+
+                int totalSize = cachedSps.length + cachedPps.length + frameSize;
+                if (inputBuffer.capacity() < totalSize) {
+                    log("[IDR_INJECT] Buffer too small for SPS+PPS+IDR: " + inputBuffer.capacity() + " < " + totalSize);
+                    return false;
+                }
+
+                // Build combined buffer: SPS + PPS + IDR
+                inputBuffer.clear();
+                inputBuffer.put(cachedSps);
+                inputBuffer.put(cachedPps);
+
+                // Copy IDR frame data
+                int originalPosition = frameData.position();
+                frameData.position(0);
+                for (int i = 0; i < frameSize; i++) {
+                    inputBuffer.put(frameData.get(i));
+                }
+                frameData.position(originalPosition);
+
+                codec.queueInputBuffer(bufferIndex, 0, totalSize, pts, 0);
+
+                // Log occasionally to avoid spam
+                if (totalFramesDecoded % 100 == 0) {
+                    log("[IDR_INJECT] Prepended SPS+PPS to IDR frame (total: " + totalSize + " bytes)");
+                }
+                return true;
+            } catch (Exception e) {
+                log("[IDR_INJECT] Failed: " + e.getMessage());
+                return false;
+            }
+        }
+    }
+
+    /**
+     * Checks if NAL data contains an IDR frame (NAL type 5).
+     * IDR frames are keyframes that can start a new decoding sequence.
+     */
+    private boolean containsIdrFrame(ByteBuffer buffer, int dataSize) {
+        if (dataSize < 5) return false;
+
+        int searchLimit = Math.min(dataSize, 64); // IDR NAL usually near start
+        for (int i = 0; i < searchLimit - 4; i++) {
+            if (buffer.get(i) == 0 && buffer.get(i + 1) == 0) {
+                int nalOffset = -1;
+                if (buffer.get(i + 2) == 1) {
+                    nalOffset = i + 3;
+                } else if (buffer.get(i + 2) == 0 && i + 3 < searchLimit && buffer.get(i + 3) == 1) {
+                    nalOffset = i + 4;
+                }
+                if (nalOffset >= 0 && nalOffset < dataSize) {
+                    int nalType = buffer.get(nalOffset) & 0x1F;
+                    if (nalType == 5) return true; // IDR
+                }
+            }
+        }
+        return false;
     }
 }

@@ -35,6 +35,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.carlink.capture.CapturePlaybackManager
 import com.carlink.logging.FileLogManager
 import com.carlink.logging.LogPreset
 import com.carlink.logging.Logger
@@ -69,6 +70,7 @@ class MainActivity : ComponentActivity() {
     // is destroyed before initialization completes (e.g., low memory kill)
     private var carlinkManager: CarlinkManager? = null
     private var fileLogManager: FileLogManager? = null
+    private var capturePlaybackManager: CapturePlaybackManager? = null
     private var currentDisplayMode: DisplayMode = DisplayMode.SYSTEM_UI_VISIBLE
 
     // Permission launcher
@@ -140,6 +142,10 @@ class MainActivity : ComponentActivity() {
         // so display dimensions are calculated correctly for the active mode
         initializeCarlinkManager()
 
+        // Initialize capture playback manager and link to CarlinkManager for data injection
+        capturePlaybackManager = CapturePlaybackManager(this)
+        capturePlaybackManager?.setCarlinkManager(carlinkManager!!)
+
         // Request microphone permission if needed
         requestMicrophonePermission()
 
@@ -150,12 +156,14 @@ class MainActivity : ComponentActivity() {
         // carlinkManager is guaranteed non-null here since initializeCarlinkManager()
         // completed synchronously above. Use !! with confidence.
         val manager = carlinkManager!!
+        val playbackManager = capturePlaybackManager!!
         setContent {
             CarlinkTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     CarlinkApp(
                         carlinkManager = manager,
                         fileLogManager = fileLogManager,
+                        capturePlaybackManager = playbackManager,
                         displayMode = currentDisplayMode,
                     )
                 }
@@ -198,6 +206,7 @@ class MainActivity : ComponentActivity() {
 
         // Release resources (null-safe in case Activity destroyed before init completed)
         carlinkManager?.release()
+        capturePlaybackManager?.release()
         fileLogManager?.release()
 
         logInfo("MainActivity destroyed", tag = "MAIN")
@@ -447,6 +456,7 @@ class MainActivity : ComponentActivity() {
 fun CarlinkApp(
     carlinkManager: CarlinkManager,
     fileLogManager: FileLogManager?,
+    capturePlaybackManager: CapturePlaybackManager,
     displayMode: DisplayMode,
 ) {
     var showSettings by remember { mutableStateOf(false) }
@@ -468,6 +478,7 @@ fun CarlinkApp(
         // This keeps the SurfaceTexture alive and video playing uninterrupted
         MainScreen(
             carlinkManager = carlinkManager,
+            capturePlaybackManager = capturePlaybackManager,
             displayMode = displayMode,
             onNavigateToSettings = {
                 logInfo("[UI_NAV] Opening SettingsScreen overlay (video continues)", tag = "UI")
@@ -485,6 +496,7 @@ fun CarlinkApp(
             SettingsScreen(
                 carlinkManager = carlinkManager,
                 fileLogManager = fileLogManager,
+                capturePlaybackManager = capturePlaybackManager,
                 onNavigateBack = {
                     logInfo("[UI_NAV] Closing SettingsScreen overlay", tag = "UI")
                     showSettings = false

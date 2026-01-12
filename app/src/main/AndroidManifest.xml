@@ -3,18 +3,11 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Permissions -->
-    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-
-    <!-- AAOS Permissions (optional) -->
-    <uses-permission android:name="android.car.permission.CAR_DRIVING_STATE"
-        tools:ignore="ProtectedPermissions" />
-    <uses-permission android:name="android.car.permission.CAR_UX_RESTRICTIONS_CONFIGURATION"
-        tools:ignore="ProtectedPermissions" />
 
     <!-- USB Host Feature (required) -->
     <uses-feature
@@ -23,16 +16,10 @@
 
     <!-- Optional Features -->
     <uses-feature
-        android:name="android.hardware.usb.accessory"
-        android:required="false" />
-    <uses-feature
         android:name="android.hardware.microphone"
         android:required="false" />
     <uses-feature
         android:name="android.hardware.type.automotive"
-        android:required="false" />
-    <uses-feature
-        android:name="android.software.car.templates_host"
         android:required="false" />
 
     <application

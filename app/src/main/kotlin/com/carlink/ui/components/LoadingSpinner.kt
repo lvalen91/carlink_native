@@ -15,17 +15,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.DrawableCompat
 import com.carlink.R
 
-/**
- * Loading spinner using Animated Vector Drawable (AVD) for optimal hardware compatibility.
- *
- * AVD uses Android's native animation system which has better GPU driver support
- * than Compose canvas-based animations on automotive platforms (especially Intel-based
- * GM AAOS head units).
- *
- * @param modifier Modifier for the spinner
- * @param size Size of the spinner (default 48.dp)
- * @param color Tint color for the spinner (default primary color)
- */
+/** AVD-based loading spinner with better GPU driver support on automotive platforms. */
 @Composable
 fun LoadingSpinner(
     modifier: Modifier = Modifier,
@@ -47,14 +37,10 @@ fun LoadingSpinner(
             }
         },
         update = { imageView ->
-            // Update tint color if it changes
             imageView.drawable?.let { drawable ->
                 DrawableCompat.setTint(drawable, colorArgb)
-                // Ensure animation is running
                 (drawable as? AnimatedVectorDrawable)?.let { avd ->
-                    if (!avd.isRunning) {
-                        avd.start()
-                    }
+                    if (!avd.isRunning) avd.start()
                 }
             }
         },

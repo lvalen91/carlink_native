@@ -2,6 +2,7 @@ package com.carlink.ui
 
 import android.view.MotionEvent
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -24,15 +25,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -46,9 +51,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.BuildConfig
 import com.carlink.CarlinkManager
 import com.carlink.R
+import com.carlink.capture.CapturePlaybackManager
 import com.carlink.logging.logDebug
 import com.carlink.logging.logInfo
 import com.carlink.protocol.MessageSerializer
@@ -56,69 +63,83 @@ import com.carlink.protocol.MultiTouchAction
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.VideoSurface
 import com.carlink.ui.components.rememberVideoSurfaceState
+import com.carlink.ui.settings.CapturePlaybackPreference
 import com.carlink.ui.settings.DisplayMode
+import com.carlink.ui.settings.formatDuration
 import com.carlink.ui.theme.AutomotiveDimens
 import kotlinx.coroutines.launch
 
-/**
- * Main Screen - Primary Projection Display Interface
- *
- * The main screen for the Carlink App, displays projection video and handles touch input.
- *
- * Key Responsibilities:
- * - Video Rendering: Displays H.264 video stream via SurfaceView (HWC overlay)
- * - Touch Input: Captures multitouch gestures and forwards to adapter
- * - Connection Lifecycle: Manages adapter state and displays status
- *
- * Display Handling:
- * - GM pane constraints: Uses systemBars insets for AAOS system UI areas
- * - Curved/contoured edges: Uses displayCutout insets for GM RST/Equinox curved displays
- * - H.264 alignment: Forces even width/height for macroblock compatibility
- *
- * OPTIMIZATION: Uses SurfaceView for direct HWC overlay rendering:
- * - Lower latency than TextureView (no GPU composition)
- * - Lower power consumption
- * - Touch events handled directly by VideoSurfaceView
- */
+/** Main projection screen displaying H.264 video via SurfaceView (HWC overlay) with touch forwarding. */
 @Composable
 fun MainScreen(
     carlinkManager: CarlinkManager,
+    capturePlaybackManager: CapturePlaybackManager,
     displayMode: DisplayMode,
     onNavigateToSettings: () -> Unit,
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
-
-    // State
     var state by remember { mutableStateOf(CarlinkManager.State.DISCONNECTED) }
     var isResetting by remember { mutableStateOf(false) }
     val surfaceState = rememberVideoSurfaceState()
 
-    // Log state changes for debugging
+    // Playback state
+    val playbackPreference = remember { CapturePlaybackPreference.getInstance(context) }
+    val playbackEnabled by playbackPreference.playbackEnabledFlow.collectAsStateWithLifecycle(
+        initialValue = false,
+    )
+    val playbackState by capturePlaybackManager.state.collectAsStateWithLifecycle()
+    val playbackProgress by capturePlaybackManager.progress.collectAsStateWithLifecycle()
+    val isPlaybackMode = playbackEnabled && playbackState != CapturePlaybackManager.State.IDLE
+
     LaunchedEffect(state) {
         logInfo("[UI_STATE] MainScreen connection state: $state", tag = "UI")
     }
 
-    // Track if user is interacting with CarPlay projection
+    LaunchedEffect(playbackState) {
+        logInfo("[UI_STATE] MainScreen playback state: $playbackState", tag = "UI")
+
+        // When playback completes or errors, clean up and navigate to settings
+        if (playbackState == CapturePlaybackManager.State.COMPLETED ||
+            playbackState == CapturePlaybackManager.State.ERROR
+        ) {
+            logInfo("[PLAYBACK] Playback ended - cleaning up and navigating to settings", tag = "UI")
+            // Same cleanup as Stop button
+            capturePlaybackManager.stopPlayback()
+            playbackPreference.setPlaybackEnabled(false)
+            carlinkManager.resetVideoDecoder()
+            carlinkManager.resumeAdapterMode()
+            onNavigateToSettings()
+        }
+    }
+
     var lastTouchTime by remember { mutableLongStateOf(0L) }
-    val isUserInteractingWithProjection = state == CarlinkManager.State.STREAMING
-
-    // Touch tracking
+    val isUserInteractingWithProjection = state == CarlinkManager.State.STREAMING && !isPlaybackMode
     val activeTouches = remember { mutableStateMapOf<Int, TouchPoint>() }
-
-    // Track if we've already started the connection to avoid restarting on surface recreation
     var hasStartedConnection by remember { mutableStateOf(false) }
 
-    // Initialize when surface is available
-    // Pass actual surface dimensions to configure adapter with correct resolution
+    // Handle playback mode - start playback when ready (uses CarlinkManager's existing renderers)
+    LaunchedEffect(playbackState, carlinkManager.isRendererReady()) {
+        // If playback is ready and renderer is initialized, start playback
+        if (playbackState == CapturePlaybackManager.State.READY && carlinkManager.isRendererReady()) {
+            logInfo("[PLAYBACK] Starting playback via CarlinkManager injection", tag = "UI")
+            capturePlaybackManager.startPlayback()
+        }
+    }
+
+    // Handle surface initialization for adapter
     LaunchedEffect(surfaceState.surface, surfaceState.width, surfaceState.height) {
         surfaceState.surface?.let { surface ->
-            // Only initialize if we have valid dimensions
             if (surfaceState.width <= 0 || surfaceState.height <= 0) return@let
 
-            // Force even dimensions - required for H.264 macroblock alignment
-            // Curved display cutouts can result in odd dimensions after inset subtraction
+            // Force even dimensions for H.264 macroblock alignment
             val adapterWidth = surfaceState.width and 1.inv()
             val adapterHeight = surfaceState.height and 1.inv()
+
+            // Skip adapter initialization if playback is active
+            if (isPlaybackMode) {
+                return@let
+            }
 
             logInfo(
                 "[CARLINK_RESOLUTION] Sending to adapter: ${adapterWidth}x$adapterHeight " +
@@ -136,24 +157,15 @@ fun MainScreen(
                             state = newState
                         }
 
-                        override fun onMediaInfoChanged(mediaInfo: CarlinkManager.MediaInfo) {
-                            // Can update UI with media info if needed
-                        }
+                        override fun onMediaInfoChanged(mediaInfo: CarlinkManager.MediaInfo) {}
 
-                        override fun onLogMessage(message: String) {
-                            // Log messages handled by Logger
-                        }
+                        override fun onLogMessage(message: String) {}
 
                         override fun onHostUIPressed() {
-                            // Open settings overlay - video continues playing
-                            // (MainScreen stays in composition with overlay architecture)
                             onNavigateToSettings()
                         }
                     },
             )
-            // Only start connection on first initialization
-            // On subsequent surface recreations (e.g., returning from background),
-            // initialize() handles resuming the existing connection via setOutputSurface()
             if (!hasStartedConnection) {
                 hasStartedConnection = true
                 carlinkManager.start()
@@ -161,33 +173,34 @@ fun MainScreen(
         }
     }
 
-    val isLoading = state != CarlinkManager.State.STREAMING
+    // Clean up on dispose
+    DisposableEffect(Unit) {
+        onDispose {
+            // Playback now uses CarlinkManager's renderers, no separate cleanup needed
+        }
+    }
+
+    // In playback mode, show loading only when waiting for playback to start
+    // In live mode, show loading when not streaming
+    val isLoading = if (isPlaybackMode) {
+        playbackState == CapturePlaybackManager.State.LOADING
+    } else {
+        state != CarlinkManager.State.STREAMING
+    }
+    val isPlaybackPlaying = playbackState == CapturePlaybackManager.State.PLAYING
     val colorScheme = MaterialTheme.colorScheme
 
-    // Apply system bar and display cutout insets based on display mode
-    // - FULLSCREEN_IMMERSIVE: No insets, video fills entire screen
-    // - Other modes: Apply systemBars (AAOS panes) AND displayCutout (GM curved edges)
-    val baseModifier =
-        Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-
-    // Key fix for GM curved displays (RST, Equinox): Apply BOTH systemBars AND displayCutout
-    // - systemBars: Handles AAOS status bar, nav bar, and system panes
-    // - displayCutout: Handles physical curved/contoured display edges
+    val baseModifier = Modifier.fillMaxSize().background(Color.Black)
     val boxModifier =
         if (displayMode == DisplayMode.FULLSCREEN_IMMERSIVE) {
-            baseModifier // No insets in fullscreen immersive mode - fill entire screen
+            baseModifier
         } else {
             baseModifier
                 .windowInsetsPadding(WindowInsets.systemBars)
-                .windowInsetsPadding(WindowInsets.displayCutout) // Handles GM curved right edge
+                .windowInsetsPadding(WindowInsets.displayCutout)
         }
 
     Box(modifier = boxModifier) {
-        // Video surface with touch handling
-        // Uses SurfaceView for direct HWC overlay rendering (lower latency, lower power)
-        // Touch events are handled directly by VideoSurfaceView.onTouchEvent()
         VideoSurface(
             modifier = Modifier.fillMaxSize(),
             onSurfaceAvailable = { surface, width, height ->
@@ -197,8 +210,7 @@ fun MainScreen(
             onSurfaceDestroyed = {
                 logInfo("[UI_SURFACE] Surface destroyed", tag = "UI")
                 surfaceState.onSurfaceDestroyed()
-                // CRITICAL: Notify CarlinkManager immediately so it can pause codec
-                // BEFORE the surface becomes invalid. This prevents "BufferQueue abandoned" errors.
+                // Always notify CarlinkManager since playback uses its renderers
                 carlinkManager.onSurfaceDestroyed()
             },
             onSurfaceSizeChanged = { width, height ->
@@ -206,14 +218,10 @@ fun MainScreen(
                 surfaceState.onSurfaceSizeChanged(width, height)
             },
             onTouchEvent = { event ->
-                // Log touch events in debug builds (throttled to avoid spam)
                 if (BuildConfig.DEBUG && isUserInteractingWithProjection) {
                     val now = System.currentTimeMillis()
-                    if (now - lastTouchTime > 1000) { // Log at most once per second
-                        logDebug(
-                            "[UI_TOUCH] CarPlay projection touch: action=${event.actionMasked}, pointers=${event.pointerCount}",
-                            tag = "UI",
-                        )
+                    if (now - lastTouchTime > 1000) {
+                        logDebug("[UI_TOUCH] touch: action=${event.actionMasked}, pointers=${event.pointerCount}", tag = "UI")
                         lastTouchTime = now
                     }
                 }
@@ -222,8 +230,8 @@ fun MainScreen(
             },
         )
 
-        // Loading overlay
-        if (isLoading) {
+        // Loading overlay (only show when not in playback mode)
+        if (isLoading && !isPlaybackMode) {
             Box(
                 modifier =
                     Modifier
@@ -235,7 +243,6 @@ fun MainScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    // Projection icon - vector drawable scales without quality loss
                     Image(
                         painter = painterResource(id = R.drawable.ic_phone_projection),
                         contentDescription = "Carlink",
@@ -244,14 +251,12 @@ fun MainScreen(
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Loading indicator - AVD for better AAOS hardware compatibility
                     LoadingSpinner(
                         color = colorScheme.primary,
                     )
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Status text
                     Text(
                         text =
                             when (state) {
@@ -266,8 +271,6 @@ fun MainScreen(
                 }
             }
 
-            // Control buttons (visible when loading)
-            // Apply system bar and display cutout insets to avoid overlap with system UI and curved edges
             Row(
                 modifier =
                     Modifier
@@ -277,12 +280,8 @@ fun MainScreen(
                         .padding(24.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // Settings button
                 FilledTonalButton(
-                    onClick = {
-                        // Open settings overlay - video continues playing
-                        onNavigateToSettings()
-                    },
+                    onClick = { onNavigateToSettings() },
                     modifier = Modifier.height(AutomotiveDimens.ButtonMinHeight),
                     contentPadding =
                         PaddingValues(
@@ -304,7 +303,6 @@ fun MainScreen(
                     )
                 }
 
-                // Reset button with animated icon transition
                 FilledTonalButton(
                     onClick = {
                         if (!isResetting) {
@@ -361,19 +359,114 @@ fun MainScreen(
                 }
             }
         }
+
+        // Playback overlay - always visible in upper-left during playback
+        AnimatedVisibility(
+            visible = isPlaybackMode,
+            modifier =
+                Modifier
+                    .align(Alignment.TopStart)
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .windowInsetsPadding(WindowInsets.displayCutout)
+                    .padding(16.dp),
+            enter = fadeIn(),
+            exit = fadeOut(),
+        ) {
+            Box(
+                modifier =
+                    Modifier
+                        .background(
+                            color = colorScheme.surface.copy(alpha = 0.85f),
+                            shape = RoundedCornerShape(12.dp),
+                        )
+                        .padding(12.dp),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    // Playback indicator
+                    Icon(
+                        imageVector = Icons.Default.PlayCircle,
+                        contentDescription = null,
+                        tint = colorScheme.primary,
+                        modifier = Modifier.size(24.dp),
+                    )
+
+                    // Progress
+                    Column {
+                        Text(
+                            text = "Capture Playback",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "${formatDuration(playbackProgress.currentMs)} / ${formatDuration(playbackProgress.totalMs)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // Settings button
+                    FilledTonalButton(
+                        onClick = { onNavigateToSettings() },
+                        modifier = Modifier.height(36.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Settings",
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+
+                    // Stop button - disables playback mode entirely
+                    FilledTonalButton(
+                        onClick = {
+                            scope.launch {
+                                // Stop playback and disable playback mode
+                                capturePlaybackManager.stopPlayback()
+                                playbackPreference.setPlaybackEnabled(false)
+                                // Reset video decoder to flush buffers
+                                carlinkManager.resetVideoDecoder()
+                                // Resume adapter mode
+                                carlinkManager.resumeAdapterMode()
+                                logInfo("[PLAYBACK] Playback stopped by user - decoder reset, resuming adapter mode", tag = "UI")
+                            }
+                        },
+                        modifier = Modifier.height(36.dp),
+                        colors =
+                            ButtonDefaults.filledTonalButtonColors(
+                                containerColor = colorScheme.errorContainer,
+                                contentColor = colorScheme.onErrorContainer,
+                            ),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Stop,
+                            contentDescription = "Stop Playback",
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "Stop",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
-// Touch point data class
 private data class TouchPoint(
     val x: Float,
     val y: Float,
     val action: MultiTouchAction,
 )
 
-/**
- * Handle touch events and forward to Carlink adapter.
- */
 private fun handleTouchEvent(
     event: MotionEvent,
     activeTouches: MutableMap<Int, TouchPoint>,
@@ -394,29 +487,23 @@ private fun handleTouchEvent(
             else -> return
         }
 
-    // Normalize coordinates to 0-1 range
     val x = event.getX(pointerIndex) / surfaceWidth
     val y = event.getY(pointerIndex) / surfaceHeight
 
-    // Update active touches
     when (action) {
         MultiTouchAction.DOWN -> {
             activeTouches[pointerId] = TouchPoint(x, y, action)
         }
 
         MultiTouchAction.MOVE -> {
-            // Update all pointers on move
             for (i in 0 until event.pointerCount) {
                 val id = event.getPointerId(i)
                 val px = event.getX(i) / surfaceWidth
                 val py = event.getY(i) / surfaceHeight
                 activeTouches[id]?.let { existing ->
-                    // Only update if moved significantly
                     val dx = kotlin.math.abs(existing.x - px) * 1000
                     val dy = kotlin.math.abs(existing.y - py) * 1000
-                    if (dx > 3 || dy > 3) {
-                        activeTouches[id] = TouchPoint(px, py, MultiTouchAction.MOVE)
-                    }
+                    if (dx > 3 || dy > 3) activeTouches[id] = TouchPoint(px, py, MultiTouchAction.MOVE)
                 }
             }
         }
@@ -428,7 +515,6 @@ private fun handleTouchEvent(
         else -> {}
     }
 
-    // Build touch list and send
     val touchList =
         activeTouches.entries.mapIndexed { index, entry ->
             MessageSerializer.TouchPoint(
@@ -440,7 +526,5 @@ private fun handleTouchEvent(
         }
 
     carlinkManager.sendMultiTouch(touchList)
-
-    // Remove completed touches
     activeTouches.entries.removeIf { it.value.action == MultiTouchAction.UP }
 }

@@ -12,27 +12,15 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-/**
- * DataStore instance for logging preferences.
- * Following Android best practices: singleton instance at top level.
- */
 private val Context.loggingDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "carlink_logging_preferences",
 )
 
-/**
- * Manages persistent storage of logging preferences.
- *
- * Stores user's logging preferences across app sessions using DataStore.
- * Handles log level, enabled state, and user's explicit actions.
- *
- * Matches Flutter: logging_preferences.dart
- */
-@Suppress("StaticFieldLeak") // Uses applicationContext, not Activity context - no leak
+/** Persists logging preferences across sessions using DataStore. */
+@Suppress("StaticFieldLeak")
 class LoggingPreferences private constructor(
     context: Context,
 ) {
-    // Store applicationContext to avoid Activity leaks
     private val appContext: Context = context.applicationContext
 
     companion object {
@@ -44,7 +32,6 @@ class LoggingPreferences private constructor(
                 instance ?: LoggingPreferences(context.applicationContext).also { instance = it }
             }
 
-        // Preference keys matching Flutter
         private val KEY_LOG_LEVEL = intPreferencesKey("carlink_log_level")
         private val KEY_LOGGING_ENABLED = booleanPreferencesKey("carlink_logging_enabled")
         private val KEY_USER_HAS_DISABLED = booleanPreferencesKey("carlink_user_has_disabled")
@@ -54,35 +41,23 @@ class LoggingPreferences private constructor(
 
     private val dataStore = appContext.loggingDataStore
 
-    /**
-     * Get the saved log level as Flow.
-     */
     val logLevelFlow: Flow<LogPreset> =
         dataStore.data.map { preferences ->
             val levelIndex = preferences[KEY_LOG_LEVEL] ?: LogPreset.SILENT.ordinal
             LogPreset.fromIndex(levelIndex)
         }
 
-    /**
-     * Get whether logging is enabled as Flow.
-     */
     val loggingEnabledFlow: Flow<Boolean> =
         dataStore.data.map { preferences ->
-            preferences[KEY_LOGGING_ENABLED] ?: true // Default to enabled
+            preferences[KEY_LOGGING_ENABLED] ?: true
         }
 
-    /**
-     * Get the saved log level, defaults to Silent.
-     */
     suspend fun getLogLevel(): LogPreset {
         val preferences = dataStore.data.first()
         val levelIndex = preferences[KEY_LOG_LEVEL] ?: LogPreset.SILENT.ordinal
         return LogPreset.fromIndex(levelIndex)
     }
 
-    /**
-     * Save the user's preferred log level.
-     */
     suspend fun setLogLevel(level: LogPreset) {
         dataStore.edit { preferences ->
             preferences[KEY_LOG_LEVEL] = level.ordinal
@@ -90,17 +65,11 @@ class LoggingPreferences private constructor(
         recordUserAction()
     }
 
-    /**
-     * Get whether logging is enabled.
-     */
     suspend fun isLoggingEnabled(): Boolean {
         val preferences = dataStore.data.first()
-        return preferences[KEY_LOGGING_ENABLED] ?: true // Default to enabled
+        return preferences[KEY_LOGGING_ENABLED] ?: true
     }
 
-    /**
-     * Set whether logging is enabled.
-     */
     suspend fun setLoggingEnabled(enabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[KEY_LOGGING_ENABLED] = enabled
@@ -108,17 +77,11 @@ class LoggingPreferences private constructor(
         recordUserAction()
     }
 
-    /**
-     * Get whether user has explicitly disabled logging.
-     */
     suspend fun hasUserExplicitlyDisabled(): Boolean {
         val preferences = dataStore.data.first()
         return preferences[KEY_USER_HAS_DISABLED] ?: false
     }
 
-    /**
-     * Set that user has explicitly disabled logging.
-     */
     suspend fun setUserHasExplicitlyDisabled(disabled: Boolean) {
         dataStore.edit { preferences ->
             preferences[KEY_USER_HAS_DISABLED] = disabled
@@ -128,53 +91,34 @@ class LoggingPreferences private constructor(
         }
     }
 
-    /**
-     * Check if this is the first app launch.
-     */
     suspend fun isFirstLaunch(): Boolean {
         val preferences = dataStore.data.first()
         val isFirst = preferences[KEY_FIRST_LAUNCH] ?: true
-
-        // Mark as not first launch after checking
         if (isFirst) {
             dataStore.edit { prefs ->
                 prefs[KEY_FIRST_LAUNCH] = false
             }
         }
-
         return isFirst
     }
 
-    /**
-     * Get the timestamp of the last user action.
-     */
     suspend fun getLastUserAction(): Long? {
         val preferences = dataStore.data.first()
         return preferences[KEY_LAST_USER_ACTION]
     }
 
-    /**
-     * Record the current time as the last user action.
-     */
     private suspend fun recordUserAction() {
         dataStore.edit { preferences ->
             preferences[KEY_LAST_USER_ACTION] = System.currentTimeMillis()
         }
     }
 
-    /**
-     * Check if user has made any logging configuration within the last session.
-     */
     suspend fun hasRecentUserConfiguration(): Boolean {
         val lastAction = getLastUserAction() ?: return false
-        // Consider actions within the last 24 hours as "recent"
         val cutoff = System.currentTimeMillis() - (24 * 60 * 60 * 1000)
         return lastAction > cutoff
     }
 
-    /**
-     * Get a summary of current preferences for debugging.
-     */
     suspend fun getPreferencesSummary(): Map<String, Any?> {
         val preferences = dataStore.data.first()
         return mapOf(
@@ -187,9 +131,6 @@ class LoggingPreferences private constructor(
         )
     }
 
-    /**
-     * Reset all preferences to defaults (for testing).
-     */
     suspend fun resetToDefaults() {
         dataStore.edit { preferences ->
             preferences.remove(KEY_LOG_LEVEL)
@@ -200,11 +141,7 @@ class LoggingPreferences private constructor(
         }
     }
 
-    /**
-     * Apply saved preferences to the logging system.
-     *
-     * This method should be called on app startup to restore user's settings.
-     */
+    /** Apply saved preferences on app startup. */
     suspend fun applySavedPreferences() {
         try {
             val level = getLogLevel()

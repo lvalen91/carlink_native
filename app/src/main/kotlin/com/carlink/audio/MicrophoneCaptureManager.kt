@@ -74,7 +74,7 @@ object MicFormats {
  *     └── micBuffer.write() [non-blocking]
  *            │
  *            ▼
- *      MicRingBuffer (120ms)
+ *      MicRingBuffer (500ms)
  *            │
  *            ▼
  *      readChunk() [non-blocking, called by USB send thread]
@@ -95,47 +95,29 @@ class MicrophoneCaptureManager(
     private val context: Context,
     private val logCallback: LogCallback,
 ) {
-    // AudioRecord instance
     private var audioRecord: AudioRecord? = null
-
-    // Ring buffer for jitter compensation (120ms capacity)
     private var micBuffer: AudioRingBuffer? = null
-
-    // Current capture format
     private var currentFormat: MicFormatConfig? = null
-
-    // Capture thread
     private var captureThread: MicCaptureThread? = null
     private val isRunning = AtomicBoolean(false)
 
-    // Statistics
     private var startTime: Long = 0
     private var totalBytesCapture: Long = 0
     private var overrunCount: Int = 0
 
-    // Buffer configuration
-    // Increased from 120ms to 500ms to prevent buffer overruns when main thread is blocked
-    // (Session 6 analysis showed "Buffer overrun: wrote 0 of 640 bytes" due to not reading fast enough)
+    // 500ms buffer prevents overruns when main thread blocked (Session 6 fix)
     private val bufferCapacityMs = 500
-    private val captureChunkMs = 20 // Read 20ms chunks from AudioRecord
+    private val captureChunkMs = 20
 
     private val lock = Any()
 
-    /**
-     * Check if microphone permission is granted.
-     */
     fun hasPermission(): Boolean =
         ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.RECORD_AUDIO,
         ) == PackageManager.PERMISSION_GRANTED
 
-    /**
-     * Start microphone capture with the specified format.
-     *
-     * @param decodeType CPC200-CCPA decode type (3=phone, 5=siri, 6=enhanced, 7=stereo)
-     * @return true if capture started successfully
-     */
+    /** Start capture. decodeType: 3=phone, 5=siri (default), 6=enhanced, 7=stereo. */
     fun start(decodeType: Int = 5): Boolean {
         synchronized(lock) {
             if (isRunning.get()) {
@@ -151,7 +133,6 @@ class MicrophoneCaptureManager(
             val format = MicFormats.fromDecodeType(decodeType)
 
             try {
-                // Calculate buffer sizes
                 val minBufferSize =
                     AudioRecord.getMinBufferSize(
                         format.sampleRate,
@@ -164,11 +145,9 @@ class MicrophoneCaptureManager(
                     return false
                 }
 
-                // Use 3x minimum for stability
                 val recordBufferSize = minBufferSize * 3
 
-                // Create AudioRecord with VOICE_COMMUNICATION for OS-level processing
-                // (echo cancellation, noise suppression, AGC when available)
+                // VOICE_COMMUNICATION enables OS echo cancellation/noise suppression
                 audioRecord =
                     AudioRecord(
                         MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -185,7 +164,6 @@ class MicrophoneCaptureManager(
                     return false
                 }
 
-                // Create ring buffer
                 micBuffer =
                     AudioRingBuffer(
                         capacityMs = bufferCapacityMs,
@@ -198,11 +176,8 @@ class MicrophoneCaptureManager(
                 totalBytesCapture = 0
                 overrunCount = 0
 
-                // Start capture
                 audioRecord?.startRecording()
                 isRunning.set(true)
-
-                // Start capture thread
                 captureThread = MicCaptureThread(format).also { it.start() }
 
                 log(
@@ -224,33 +199,23 @@ class MicrophoneCaptureManager(
         }
     }
 
-    /**
-     * Stop microphone capture and release resources.
-     */
     fun stop() {
         synchronized(lock) {
-            if (!isRunning.get()) {
-                return
-            }
+            if (!isRunning.get()) return
 
             log("[MIC] Stopping capture")
             isRunning.set(false)
 
-            // Stop capture thread
             captureThread?.interrupt()
             try {
                 captureThread?.join(1000)
-            } catch (e: InterruptedException) {
-                // Ignore
+            } catch (_: InterruptedException) {
             }
             captureThread = null
 
-            // Stop and release AudioRecord
             try {
                 audioRecord?.let { record ->
-                    if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                        record.stop()
-                    }
+                    if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) record.stop()
                     record.release()
                 }
             } catch (e: IllegalStateException) {
@@ -258,28 +223,17 @@ class MicrophoneCaptureManager(
             }
             audioRecord = null
 
-            // Clear buffer
             micBuffer?.clear()
             micBuffer = null
 
-            // Log stop with stats
             val durationMs = if (startTime > 0) System.currentTimeMillis() - startTime else 0
             AudioDebugLogger.logMicStop(durationMs, totalBytesCapture, overrunCount)
-
             currentFormat = null
-
             log("[MIC] Capture stopped")
         }
     }
 
-    /**
-     * Read captured audio data (non-blocking).
-     *
-     * Called from USB send thread. Returns available data up to maxBytes.
-     *
-     * @param maxBytes Maximum bytes to read
-     * @return ByteArray with captured PCM data, or null if no data available
-     */
+    /** Read captured audio (non-blocking, USB send thread). Returns null if empty. */
     fun readChunk(maxBytes: Int = 1920): ByteArray? {
         val buffer = micBuffer ?: return null
 
@@ -300,11 +254,7 @@ class MicrophoneCaptureManager(
         }
     }
 
-    /**
-     * Get the current decode type for the active capture format.
-     *
-     * @return decodeType (3, 5, 6, or 7) or -1 if not capturing
-     */
+    /** Get current decode type (3, 5, 6, or 7), or -1 if not capturing. */
     fun getCurrentDecodeType(): Int {
         val format = currentFormat ?: return -1
         return when {
@@ -316,26 +266,14 @@ class MicrophoneCaptureManager(
         }
     }
 
-    /**
-     * Check if microphone is currently capturing.
-     */
     fun isCapturing(): Boolean =
         isRunning.get() &&
             audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING
 
-    /**
-     * Get bytes available for reading from the buffer.
-     */
     fun availableBytes(): Int = micBuffer?.availableForRead() ?: 0
 
-    /**
-     * Get buffer fill level in milliseconds.
-     */
     fun bufferLevelMs(): Int = micBuffer?.fillLevelMs() ?: 0
 
-    /**
-     * Get capture statistics.
-     */
     fun getStats(): Map<String, Any> {
         synchronized(lock) {
             val durationMs = if (startTime > 0) System.currentTimeMillis() - startTime else 0
@@ -354,9 +292,6 @@ class MicrophoneCaptureManager(
         }
     }
 
-    /**
-     * Release all resources.
-     */
     fun release() {
         stop()
         log("[MIC] MicrophoneCaptureManager released")
@@ -369,21 +304,14 @@ class MicrophoneCaptureManager(
         logCallback.log(message)
     }
 
-    /**
-     * Dedicated microphone capture thread.
-     *
-     * Runs at THREAD_PRIORITY_URGENT_AUDIO for consistent scheduling.
-     * Reads from AudioRecord and writes to ring buffer.
-     */
+    /** Capture thread (URGENT_AUDIO priority). Reads AudioRecord, writes to ring buffer. */
     private inner class MicCaptureThread(
         private val format: MicFormatConfig,
     ) : Thread("MicCapture") {
-        // Chunk size: 20ms of audio
         private val chunkSize = (format.sampleRate * format.bytesPerSample * captureChunkMs) / 1000
         private val tempBuffer = ByteArray(chunkSize)
 
         override fun run() {
-            // Set high priority for audio thread
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             log("[MIC] Capture thread started with URGENT_AUDIO priority, chunk=${chunkSize}B")
 
@@ -392,12 +320,10 @@ class MicrophoneCaptureManager(
 
             while (isRunning.get() && !isInterrupted) {
                 try {
-                    // AudioRecord.read() blocks until data is available
                     val bytesRead = record.read(tempBuffer, 0, chunkSize)
 
                     when {
                         bytesRead > 0 -> {
-                            // Write to ring buffer (non-blocking)
                             val bytesWritten = buffer.write(tempBuffer, 0, bytesRead)
                             totalBytesCapture += bytesWritten
                             AudioDebugLogger.logMicCapture(bytesRead, buffer.fillLevelMs())

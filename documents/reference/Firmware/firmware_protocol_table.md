@@ -10,7 +10,7 @@ Complete protocol translation table for CPC200-CCPA firmware based on reverse en
 - **Live USB Captures**: `~/.pi-carplay/usb-logs/` (Dec 2025)
 - **CPC200 Research**: `/Users/zeno/Downloads/GM_research/cpc200_research/`
 
-**Last Updated:** 2025-12-29 (with CPC200 research decode_type/audio_type semantics)
+**Last Updated:** 2026-01-11 (with January 2026 raw USB capture verification)
 
 ---
 
@@ -95,28 +95,31 @@ data_streams:
   - command: 0x06
     name: "VideoData"
     payload_size: variable
-    purpose: "H.264 video frame upload to device"
+    purpose: "H.264 video frame from adapter (Device → Host)"
     firmware_support: true
     translation_target: "RTP Video Stream"
     confirmed_in_firmware: true
-    payload_structure:
-      decode_type: uint32    # Video decode type/format
-      width: uint32          # Frame width
-      height: uint32         # Frame height
-      flags: uint32          # Frame flags (keyframe, etc.)
-      h264_data: bytes       # Raw H.264 NAL units
+    capture_verified: true  # Jan 2026 raw USB capture
+    payload_structure:      # 20-byte video header + H.264 data
+      width: uint32          # Frame width (e.g., 2400)
+      height: uint32         # Frame height (e.g., 960)
+      unknown1: uint32       # Variable per session (stream token?)
+      pts: uint32            # Presentation timestamp (1kHz clock)
+      flags: uint32          # Usually 0x00000000
+      h264_data: bytes       # NAL units with 00 00 00 01 start codes
 
   - command: 0x07
     name: "AudioData"
     payload_size: variable
-    purpose: "PCM audio upload (microphone data) or audio command"
+    purpose: "PCM audio from adapter or audio command (Device → Host)"
     firmware_support: true
     translation_target: "RTP Audio Stream"
     confirmed_in_firmware: true
-    payload_structure:
-      decode_type: uint32    # Audio decode type/format (1-7)
+    capture_verified: true  # Jan 2026 + Dec 2025 captures
+    payload_structure:      # 12-byte audio header + PCM data or 1-byte command
+      decode_type: uint32    # Audio format (2=44.1kHz, 4=48kHz, 5=16kHz mono)
       volume: float32        # Volume level (0.0-1.0) IEEE 754
-      audio_type: uint32     # Audio stream type (1=speaker, 2=nav/notif, 3=mic)
+      audio_type: uint32     # Stream type (1=main, 2=nav/ducking, 3=mic)
       pcm_data: bytes        # Raw PCM audio data OR 1-byte command
     audio_commands:          # When payload has 1-byte command (13-byte total payload)
       - 0x01: OUTPUT_START   # Audio output starting
@@ -135,10 +138,10 @@ data_streams:
       - 0x0E: INCOMING_CALL_INIT  # Incoming call notification (Dec 2025)
       - 0x10: NAVI_COMPLETE  # Navigation prompt fully complete (Dec 2025)
       # NOTE: No SIRI_STOP (0x0F) exists - Siri ends via OUTPUT_STOP
-    decode_type_semantics:   # (Dec 2025 Research)
-      - 2: Stop/cleanup operations (MEDIA_STOP, PHONECALL_STOP)
-      - 4: Standard CarPlay audio (MEDIA, NAVI, ALERT, OUTPUT)
-      - 5: Mic/input related (SIRI, PHONECALL_START, INPUT, INCOMING_CALL_INIT)
+    decode_type_semantics:   # (Jan 2026 Verified)
+      - 2: 44.1kHz stereo - used for 44.1kHz media, navigation, and stop commands
+      - 4: 48kHz stereo - HD media playback (standard CarPlay)
+      - 5: 16kHz mono - voice input/output (Siri, phone calls)
     audio_type_semantics:    # (Dec 2025 Research)
       - 1: Main audio channel (media, alerts, voice output)
       - 2: Navigation channel with ducking (nav prompts, iMessage notifications)
@@ -451,12 +454,13 @@ media_streams:
     payload_size: variable
     purpose: "H.264 video stream from device to host"
     translation_source: "RTP → USB Translation"
-    payload_structure:
-      width: uint32          # Frame width
-      height: uint32         # Frame height
-      flags: uint32          # Frame flags (keyframe indicators)
-      length: uint32         # H.264 data length
-      reserved: uint32       # Reserved/padding
+    capture_verified: true  # Jan 2026 raw USB capture
+    payload_structure:      # 20-byte video header + H.264 data
+      width: uint32          # Frame width (e.g., 2400)
+      height: uint32         # Frame height (e.g., 960)
+      unknown1: uint32       # Variable per session (stream token?)
+      pts: uint32            # Presentation timestamp (1kHz clock)
+      flags: uint32          # Usually 0x00000000
       h264_data: bytes       # Raw H.264 NAL units
 
   - command: 0x07
@@ -464,10 +468,11 @@ media_streams:
     payload_size: variable
     purpose: "PCM audio stream from device to host"
     translation_source: "RTP → USB Translation"
-    payload_structure:
-      decode_type: uint32    # Audio decode type
-      volume: uint32         # Current volume (0-255)
-      audio_type: uint32     # Audio stream type
+    capture_verified: true  # Jan 2026 + Dec 2025 captures
+    payload_structure:      # 12-byte audio header + PCM data
+      decode_type: uint32    # Audio format (2=44.1kHz, 4=48kHz, 5=16kHz mono)
+      volume: float32        # Volume level (0.0-1.0) IEEE 754
+      audio_type: uint32     # Stream type (1=main, 2=nav/ducking, 3=mic)
       pcm_data: bytes        # Raw PCM audio data
 
 device_information:
@@ -941,6 +946,64 @@ Offset  Field           Example
 +path   value_length    0x00000004 (4 bytes)
 +4      value           0x000000f0 (240 dpi)
 ```
+
+---
+
+## Raw USB Control Analysis (January 2026)
+
+**Source:** `/logs/raw_USB/usb-capture-2026-01-11T11-45-12-620Z-control.*`
+**Session Duration:** 358 seconds (≈6 minutes)
+**Total Control Packets:** 992
+
+### Control Message Distribution
+
+| Message Type | IN (D2H) | OUT (H2D) | Description |
+|--------------|----------|-----------|-------------|
+| Command (0x08) | 179 | 99 | Control commands |
+| HeartBeat (0xAA) | 89 | 88 | Keep-alive (2s interval) |
+| MediaPlaybackTime (0x2A) | 680 | 0 | Song position updates |
+| Open (0x01) | 1 | 1 | Session initialization |
+| BoxSettings (0x19) | 3 | 2 | Configuration exchange |
+| Phase (0x03) | 3 | 0 | State transitions |
+| Touch (0x05) | 0 | 15 | Touch input events |
+
+### Command Sub-Types (0x08) Observed
+
+**From Adapter (D2H):**
+| Command | Count | Name |
+|---------|-------|------|
+| 0x3E8 (1000) | 1 | wifiEnable |
+| 0x3E9 (1001) | 1 | autoConnectEnable |
+| 0x3EB (1003) | 1 | scanningDevice |
+| 0x3EC (1004) | 1 | deviceConnecting |
+| 0x3EF (1007) | 1 | btConnected |
+| 0x07 | 1 | micSource (use car mic) |
+
+**To Adapter (H2D):**
+| Command | Count | Name |
+|---------|-------|------|
+| 0x3EA (1002) | 1 | wifiConnect |
+| 0x19 (25) | 89 | wifi5g |
+
+### Phase Transitions Observed
+
+```
+@ 0ms:      Phase = 0 (idle)
+@ 5,020ms:  Phase = 7 (connecting)
+@ 7,498ms:  Phase = 8 (streaming ready)
+```
+
+**Key Finding:** No `requestIDR` (0x3F1) commands observed during entire 358-second session. This confirms the host application did not request any keyframes, and the adapter sent only 1 IDR at stream start.
+
+### MediaPlaybackTime Packet Format
+
+680 packets observed with continuous song position updates:
+
+```json
+{"MediaSongPlayTime": 123456}   // Milliseconds since song start
+```
+
+**Update Frequency:** ~500ms intervals during active media playback.
 
 ---
 

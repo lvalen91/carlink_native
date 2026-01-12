@@ -2,18 +2,12 @@ package com.carlink.logging
 
 import androidx.compose.ui.graphics.Color
 
-/**
- * Performance logging presets matching Flutter log.dart LogPreset enum.
- * Each preset configures which log tags and levels are enabled.
- *
- * Ported from: lib/log.dart
- */
+/** Logging presets that configure which tags and levels are enabled. */
 enum class LogPreset(
     val displayName: String,
     val description: String,
     val color: Color,
 ) {
-    // Order matches Flutter log.dart LogPreset enum exactly
     SILENT(
         displayName = "Silent",
         description = "Only errors",
@@ -62,22 +56,13 @@ enum class LogPreset(
     ;
 
     companion object {
-        /**
-         * Default preset for first launch
-         */
         val DEFAULT = NORMAL
 
-        /**
-         * Get preset by index safely
-         */
         fun fromIndex(index: Int): LogPreset = entries.getOrElse(index) { SILENT }
     }
 }
 
-/**
- * Extension to apply a LogPreset to the Logger system.
- * Matches Flutter setLogPreset() function behavior.
- */
+/** Apply this preset to the Logger system. */
 fun LogPreset.apply() {
     when (this) {
         LogPreset.SILENT -> {
@@ -87,9 +72,9 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, false)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
-            // Restore release-build default when switching away from diagnostic presets
             Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
-            com.carlink.util.VideoDebugLogger.setDebugEnabled(com.carlink.BuildConfig.DEBUG)
+            com.carlink.util.VideoDebugLogger
+                .setDebugEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
         LogPreset.MINIMAL -> {
@@ -100,9 +85,9 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.enableAllTags()
             Logger.setTagsEnabled(listOf(Logger.Tags.SERIALIZE, Logger.Tags.TOUCH, Logger.Tags.AUDIO, Logger.Tags.MEDIA), false)
-            // Restore release-build default when switching away from diagnostic presets
             Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
-            com.carlink.util.VideoDebugLogger.setDebugEnabled(com.carlink.BuildConfig.DEBUG)
+            com.carlink.util.VideoDebugLogger
+                .setDebugEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
         LogPreset.NORMAL -> {
@@ -113,9 +98,9 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.enableAllTags()
             Logger.setTagsEnabled(listOf(Logger.Tags.SERIALIZE, Logger.Tags.TOUCH, Logger.Tags.MEDIA), false)
-            // Restore release-build default when switching away from diagnostic presets
             Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
-            com.carlink.util.VideoDebugLogger.setDebugEnabled(com.carlink.BuildConfig.DEBUG)
+            com.carlink.util.VideoDebugLogger
+                .setDebugEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
         LogPreset.DEBUG -> {
@@ -125,7 +110,6 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.enableAllTags()
-            // Disable raw data dumps to prevent file bloat
             Logger.setTagsEnabled(listOf(Logger.Tags.VIDEO, Logger.Tags.AUDIO, Logger.Tags.USB_RAW), false)
         }
 
@@ -136,7 +120,6 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
-            // Enable only performance-related tags
             Logger.setTagsEnabled(listOf(Logger.Tags.USB, Logger.Tags.ADAPTR, Logger.Tags.PLATFORM), true)
         }
 
@@ -147,7 +130,6 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
-            // Enable only raw message logging with minimal noise
             Logger.setTagsEnabled(listOf(Logger.Tags.USB_RAW, Logger.Tags.USB, Logger.Tags.ADAPTR), true)
         }
 
@@ -158,9 +140,17 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
-            // Enable only video-related logging
-            // Include ADAPTR tag because H264Renderer logs route through CarlinkManager.log() which uses ADAPTR tag
-            Logger.setTagsEnabled(listOf(Logger.Tags.VIDEO, Logger.Tags.H264_RENDERER, Logger.Tags.ADAPTR, Logger.Tags.USB, Logger.Tags.PLATFORM, Logger.Tags.CONFIG), true)
+            Logger.setTagsEnabled(
+                listOf(
+                    Logger.Tags.VIDEO,
+                    Logger.Tags.H264_RENDERER,
+                    Logger.Tags.ADAPTR,
+                    Logger.Tags.USB,
+                    Logger.Tags.PLATFORM,
+                    Logger.Tags.CONFIG,
+                ),
+                true,
+            )
         }
 
         LogPreset.AUDIO_ONLY -> {
@@ -170,8 +160,6 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
-            // Enable only audio-related logging
-            // Include ADAPTR tag because audio manager logs may route through CarlinkManager.log()
             Logger.setTagsEnabled(
                 listOf(Logger.Tags.AUDIO, Logger.Tags.MIC, Logger.Tags.ADAPTR, Logger.Tags.USB, Logger.Tags.PLATFORM, Logger.Tags.CONFIG),
                 true,
@@ -185,8 +173,6 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
-            // Enable all video pipeline debug tags for comprehensive troubleshooting
-            // This enables throttled high-frequency logging at each pipeline stage
             Logger.setTagsEnabled(
                 listOf(
                     Logger.Tags.VIDEO,
@@ -201,10 +187,10 @@ fun LogPreset.apply() {
                 ),
                 true,
             )
-            // CRITICAL: Override release-build restriction when user explicitly enables diagnostic preset
-            // This allows logDebugOnly() functions to work in release builds for field diagnostics
+            // Override release-build restriction for field diagnostics
             Logger.setDebugLoggingEnabled(true)
-            com.carlink.util.VideoDebugLogger.setDebugEnabled(true)
+            com.carlink.util.VideoDebugLogger
+                .setDebugEnabled(true)
         }
     }
 }

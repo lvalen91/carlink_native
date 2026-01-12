@@ -64,6 +64,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.PhoneDisabled
 import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.PowerOff
@@ -138,6 +139,7 @@ import com.carlink.ui.settings.MicSourceConfig
 import com.carlink.ui.settings.SampleRateConfig
 import com.carlink.ui.settings.SettingsTab
 import com.carlink.ui.settings.WiFiBandConfig
+import com.carlink.ui.settings.CapturePlaybackContent
 import com.carlink.ui.theme.AutomotiveDimens
 import kotlinx.coroutines.launch
 import java.io.File
@@ -145,23 +147,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Settings Screen - NavigationRail Settings Interface
- *
- * Uses Material 3 NavigationRail for tablet/automotive landscape layout.
- * Matches the Flutter implementation with vertical sidebar navigation.
- *
- * Provides access to:
- * - Status: Real-time adapter status from protocol messages
- * - Control: Device control commands (reset, disconnect, etc.) and Display Control
- * - Logs: Log file management, log level selection, and export
- *
- * Ported from: example/lib/settings_page.dart
- */
+/** Settings screen with NavigationRail for device control, display settings, and log management. */
 @Composable
 fun SettingsScreen(
     carlinkManager: CarlinkManager,
     fileLogManager: FileLogManager?,
+    capturePlaybackManager: com.carlink.capture.CapturePlaybackManager,
     onNavigateBack: () -> Unit,
 ) {
     var selectedTab by remember { mutableStateOf(SettingsTab.CONTROL) }
@@ -189,12 +180,8 @@ fun SettingsScreen(
             }
         }
 
-    // Get view for haptic feedback - Matches Flutter HapticFeedback.lightImpact()
     val view = LocalView.current
 
-    // Matches Flutter SafeArea - Apply system bar insets
-    // Surface provides opaque background when used as overlay
-    // Use colorScheme.surface to match NavigationRail containerColor
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = colorScheme.surface,
@@ -209,7 +196,6 @@ fun SettingsScreen(
             Column(
                 modifier = Modifier.fillMaxHeight(),
             ) {
-                // Back button at top - Matches Flutter _buildBackButton with haptic feedback
                 Box(
                     modifier = Modifier.padding(vertical = 20.dp, horizontal = 12.dp),
                 ) {
@@ -286,57 +272,40 @@ fun SettingsScreen(
                 when (selectedTab) {
                     SettingsTab.CONTROL -> ControlTabContent(carlinkManager)
                     SettingsTab.LOGS -> LogsTabContent(context, fileLogManager)
+                    SettingsTab.PLAYBACK -> PlaybackTabContent(carlinkManager, capturePlaybackManager, onNavigateBack)
                 }
             }
         }
     }
 }
 
-// ==================== CONTROL TAB ====================
-// Matches Flutter: control_tab_content.dart
-
-/**
- * Button severity levels for semantic color mapping (matches Flutter)
- */
 private enum class ButtonSeverity {
     NORMAL, // Primary action (blue/primary)
     WARNING, // Warning action (tertiary/amber)
     DESTRUCTIVE, // Destructive action (error/red)
 }
 
-/**
- * Control Tab - Device control commands and Display Control
- * Matches Flutter control_tab_content.dart
- * NOTE: Media Controls are NOT in Flutter Settings - they belong on main screen
- */
 @Composable
 private fun ControlTabContent(carlinkManager: CarlinkManager) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var isProcessing by remember { mutableStateOf(false) }
-    MaterialTheme.colorScheme
-
-    // Check device connection state - Matches Flutter _isDeviceConnected()
     val isDeviceConnected = carlinkManager.state != CarlinkManager.State.DISCONNECTED
 
-    // Display mode preference
     val displayModePreference = remember { DisplayModePreference.getInstance(context) }
     val currentDisplayMode by displayModePreference.displayModeFlow.collectAsStateWithLifecycle(
         initialValue = DisplayMode.SYSTEM_UI_VISIBLE,
     )
     var showDisplayModeDialog by remember { mutableStateOf(false) }
 
-    // Adapter configuration preference
     val adapterConfigPreference = remember { AdapterConfigPreference.getInstance(context) }
     var showAdapterConfigDialog by remember { mutableStateOf(false) }
 
-    // Responsive max width - 75% of container width, clamped between 400dp and 1200dp
     val windowInfo = LocalWindowInfo.current
     val density = LocalDensity.current
     val containerWidthDp = with(density) { windowInfo.containerSize.width.toDp() }
     val maxContentWidth = (containerWidthDp * 0.75f).coerceIn(400.dp, 1200.dp)
 
-    // Centered scrollable content with responsive max width constraint
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.TopCenter,
@@ -350,12 +319,10 @@ private fun ControlTabContent(carlinkManager: CarlinkManager) {
                     .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
-            // Two cards side by side (Device Control + System Reset)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // Device Control Card - Matches Flutter _buildDeviceControlCard
                 ControlCard(
                     modifier = Modifier.weight(1f),
                     title = "Device Control",
@@ -386,7 +353,6 @@ private fun ControlTabContent(carlinkManager: CarlinkManager) {
                     )
                 }
 
-                // System Reset Card - Matches Flutter _buildSystemResetCard
                 ControlCard(
                     modifier = Modifier.weight(1f),
                     title = "System Reset",
@@ -425,12 +391,10 @@ private fun ControlTabContent(carlinkManager: CarlinkManager) {
                 }
             }
 
-            // Two cards side by side (Display Control + Adapter Configuration)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // Display Control Card - Display mode configuration
                 ControlCard(
                     modifier = Modifier.weight(1f),
                     title = "Display Mode",
@@ -1572,13 +1536,6 @@ private fun DisplayModeButton(
     }
 }
 
-// ==================== LOGS TAB ====================
-// Matches Flutter: logs_tab_content.dart
-
-/**
- * Logs Tab - Log file management with log level selector
- * Matches Flutter logs_tab_content.dart
- */
 @Composable
 private fun LogsTabContent(
     context: android.content.Context,
@@ -1591,21 +1548,15 @@ private fun LogsTabContent(
     var showDebugWarningDialog by remember { mutableStateOf(false) }
     val colorScheme = MaterialTheme.colorScheme
 
-    // File export state - stores the file to export when SAF picker returns
-    // Using both pendingExportFile and isExporting prevents race conditions on rapid clicks
     var pendingExportFile by remember { mutableStateOf<File?>(null) }
     var isExporting by remember { mutableStateOf(false) }
 
-    // SAF Document Creator launcher - matches Flutter ACTION_CREATE_DOCUMENT
-    // Lifecycle-aware registration handled by Compose; I/O delegated to FileExportService
     val createDocumentLauncher =
         rememberLauncherForActivityResult(
             contract = ActivityResultContracts.CreateDocument("text/plain"),
         ) { uri: Uri? ->
-            // Capture file reference immediately to avoid race conditions
             val fileToExport = pendingExportFile
             if (uri != null && fileToExport != null) {
-                // Delegate I/O to FileExportService (runs on Dispatchers.IO)
                 scope.launch {
                     val result = FileExportService.writeFileToUri(context, uri, fileToExport)
                     result
@@ -1615,7 +1566,6 @@ private fun LogsTabContent(
                             logError("[FILE_EXPORT] Export failed: ${error.message}", tag = "FILE_LOG")
                             Toast.makeText(context, "Export failed: ${error.message}", Toast.LENGTH_SHORT).show()
                         }
-                    // Clear state after completion
                     pendingExportFile = null
                     isExporting = false
                 }
@@ -1626,12 +1576,10 @@ private fun LogsTabContent(
             }
         }
 
-    // Logging preferences
     val loggingPreferences = remember { LoggingPreferences.getInstance(context) }
     val isLoggingEnabled by loggingPreferences.loggingEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
     val currentLogLevel by loggingPreferences.logLevelFlow.collectAsStateWithLifecycle(initialValue = LogPreset.NORMAL)
 
-    // Check if debug build
     val isDebugBuild =
         remember {
             try {
@@ -1669,7 +1617,6 @@ private fun LogsTabContent(
     val containerWidthDp = with(density) { windowInfo.containerSize.width.toDp() }
     val maxContentWidth = (containerWidthDp * 0.75f).coerceIn(400.dp, 1200.dp)
 
-    // Centered scrollable content with responsive max width constraint
     Box(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.TopCenter,
@@ -1683,13 +1630,10 @@ private fun LogsTabContent(
                     .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
-            // File Logging Card - Matches Flutter _buildFileLoggingCard
             LoggingControlCard(
                 title = "File Logging",
                 icon = Icons.AutoMirrored.Filled.Article,
             ) {
-                // Toggle row - Matches Flutter SwitchListTile
-                // Using Row instead of ListItem to avoid dark background
                 Row(
                     modifier =
                         Modifier
@@ -1714,7 +1658,6 @@ private fun LogsTabContent(
                         checked = isLoggingEnabled,
                         onCheckedChange = { enabled ->
                             scope.launch {
-                                // Check for debug build warning
                                 if (enabled && isDebugBuild) {
                                     showDebugWarningDialog = true
                                 } else {
@@ -1733,8 +1676,6 @@ private fun LogsTabContent(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Log Level Selector - Matches Flutter _buildLogLevelSelector exactly
-                // Uses a tappable container box, not a button
                 Column {
                     Text(
                         text = "Log Level",
@@ -1780,8 +1721,6 @@ private fun LogsTabContent(
                     }
                 }
 
-                // File Logging Status - Embedded inside File Logging card
-                // Matches Flutter _buildFileLoggingStatusRows (inside same card)
                 val totalSize = fileLogManager.getTotalLogSize()
                 val currentFileSize = fileLogManager.getCurrentLogFileSize()
 
@@ -1822,12 +1761,10 @@ private fun LogsTabContent(
                 }
             }
 
-            // Log Files Card - Matches Flutter _buildLogFilesCardWithActions
             LoggingControlCard(
                 title = "Log Files",
                 icon = Icons.Default.Folder,
             ) {
-                // File count text - Matches Flutter
                 Text(
                     text = "${logFiles.size} log file${if (logFiles.size != 1) "s" else ""} available",
                     style = MaterialTheme.typography.bodyMedium,
@@ -1835,7 +1772,6 @@ private fun LogsTabContent(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
 
-                // Log file items with export button - Matches Flutter _buildLogFileItem
                 logFiles.forEach { file ->
                     LogFileItem(
                         file = file,
@@ -1845,8 +1781,6 @@ private fun LogsTabContent(
                         onExport = {
                             // Prevent double-clicks by checking isExporting state
                             if (!isExporting) {
-                                // Launch SAF document picker with suggested filename
-                                // Matches Flutter: FileExportService.createDocument()
                                 logInfo("[FILE_EXPORT] Starting export for: ${file.name}", tag = "FILE_LOG")
                                 isExporting = true
                                 pendingExportFile = file
@@ -1856,7 +1790,6 @@ private fun LogsTabContent(
                     )
                 }
 
-                // Help text - Matches Flutter
                 if (logFiles.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(12.dp))
                     Text(
@@ -1871,7 +1804,6 @@ private fun LogsTabContent(
         }
     }
 
-    // Log Level Selector Dialog - Matches Flutter _LogLevelSelectorDialog
     if (showLogLevelDialog) {
         LogLevelSelectorDialog(
             currentLevel = currentLogLevel,
@@ -1886,7 +1818,6 @@ private fun LogsTabContent(
         )
     }
 
-    // Debug APK Warning Dialog - Matches Flutter _DebugApkWarningDialog
     if (showDebugWarningDialog) {
         AlertDialog(
             onDismissRequest = { showDebugWarningDialog = false },
@@ -1917,7 +1848,6 @@ private fun LogsTabContent(
         )
     }
 
-    // Delete confirmation dialog - Matches Flutter DeleteConfirmationDialog
     showDeleteDialog?.let { file ->
         val fileSize =
             try {
@@ -1941,7 +1871,6 @@ private fun LogsTabContent(
                             .verticalScroll(rememberScrollState()),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    // Circular icon with error background - Matches Flutter ResponsiveDialog
                     Box(
                         modifier =
                             Modifier
@@ -1974,7 +1903,6 @@ private fun LogsTabContent(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // File information box - Matches Flutter buildContentBox
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.small,
@@ -2050,7 +1978,6 @@ private fun LogsTabContent(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Warning box - Matches Flutter buildWarningBox
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.small,
@@ -2086,7 +2013,6 @@ private fun LogsTabContent(
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Action buttons - Matches Flutter layout
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -2126,13 +2052,47 @@ private fun LogsTabContent(
 }
 
 /**
- * Log Level Selector Dialog - 2-column layout
- * Matches Flutter _LogLevelSelectorDialog exactly with:
- * - Icon in title row
- * - Two hardcoded columns with specific preset order
- * - Left: Silent, Minimal, Normal, Performance
- * - Right: RX Messages, Video Only, Audio Only, Debug
+ * Playback tab content - Capture playback settings and controls.
  */
+@Composable
+private fun PlaybackTabContent(
+    carlinkManager: CarlinkManager,
+    capturePlaybackManager: com.carlink.capture.CapturePlaybackManager,
+    onNavigateBack: () -> Unit,
+) {
+    val colorScheme = MaterialTheme.colorScheme
+
+    // Responsive max width - 75% of container width, clamped between 400dp and 1200dp
+    val windowInfo = LocalWindowInfo.current
+    val density = LocalDensity.current
+    val containerWidthDp = with(density) { windowInfo.containerSize.width.toDp() }
+    val maxContentWidth = (containerWidthDp * 0.75f).coerceIn(400.dp, 1200.dp)
+
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.TopCenter,
+    ) {
+        Column(
+            modifier =
+                Modifier
+                    .widthIn(max = maxContentWidth)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
+        ) {
+            CapturePlaybackContent(
+                carlinkManager = carlinkManager,
+                capturePlaybackManager = capturePlaybackManager,
+                onStartPlayback = {
+                    // Navigate back to main screen to start playback
+                    onNavigateBack()
+                },
+            )
+        }
+    }
+}
+
 @Composable
 private fun LogLevelSelectorDialog(
     currentLevel: LogPreset,
@@ -2141,7 +2101,6 @@ private fun LogLevelSelectorDialog(
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
-    // Define preset order matching Flutter exactly
     val leftColumn =
         listOf(
             LogPreset.SILENT,
@@ -2169,7 +2128,6 @@ private fun LogLevelSelectorDialog(
                         .padding(28.dp)
                         .verticalScroll(rememberScrollState()),
             ) {
-                // Title row with icon - Matches Flutter exactly
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -2236,10 +2194,6 @@ private fun LogLevelSelectorDialog(
     }
 }
 
-/**
- * Log Preset Chip for selector dialog
- * Matches Flutter _buildLogLevelOption exactly
- */
 @Composable
 private fun LogPresetChip(
     preset: LogPreset,
@@ -2263,7 +2217,6 @@ private fun LogPresetChip(
             modifier = Modifier.padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Circular selection indicator - matches Flutter
             Box(
                 modifier =
                     Modifier
@@ -2293,11 +2246,7 @@ private fun LogPresetChip(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            // Level info
-            Column(
-                modifier = Modifier.weight(1f),
-            ) {
-                // Title is ALWAYS the preset color - matches Flutter line 904
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = preset.displayName,
                     style =
@@ -2366,16 +2315,6 @@ private fun LoggingControlCard(
     }
 }
 
-/**
- * Material 3 Log file item with export button
- * Matches Flutter _buildLogFileItem
- *
- * @param file The log file to display
- * @param dateFormat Format for displaying last modified date
- * @param isExportEnabled Whether export button is enabled (false during active export)
- * @param onDelete Callback when delete button is clicked
- * @param onExport Callback when export button is clicked
- */
 @Composable
 private fun LogFileItem(
     file: File,
@@ -2398,7 +2337,6 @@ private fun LogFileItem(
                     .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // File icon
             Icon(
                 imageVector = Icons.Default.Description,
                 contentDescription = null,
@@ -2408,7 +2346,6 @@ private fun LogFileItem(
 
             Spacer(modifier = Modifier.width(12.dp))
 
-            // File info
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = file.name,
@@ -2429,8 +2366,6 @@ private fun LogFileItem(
                 )
             }
 
-            // Export button - Matches Flutter save_alt icon
-            // Disabled during active export to prevent race conditions
             IconButton(
                 onClick = onExport,
                 enabled = isExportEnabled,
@@ -2443,7 +2378,6 @@ private fun LogFileItem(
                 )
             }
 
-            // Delete button
             IconButton(onClick = onDelete) {
                 Icon(
                     imageVector = Icons.Default.DeleteOutline,
@@ -2456,10 +2390,6 @@ private fun LogFileItem(
     }
 }
 
-/**
- * File Logging Status Row - for embedded status display
- * Matches Flutter _buildStatusRow exactly
- */
 @Composable
 private fun FileLoggingStatusRow(
     label: String,

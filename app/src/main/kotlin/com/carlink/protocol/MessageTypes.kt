@@ -273,13 +273,13 @@ data class AudioFormat(
 object AudioFormats {
     private val formats =
         mapOf(
-            1 to AudioFormat(44100, 2, 16),  // Media playback (44.1kHz)
-            2 to AudioFormat(44100, 2, 16),  // Navigation / Stop commands
-            3 to AudioFormat(8000, 1, 16),   // Phone call (narrow-band)
-            4 to AudioFormat(48000, 2, 16),  // Media HD / Standard CarPlay
-            5 to AudioFormat(16000, 1, 16),  // Siri / Phone / Mic input
-            6 to AudioFormat(24000, 1, 16),  // Voice recognition
-            7 to AudioFormat(16000, 2, 16),  // Stereo voice
+            1 to AudioFormat(44100, 2, 16), // Media playback (44.1kHz)
+            2 to AudioFormat(44100, 2, 16), // Navigation / Stop commands
+            3 to AudioFormat(8000, 1, 16), // Phone call (narrow-band)
+            4 to AudioFormat(48000, 2, 16), // Media HD / Standard CarPlay
+            5 to AudioFormat(16000, 1, 16), // Siri / Phone / Mic input
+            6 to AudioFormat(24000, 1, 16), // Voice recognition
+            7 to AudioFormat(16000, 2, 16), // Stereo voice
         )
 
     fun fromDecodeType(decodeType: Int): AudioFormat? = formats[decodeType]

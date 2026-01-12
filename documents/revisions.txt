@@ -51,3 +51,10 @@
 [35] :: Navigation Audio changes.
 [36] :: XDA@RWerksman mainscreen.kt fix for GM EV or non rectangular display and edge runoff. Some code cleanup, unused imports.
 [37] :: Fixed App file logging not working. Added Video logging of frames for weird degradation overtime of video stream
+[38] :: Code and comment cleanup
+[39] :: Fixed Cluster Media info (Missing Code) Removed unnecessary permissions. car.template_host forced GPlayServices and Store to be enabled. Some users disable to free up sys resources.
+[40] :: Testing Video Code caching of keyframe used as reference for P-Frames. Shorting IDR request from 5 to 2 seconds.
+
+[41] :: More Video code changes from USB capture of video data.
+[42] :: Audio Code changes based on USB capture of audio data, like 41.
+[43] :: Playback feature added. Uses modified Pi-carplay captured USB binaries, injects into app audio and video pipeline. Mimics live CarPlay session for video and audio troubleshooting.

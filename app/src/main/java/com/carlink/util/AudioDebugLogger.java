@@ -4,65 +4,38 @@ import android.util.Log;
 import java.util.Locale;
 
 /**
- * Audio Pipeline Debug Logger
- *
- * Provides comprehensive logging for audio pipeline troubleshooting.
- * Designed to be easily enabled/disabled for debug APK vs release APK.
- *
- * USAGE:
- * - Call setDebugEnabled(BuildConfig.DEBUG) on app startup
- * - Use logXxx() methods throughout audio pipeline
- * - In release builds, all logging is no-op (zero overhead)
- *
- * PIPELINE STAGES:
- * 1. USB      - Audio data reception from adapter
- * 2. BUFFER   - Ring buffer write/read operations
- * 3. TRACK    - AudioTrack write/state operations
- * 4. STREAM   - Stream start/stop/format changes
- * 5. PERF     - Performance metrics (underruns, latency)
+ * Audio pipeline debug logging. Stages: USB → BUFFER → TRACK → STREAM → PERF.
+ * Call setDebugEnabled(BuildConfig.DEBUG) on startup. No-op in release builds.
  */
 public class AudioDebugLogger {
     private static final String TAG = "CARLINK_AUDIO_DEBUG";
 
-    // Master debug switch - set to false in release builds
     private static volatile boolean debugEnabled = true;
-
-    // Individual stage switches for fine-grained control
     private static volatile boolean usbEnabled = true;
     private static volatile boolean bufferEnabled = true;
     private static volatile boolean trackEnabled = true;
     private static volatile boolean streamEnabled = true;
     private static volatile boolean perfEnabled = true;
 
-    // Throttling for high-frequency logs
     private static long lastUsbLogTime = 0;
     private static long lastBufferLogTime = 0;
     private static long lastTrackLogTime = 0;
-    private static final long THROTTLE_INTERVAL_MS = 100; // Max 10 logs/sec per category
+    private static final long THROTTLE_INTERVAL_MS = 100;
 
-    // Frame counters for periodic logging
     private static long usbPacketCount = 0;
     private static long bufferWriteCount = 0;
     private static long bufferReadCount = 0;
     private static long trackWriteCount = 0;
 
-    // Stream-specific counters
     private static long mediaPackets = 0;
     private static long navPackets = 0;
     private static long voicePackets = 0;
     private static long callPackets = 0;
 
-    // Performance tracking
     private static long totalUnderruns = 0;
     private static long lastPerfLogTime = 0;
-    private static final long PERF_LOG_INTERVAL_MS = 30000; // 30 second performance summary
+    private static final long PERF_LOG_INTERVAL_MS = 30000;
 
-    /**
-     * Enable or disable all debug logging.
-     * Call this with BuildConfig.DEBUG on app startup.
-     *
-     * @param enabled true for debug builds, false for release
-     */
     public static void setDebugEnabled(boolean enabled) {
         debugEnabled = enabled;
         if (!enabled) {
@@ -77,22 +50,12 @@ public class AudioDebugLogger {
             callPackets = 0;
             totalUnderruns = 0;
         }
-        // Only log status in debug builds
-        if (com.carlink.BuildConfig.DEBUG) {
-            Log.i(TAG, "[AUDIO_DEBUG] Debug logging " + (enabled ? "ENABLED" : "DISABLED"));
-        }
     }
 
-    /**
-     * Check if debug logging is enabled.
-     */
     public static boolean isDebugEnabled() {
         return debugEnabled;
     }
 
-    /**
-     * Enable/disable individual logging stages.
-     */
     public static void setStageEnabled(String stage, boolean enabled) {
         switch (stage.toUpperCase(Locale.ROOT)) {
             case "USB":
@@ -119,15 +82,7 @@ public class AudioDebugLogger {
         }
     }
 
-    // ==================== USB Layer Logging ====================
-
-    /**
-     * Log audio packet reception from USB.
-     *
-     * @param size Packet size in bytes
-     * @param audioType Stream type (1=media, 2=nav, 3=call, 4=voice)
-     * @param decodeType CPC200 decode format type
-     */
+    // USB Layer
     public static void logUsbReceive(int size, int audioType, int decodeType) {
         if (!debugEnabled || !usbEnabled) return;
 
@@ -141,7 +96,6 @@ public class AudioDebugLogger {
             case 4: voicePackets++; break;
         }
 
-        // Throttled logging
         long now = System.currentTimeMillis();
         if (now - lastUsbLogTime >= THROTTLE_INTERVAL_MS) {
             lastUsbLogTime = now;
@@ -150,9 +104,6 @@ public class AudioDebugLogger {
         }
     }
 
-    /**
-     * Log filtered (zero-filled) audio packet.
-     */
     public static void logUsbFiltered(int audioType, long totalFiltered) {
         if (!debugEnabled || !usbEnabled) return;
 
@@ -163,22 +114,12 @@ public class AudioDebugLogger {
         }
     }
 
-    // ==================== Buffer Layer Logging ====================
-
-    /**
-     * Log ring buffer write operation.
-     *
-     * @param streamName Stream name (media/nav/voice/call)
-     * @param bytesWritten Bytes written
-     * @param fillLevelMs Current buffer fill level in ms
-     * @param overflowCount Total overflow count
-     */
+    // Buffer Layer
     public static void logBufferWrite(String streamName, int bytesWritten, int fillLevelMs, long overflowCount) {
         if (!debugEnabled || !bufferEnabled) return;
 
         bufferWriteCount++;
 
-        // Throttled logging
         long now = System.currentTimeMillis();
         if (now - lastBufferLogTime >= THROTTLE_INTERVAL_MS) {
             lastBufferLogTime = now;
@@ -187,29 +128,17 @@ public class AudioDebugLogger {
         }
     }
 
-    /**
-     * Log ring buffer read operation.
-     *
-     * @param streamName Stream name
-     * @param bytesRead Bytes read
-     * @param fillLevelMs Remaining buffer fill level in ms
-     * @param underflowCount Total underflow count
-     */
     public static void logBufferRead(String streamName, int bytesRead, int fillLevelMs, long underflowCount) {
         if (!debugEnabled || !bufferEnabled) return;
 
         bufferReadCount++;
 
-        // Only log reads that indicate potential issues (low fill or underflows)
         if (fillLevelMs < 50 || underflowCount > 0) {
             Log.d(TAG, String.format("[AUDIO_BUFFER] %s read: %dB, fill=%dms, underflow=%d",
                     streamName, bytesRead, fillLevelMs, underflowCount));
         }
     }
 
-    /**
-     * Log buffer overflow event.
-     */
     public static void logBufferOverflow(String streamName, int droppedBytes, int fillLevelMs) {
         if (!debugEnabled || !bufferEnabled) return;
 
@@ -217,9 +146,6 @@ public class AudioDebugLogger {
                 streamName, droppedBytes, fillLevelMs));
     }
 
-    /**
-     * Log buffer underflow event.
-     */
     public static void logBufferUnderflow(String streamName, int requestedBytes, int availableBytes) {
         if (!debugEnabled || !bufferEnabled) return;
 
@@ -227,21 +153,12 @@ public class AudioDebugLogger {
                 streamName, requestedBytes, availableBytes));
     }
 
-    // ==================== AudioTrack Layer Logging ====================
-
-    /**
-     * Log AudioTrack write operation.
-     *
-     * @param streamName Stream name
-     * @param bytesWritten Bytes written to AudioTrack
-     * @param writeMode WRITE_BLOCKING or WRITE_NON_BLOCKING
-     */
+    // AudioTrack Layer
     public static void logTrackWrite(String streamName, int bytesWritten, String writeMode) {
         if (!debugEnabled || !trackEnabled) return;
 
         trackWriteCount++;
 
-        // Throttled logging
         long now = System.currentTimeMillis();
         if (now - lastTrackLogTime >= THROTTLE_INTERVAL_MS) {
             lastTrackLogTime = now;
@@ -250,13 +167,6 @@ public class AudioDebugLogger {
         }
     }
 
-    /**
-     * Log AudioTrack state change.
-     *
-     * @param streamName Stream name
-     * @param oldState Previous state
-     * @param newState New state
-     */
     public static void logTrackStateChange(String streamName, String oldState, String newState) {
         if (!debugEnabled || !trackEnabled) return;
 
@@ -264,12 +174,6 @@ public class AudioDebugLogger {
                 streamName, oldState, newState));
     }
 
-    /**
-     * Log AudioTrack underrun.
-     *
-     * @param streamName Stream name
-     * @param underrunCount Total underrun count from AudioTrack
-     */
     public static void logTrackUnderrun(String streamName, int underrunCount) {
         if (!debugEnabled || !trackEnabled) return;
 
@@ -278,16 +182,7 @@ public class AudioDebugLogger {
                 streamName, underrunCount));
     }
 
-    // ==================== Stream Lifecycle Logging ====================
-
-    /**
-     * Log stream start event.
-     *
-     * @param streamName Stream name
-     * @param sampleRate Sample rate in Hz
-     * @param channels Number of channels
-     * @param bufferSizeMs Buffer size in ms
-     */
+    // Stream Lifecycle
     public static void logStreamStart(String streamName, int sampleRate, int channels, int bufferSizeMs) {
         if (!debugEnabled || !streamEnabled) return;
 
@@ -295,13 +190,6 @@ public class AudioDebugLogger {
                 streamName, sampleRate, channels, bufferSizeMs));
     }
 
-    /**
-     * Log stream stop event.
-     *
-     * @param streamName Stream name
-     * @param durationMs How long the stream was active
-     * @param packetsProcessed Number of packets processed
-     */
     public static void logStreamStop(String streamName, long durationMs, long packetsProcessed) {
         if (!debugEnabled || !streamEnabled) return;
 
@@ -309,13 +197,6 @@ public class AudioDebugLogger {
                 streamName, durationMs, packetsProcessed));
     }
 
-    /**
-     * Log stream format change.
-     *
-     * @param streamName Stream name
-     * @param oldFormat Old format description
-     * @param newFormat New format description
-     */
     public static void logStreamFormatChange(String streamName, String oldFormat, String newFormat) {
         if (!debugEnabled || !streamEnabled) return;
 
@@ -323,9 +204,6 @@ public class AudioDebugLogger {
                 streamName, oldFormat, newFormat));
     }
 
-    /**
-     * Log stream pause/resume.
-     */
     public static void logStreamPause(String streamName, String reason) {
         if (!debugEnabled || !streamEnabled) return;
 
@@ -338,19 +216,7 @@ public class AudioDebugLogger {
         Log.i(TAG, String.format("[AUDIO_STREAM] %s RESUMED: buffer=%dms", streamName, bufferLevelMs));
     }
 
-    // ==================== Performance Logging ====================
-
-    /**
-     * Log periodic performance summary.
-     * Call this from the playback thread periodically.
-     *
-     * @param mediaFillMs Media buffer fill level
-     * @param navFillMs Nav buffer fill level
-     * @param voiceFillMs Voice buffer fill level
-     * @param callFillMs Call buffer fill level
-     * @param mediaUnderruns Media track underruns
-     * @param navUnderruns Nav track underruns
-     */
+    // Performance
     public static void logPerfSummary(
             int mediaFillMs, int navFillMs, int voiceFillMs, int callFillMs,
             int mediaUnderruns, int navUnderruns, int voiceUnderruns, int callUnderruns) {
@@ -371,25 +237,15 @@ public class AudioDebugLogger {
                 totalUnderruns));
     }
 
-    /**
-     * Log latency measurement.
-     *
-     * @param streamName Stream name
-     * @param latencyMs End-to-end latency in ms
-     */
     public static void logLatency(String streamName, long latencyMs) {
         if (!debugEnabled || !perfEnabled) return;
 
-        // Only log if latency seems abnormal (>100ms for audio is concerning)
         if (latencyMs > 100) {
             Log.w(TAG, String.format("[AUDIO_PERF] %s latency: %dms (HIGH)",
                     streamName, latencyMs));
         }
     }
 
-    /**
-     * Get current statistics as formatted string.
-     */
     public static String getStatsString() {
         return String.format(Locale.US,
                 "USB: %d pkts | Buffer: W=%d R=%d | Track: %d writes | " +
@@ -398,9 +254,6 @@ public class AudioDebugLogger {
                 mediaPackets, navPackets, voicePackets, callPackets, totalUnderruns);
     }
 
-    /**
-     * Reset all counters.
-     */
     public static void resetCounters() {
         usbPacketCount = 0;
         bufferWriteCount = 0;
@@ -416,21 +269,12 @@ public class AudioDebugLogger {
         Log.i(TAG, "[AUDIO_DEBUG] Counters reset");
     }
 
-    // ==================== Microphone Logging ====================
-
-    // Microphone-specific counters
+    // Microphone
     private static long micCaptureCount = 0;
     private static long micSendCount = 0;
     private static long lastMicLogTime = 0;
     private static volatile boolean micEnabled = true;
 
-    /**
-     * Log microphone capture start.
-     *
-     * @param sampleRate Sample rate in Hz
-     * @param channels Number of channels
-     * @param bufferSizeMs Ring buffer size in ms
-     */
     public static void logMicStart(int sampleRate, int channels, int bufferSizeMs) {
         if (!debugEnabled || !micEnabled) return;
 
@@ -440,13 +284,6 @@ public class AudioDebugLogger {
                 sampleRate, channels, bufferSizeMs));
     }
 
-    /**
-     * Log microphone capture stop.
-     *
-     * @param durationMs How long capture was active
-     * @param totalBytesCaptured Total bytes captured
-     * @param overruns Number of buffer overruns
-     */
     public static void logMicStop(long durationMs, long totalBytesCaptured, int overruns) {
         if (!debugEnabled || !micEnabled) return;
 
@@ -454,18 +291,11 @@ public class AudioDebugLogger {
                 durationMs, totalBytesCaptured, overruns, micCaptureCount, micSendCount));
     }
 
-    /**
-     * Log microphone data capture from AudioRecord.
-     *
-     * @param bytesRead Bytes read from AudioRecord
-     * @param bufferLevelMs Current ring buffer fill level
-     */
     public static void logMicCapture(int bytesRead, int bufferLevelMs) {
         if (!debugEnabled || !micEnabled) return;
 
         micCaptureCount++;
 
-        // Throttled logging
         long now = System.currentTimeMillis();
         if (now - lastMicLogTime >= THROTTLE_INTERVAL_MS) {
             lastMicLogTime = now;
@@ -474,30 +304,17 @@ public class AudioDebugLogger {
         }
     }
 
-    /**
-     * Log microphone data sent to USB/adapter.
-     *
-     * @param bytesSent Bytes sent to adapter
-     * @param bufferLevelMs Remaining buffer level after read
-     */
     public static void logMicSend(int bytesSent, int bufferLevelMs) {
         if (!debugEnabled || !micEnabled) return;
 
         micSendCount++;
 
-        // Only log if buffer is getting low (potential underrun)
         if (bufferLevelMs < 30) {
             Log.d(TAG, String.format("[MIC_DEBUG] Send #%d: %dB, buffer=%dms (LOW)",
                     micSendCount, bytesSent, bufferLevelMs));
         }
     }
 
-    /**
-     * Log microphone buffer overrun.
-     *
-     * @param bytesLost Bytes that couldn't be written
-     * @param bufferLevelMs Current buffer level
-     */
     public static void logMicOverrun(int bytesLost, int bufferLevelMs) {
         if (!debugEnabled || !micEnabled) return;
 
@@ -505,12 +322,6 @@ public class AudioDebugLogger {
                 bytesLost, bufferLevelMs));
     }
 
-    /**
-     * Log microphone buffer underrun (USB reading faster than capture).
-     *
-     * @param bytesRequested Bytes requested by USB thread
-     * @param bytesAvailable Bytes actually available
-     */
     public static void logMicUnderrun(int bytesRequested, int bytesAvailable) {
         if (!debugEnabled || !micEnabled) return;
 
@@ -518,28 +329,17 @@ public class AudioDebugLogger {
                 bytesRequested, bytesAvailable));
     }
 
-    /**
-     * Log microphone error.
-     *
-     * @param errorType Type of error (e.g., "INVALID_OPERATION", "DEAD_OBJECT")
-     * @param details Additional details
-     */
     public static void logMicError(String errorType, String details) {
         if (!debugEnabled || !micEnabled) return;
 
         Log.e(TAG, String.format("[MIC_DEBUG] ERROR: %s - %s", errorType, details));
     }
 
-    /**
-     * Enable/disable microphone logging.
-     */
     public static void setMicEnabled(boolean enabled) {
         micEnabled = enabled;
     }
 
-    // ==================== Navigation Audio Logging ====================
-
-    // Navigation-specific counters and state
+    // Navigation Audio
     private static long navPromptCount = 0;
     private static long navEndMarkersDetected = 0;
     private static long navWarmupFramesSkipped = 0;
@@ -548,20 +348,10 @@ public class AudioDebugLogger {
     private static long currentNavPromptStartTime = 0;
     private static volatile boolean navEnabled = true;
 
-    /**
-     * Enable/disable navigation audio logging.
-     */
     public static void setNavEnabled(boolean enabled) {
         navEnabled = enabled;
     }
 
-    /**
-     * Log navigation prompt start (called when nav audio stream begins).
-     *
-     * @param sampleRate Sample rate in Hz
-     * @param channels Number of channels
-     * @param bufferSizeMs Ring buffer size in ms
-     */
     public static void logNavPromptStart(int sampleRate, int channels, int bufferSizeMs) {
         if (!debugEnabled || !navEnabled) return;
 
@@ -571,13 +361,6 @@ public class AudioDebugLogger {
                 navPromptCount, sampleRate, channels, bufferSizeMs));
     }
 
-    /**
-     * Log navigation prompt end (called when nav audio stream ends).
-     *
-     * @param durationMs How long the nav prompt played
-     * @param bytesPlayed Total bytes played
-     * @param underruns Number of underruns during playback
-     */
     public static void logNavPromptEnd(long durationMs, long bytesPlayed, int underruns) {
         if (!debugEnabled || !navEnabled) return;
 
@@ -585,12 +368,6 @@ public class AudioDebugLogger {
                 navPromptCount, durationMs, bytesPlayed, underruns));
     }
 
-    /**
-     * Log navigation end marker detection (solid 0xFFFF pattern).
-     *
-     * @param timeSincePromptStart Ms since nav prompt started
-     * @param bufferLevelMs Buffer level when marker detected
-     */
     public static void logNavEndMarker(long timeSincePromptStart, int bufferLevelMs) {
         if (!debugEnabled || !navEnabled) return;
 
@@ -599,29 +376,16 @@ public class AudioDebugLogger {
                 navEndMarkersDetected, timeSincePromptStart, bufferLevelMs));
     }
 
-    /**
-     * Log navigation warmup frame skip (codec warmup noise filtered).
-     *
-     * @param timeSinceStart Ms since nav stream started
-     * @param patternDescription Brief description of detected pattern
-     */
     public static void logNavWarmupSkip(long timeSinceStart, String patternDescription) {
         if (!debugEnabled || !navEnabled) return;
 
         navWarmupFramesSkipped++;
-        // Log first frame, then every 5th to reduce spam
         if (navWarmupFramesSkipped == 1 || navWarmupFramesSkipped % 5 == 0) {
             Log.d(TAG, String.format("[NAV_DEBUG] Warmup skip #%d: %dms since start, pattern=%s",
                     navWarmupFramesSkipped, timeSinceStart, patternDescription));
         }
     }
 
-    /**
-     * Log navigation zero-packet flush (consecutive zeros caused buffer flush).
-     *
-     * @param consecutiveZeros Number of consecutive zero packets before flush
-     * @param bufferLevelMs Buffer level before flush
-     */
     public static void logNavZeroFlush(int consecutiveZeros, int bufferLevelMs) {
         if (!debugEnabled || !navEnabled) return;
 
@@ -630,17 +394,9 @@ public class AudioDebugLogger {
                 navZeroPacketsFlushed, consecutiveZeros, bufferLevelMs));
     }
 
-    /**
-     * Log navigation buffer write operation.
-     *
-     * @param bytesWritten Bytes written to nav ring buffer
-     * @param fillLevelMs Buffer fill level after write
-     * @param timeSinceStart Ms since nav prompt started
-     */
     public static void logNavBufferWrite(int bytesWritten, int fillLevelMs, long timeSinceStart) {
         if (!debugEnabled || !navEnabled) return;
 
-        // Throttled logging - only every 100ms
         long now = System.currentTimeMillis();
         if (now - lastNavLogTime >= THROTTLE_INTERVAL_MS) {
             lastNavLogTime = now;
@@ -649,28 +405,15 @@ public class AudioDebugLogger {
         }
     }
 
-    /**
-     * Log navigation AudioTrack write operation.
-     *
-     * @param bytesWritten Bytes written to AudioTrack
-     * @param bufferLevelMs Remaining buffer level after read
-     */
     public static void logNavTrackWrite(int bytesWritten, int bufferLevelMs) {
         if (!debugEnabled || !navEnabled) return;
 
-        // Only log when buffer is getting low (potential issue indicator)
         if (bufferLevelMs < 80) {
             Log.d(TAG, String.format("[NAV_DEBUG] Track write: %dB, buffer=%dms (LOW)",
                     bytesWritten, bufferLevelMs));
         }
     }
 
-    /**
-     * Log navigation pre-fill completion.
-     *
-     * @param fillLevelMs Buffer level when pre-fill completed
-     * @param waitTimeMs How long pre-fill took
-     */
     public static void logNavPrefillComplete(int fillLevelMs, long waitTimeMs) {
         if (!debugEnabled || !navEnabled) return;
 
@@ -678,12 +421,6 @@ public class AudioDebugLogger {
                 fillLevelMs, waitTimeMs));
     }
 
-    /**
-     * Log navigation buffer flush (manual flush, e.g., on track pause).
-     *
-     * @param reason Reason for flush (e.g., "end_marker", "stop_command", "zero_packets")
-     * @param discardedMs Amount of audio discarded in ms
-     */
     public static void logNavBufferFlush(String reason, int discardedMs) {
         if (!debugEnabled || !navEnabled) return;
 
@@ -691,35 +428,21 @@ public class AudioDebugLogger {
                 reason, discardedMs));
     }
 
-    /**
-     * Log navigation pattern detection details (for troubleshooting false positives).
-     *
-     * @param patternType Type of pattern ("end_marker", "warmup_noise", "zero_filled")
-     * @param detected Whether pattern was detected
-     * @param sampleValues Hex string of sample values checked
-     */
     public static void logNavPatternCheck(String patternType, boolean detected, String sampleValues) {
         if (!debugEnabled || !navEnabled) return;
 
-        // Only log detected patterns or first few non-detections for debugging
         if (detected) {
             Log.d(TAG, String.format("[NAV_DEBUG] Pattern %s DETECTED: samples=[%s]",
                     patternType, sampleValues));
         }
     }
 
-    /**
-     * Get navigation debug statistics as formatted string.
-     */
     public static String getNavStatsString() {
         return String.format(Locale.US,
                 "Nav prompts=%d | End markers=%d | Warmup skipped=%d | Zero flushes=%d",
                 navPromptCount, navEndMarkersDetected, navWarmupFramesSkipped, navZeroPacketsFlushed);
     }
 
-    /**
-     * Reset navigation counters.
-     */
     public static void resetNavCounters() {
         navPromptCount = 0;
         navEndMarkersDetected = 0;
@@ -729,10 +452,6 @@ public class AudioDebugLogger {
         Log.i(TAG, "[NAV_DEBUG] Navigation counters reset");
     }
 
-    /**
-     * Get time since current nav prompt started.
-     * @return Ms since prompt start, or 0 if no prompt active
-     */
     public static long getTimeSinceNavPromptStart() {
         if (currentNavPromptStartTime == 0) return 0;
         return System.currentTimeMillis() - currentNavPromptStartTime;

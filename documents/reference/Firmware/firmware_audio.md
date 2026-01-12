@@ -16,7 +16,7 @@ This document provides comprehensive analysis of CPC200-CCPA firmware audio proc
   - `incomming_phone_call/` - Incoming calls with ringtone + voice transition (44.1kHz + 48kHz)
   - `incomming_iMessage_notifications/` - iMessage notification sounds
 
-**Last Updated:** 2025-12-29 (with CPC200 research decode_type/audio_type semantic mappings)
+**Last Updated:** 2026-01-11 (with January 2026 raw USB capture analysis)
 
 ## Hardware Architecture & Constraints
 
@@ -313,23 +313,28 @@ CheckMultiAudioBusPolicy(); IsSupportBGRecord();
 
 ## Integration Points
 
-### Communication with Autokit App
+### Communication with Autokit App (Capture-Verified)
 
 **Protocol Structure:**
 ```cpp
-struct CPCAudioMessage {  // 16-byte header
+// Common USB Header (16 bytes) - same for all message types
+struct USBHeader {
     uint32_t magic;       // 0x55AA55AA
-    uint32_t length;      // PCM payload size
-    uint32_t command;     // 0x07 for AudioData
-    uint32_t checksum;    // command ^ 0xFFFFFFFF
+    uint32_t payloadLen;  // Bytes after this 16-byte header
+    uint32_t msgType;     // 0x07 for AudioData
+    uint32_t checksum;    // msgType ^ 0xFFFFFFFF = -8 (0xFFFFFFF8)
 };
 
-struct AudioPayload {     // Variable length
-    uint32_t decType;     // Format ID (1-7)
+// Audio-Specific Header (12 bytes) - follows USB header
+struct AudioHeader {
+    uint32_t decType;     // Format ID (1/2/4/5 verified)
     float    volume;      // Volume level (0.0-1.0) IEEE 754
-    uint32_t audType;     // Stream type identifier
-    uint8_t  audData[];   // Raw PCM samples OR 1-byte command
+    uint32_t audType;     // Stream type (1=main, 2=nav, 3=mic)
 };
+
+// Complete audio packet: USBHeader (16) + AudioHeader (12) + payload
+// Total header size: 28 bytes (0x1C)
+// Payload: PCM samples OR 1-byte command
 ```
 
 ---
@@ -350,14 +355,17 @@ Offset  Size  Field     Example      Description
 0x0C    1     command   06           Audio command (6 = NAVI_START)
 ```
 
-**Audio Data Packet (11532+ byte payload):**
+**Audio Data Packet (11548 bytes USB packet, 11520 bytes PCM):**
 ```
 Offset  Size   Field     Description
 ────────────────────────────────────────────────────────
-0x00    4      decType   Format type
-0x04    4      volume    Float volume
-0x08    4      audType   Audio stream type
-0x0C    N      pcmData   Raw 16-bit PCM samples
+0x00    4      decType   Format type (2=44.1kHz, 4=48kHz)
+0x04    4      volume    Float volume (0.0-1.0)
+0x08    4      audType   Audio stream type (1/2/3)
+0x0C    N      pcmData   Raw 16-bit PCM samples (11520 bytes)
+
+Note: PayloadLen = 11532 (12-byte audio header + 11520 PCM)
+      USB packet = 11548 (16-byte USB header + 11532 payload)
 ```
 
 ### Verified Timing: Navigation Audio Sequence
@@ -395,13 +403,15 @@ Time      Packet  Type           Payload Summary
 
 | decType | Sample Rate | Channels | Bits | Usage | Capture Status |
 |---------|-------------|----------|------|-------|----------------|
-| 1 | 44100 Hz | 2 (Stereo) | 16 | Media playback | **Verified** |
-| 2 | 44100 Hz | 2 (Stereo) | 16 | Navigation audio / Stop commands | **Verified** |
+| 1 | 44100 Hz | 2 (Stereo) | 16 | (Documented, not observed) | Not captured |
+| 2 | 44100 Hz | 2 (Stereo) | 16 | 44.1kHz media + Navigation/Stop | **Verified** |
 | 3 | 8000 Hz | 1 (Mono) | 16 | (Reserved - not observed) | Not captured |
-| 4 | 48000 Hz | 2 (Stereo) | 16 | Media HD / Standard CarPlay | **Verified** |
+| 4 | 48000 Hz | 2 (Stereo) | 16 | 48kHz HD Media (standard CarPlay) | **Verified** |
 | 5 | 16000 Hz | 1 (Mono) | 16 | Siri + Phone calls + Mic input | **Verified** |
 | 6 | 24000 Hz | 1 (Mono) | 16 | Voice recognition | Not captured |
 | 7 | 16000 Hz | 2 (Stereo) | 16 | Alt voice | Not captured |
+
+**Note:** decType=1 is documented but never observed in any capture. 44.1kHz content uses decType=2.
 
 ### decode_type Semantic Mapping (Dec 2025 Research)
 
@@ -418,12 +428,285 @@ From comprehensive capture analysis across media, navigation, siri, and phonecal
 - decType=5 signals microphone/voice-related operations
 - decType=2 appears in stop/cleanup commands
 
-**Capture Evidence:**
-- `48Khz_playback`: decType=4 confirmed (media)
-- `44.1Khz_playback`: decType=1 confirmed (media)
-- `navigation_audio_only`: decType=2 confirmed (navigation)
-- `siri_invocation`: decType=5 confirmed (Siri)
-- `phone_call`: decType=5 confirmed (phone call)
+**Capture Evidence (Dec 2025 pi-capture):**
+- `48Khz_playback`: decType=4 confirmed (346 packets, all main channel)
+- `44.1Khz_playback`: decType=2 confirmed (332 packets, all main channel)
+- `navigation_audio_only`: decType=2+4 (nav prompts use audType=2 for ducking)
+- `navigation+media_audio`: decType=4 (1532) + decType=2 (nav stops)
+- `siri_invocation`: decType=5 confirmed (10 packets, 16kHz mono)
+- `phone_call`: decType=5 confirmed (voice channel)
+- `incomming_phone_call`: decType=2 (ringtone) + decType=5 (voice), audType=3 (mic input)
+- `incomming_iMessage_notifications`: decType=2, audType=2 (nav channel for ducking)
+
+---
+
+## Raw USB Capture Analysis (January 2026)
+
+**Source:** `/logs/raw_USB/usb-capture-2026-01-11T11-45-12-620Z-audio-out.*`
+**Session Duration:** 358 seconds (≈6 minutes)
+**Total Audio Packets:** 5,068
+
+### Audio Packet Statistics
+
+| Metric | Value |
+|--------|-------|
+| Command Packets | 8 (13-byte payload) |
+| Data Packets | 5,060 (PCM audio) |
+| Binary Size | 58.5 MB |
+| Average Bitrate | 1,504 kbps |
+
+### Decode Type Distribution
+
+| decType | Count | Percentage | Description |
+|---------|-------|------------|-------------|
+| 4 | 5,068 | 100% | 48kHz stereo (HD media) |
+
+**Finding:** Entire session used only `decType=4` (48kHz stereo). No navigation audio or voice activity observed.
+
+### Audio Type Distribution
+
+| audType | Count | Percentage | Description |
+|---------|-------|------------|-------------|
+| 1 | 5,068 | 100% | Main audio channel (media) |
+
+**Finding:** All audio routed through main channel. No ducking (audType=2) or mic (audType=3) activity.
+
+### USB Audio Message Structure (Verified)
+
+The audio message consists of a **28-byte header** followed by audio payload data.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    COMMON USB HEADER (16 bytes)                     │
+├─────────┬──────┬────────────┬───────────────────────────────────────┤
+│ Offset  │ Size │ Field      │ Description                           │
+├─────────┼──────┼────────────┼───────────────────────────────────────┤
+│ 0x00    │  4   │ Magic      │ 0x55AA55AA (little-endian)            │
+│ 0x04    │  4   │ PayloadLen │ Bytes after this 16-byte header       │
+│ 0x08    │  4   │ MsgType    │ 7 = AudioData                         │
+│ 0x0C    │  4   │ Checksum   │ MsgType ^ 0xFFFFFFFF = -8 (0xFFFFFFF8)│
+├─────────┴──────┴────────────┴───────────────────────────────────────┤
+│                    AUDIO HEADER (12 bytes)                          │
+├─────────┬──────┬────────────┬───────────────────────────────────────┤
+│ 0x10    │  4   │ decType    │ Audio format (1/2/4/5 - see table)    │
+│ 0x14    │  4   │ volume     │ Float volume multiplier (0.0-1.0)     │
+│ 0x18    │  4   │ audType    │ Stream type (1=main, 2=nav, 3=mic)    │
+├─────────┴──────┴────────────┴───────────────────────────────────────┤
+│                    PAYLOAD (variable)                               │
+├─────────────────────────────────────────────────────────────────────┤
+│ 0x1C+   │  N   │ Data       │ PCM samples OR 1-byte command         │
+└─────────────────────────────────────────────────────────────────────┘
+
+Total Header Size: 28 bytes (0x1C)
+PayloadLen = 12 (audio header) + audio_payload_size
+```
+
+**Example Data Packet (11,560 bytes total):**
+```
+0x00: 55 AA 55 AA           Magic: 0x55AA55AA ✓
+0x04: 0C 2D 00 00           PayloadLen: 11532 (11520 + 12)
+0x08: 07 00 00 00           MsgType: 7 (AudioData)
+0x0C: F8 FF FF FF           Checksum: -8 (7 ^ 0xFFFFFFFF)
+0x10: 04 00 00 00           decType: 4 (48kHz stereo)
+0x14: 00 00 00 00           volume: 0.0 (float)
+0x18: 01 00 00 00           audType: 1 (main channel)
+0x1C: [11,520 bytes PCM]    16-bit stereo samples
+```
+
+**Example Command Packet (41 bytes total):**
+```
+0x00: 55 AA 55 AA           Magic: 0x55AA55AA ✓
+0x04: 0D 00 00 00           PayloadLen: 13 (12 + 1)
+0x08: 07 00 00 00           MsgType: 7 (AudioData)
+0x0C: F8 FF FF FF           Checksum: -8
+0x10: 04 00 00 00           decType: 4 (48kHz stereo)
+0x14: 00 00 00 00           volume: 0.0
+0x18: 01 00 00 00           audType: 1 (main)
+0x1C: 0A                    command: MEDIA_START (0x0A)
+```
+
+### PCM Packet Characteristics
+
+```
+Packet Size:     11,520 bytes (fixed for data packets)
+Duration:        60ms per packet at 48kHz stereo
+Sample Rate:     48,000 Hz
+Channels:        2 (stereo, interleaved L/R)
+Bit Depth:       16-bit signed (little-endian)
+Bytes/Sample:    4 (2 channels × 2 bytes)
+Samples/Packet:  2,880 per channel (5,760 total)
+```
+
+**Calculation:** 11,520 ÷ 4 bytes ÷ 48,000 Hz × 1000 = 60ms
+
+**For 44.1kHz mode (decType=2):**
+```
+Packet Size:     11,520 bytes (same PCM size)
+Duration:        65.3ms per packet (11520 / 4 / 44100)
+Samples/Packet:  2,880 per channel
+```
+Note: decType=2 is used for 44.1kHz content, not decType=1.
+
+### Audio Command Sequence
+
+Only 8 command packets observed (0.16% of audio packets):
+
+| Time | Command | decType | audType | Description |
+|------|---------|---------|---------|-------------|
+| 57.5s | 0x0A | 4 | 1 | MEDIA_START |
+| 57.5s | 0x01 | 4 | 1 | OUTPUT_START |
+| 300.0s | 0x02 | 2 | 1 | OUTPUT_STOP |
+| 300.0s | 0x0B | 2 | 1 | MEDIA_STOP |
+| ... | ... | ... | ... | (additional start/stop pairs) |
+
+### Timing Analysis
+
+```
+Audio Start:     57,517ms into session
+Audio Duration:  ~300 seconds
+Packet Rate:     16.7 packets/second (60ms interval)
+```
+
+### Packet Timing Analysis
+
+```
+Inter-packet Timing (5,064 intervals):
+  Min: 33.0ms
+  Max: 90.0ms
+  Avg: 60.0ms (matches expected 60ms/packet)
+
+Timing Distribution:
+  < 50ms:     7 packets  (0.1%)
+  50-70ms: 5050 packets (99.7%)  ← Target range
+  70-100ms:   7 packets  (0.1%)
+  > 100ms:    0 packets  (0.0%)
+```
+
+**Finding:** 99.7% of audio packets arrive within the expected 50-70ms window, demonstrating excellent timing consistency. No gaps >100ms detected.
+
+### Bitrate Verification
+
+```
+Total PCM Data:     58,348,800 bytes
+Stream Duration:    303.8 seconds
+Measured Bitrate:   1,536 kbps (1.54 Mbps)
+
+Expected Bitrate (48kHz stereo 16-bit):
+  48,000 × 2 channels × 2 bytes × 8 bits = 1,536,000 bps = 1,536 kbps
+
+Efficiency: 100.0% (perfect match)
+```
+
+### Correlation with TTY Log
+
+Adapter log confirms consistent audio frame rate:
+```
+02:46:06: audio frame rate: 15 fps (60ms interval)
+02:46:16: audio frame rate: 17 fps (59ms interval)
+02:46:26: audio frame rate: 17 fps (59ms interval)
+...
+02:49:47: audio frame rate: 16 fps (62ms interval)
+```
+
+**Note:** Audio frame rate remains stable (15-17 fps ≈ 59-67ms interval) regardless of video activity, confirming independent audio and video streams.
+
+### Audio vs Video Independence
+
+| Metric | Video | Audio | Notes |
+|--------|-------|-------|-------|
+| Frame Rate | Variable (0-56 fps) | Fixed (16-17 fps) | Audio maintains constant rate |
+| Packet Timing | 10-20ms typical | 60ms fixed | Different timing characteristics |
+| Bitrate | 0.07-15.3 Mbps | 1.54 Mbps fixed | Audio is constant bitrate |
+| IDR/Keyframe | 1 per session | N/A | Audio has no I-frame concept |
+
+---
+
+## Multi-Scenario Audio Analysis (Dec 2025 pi-capture)
+
+**Source:** `/logs/pi-capture/audio/` - 8 distinct audio scenarios captured
+
+### Scenario Summary
+
+| Scenario | Duration | Packets | decTypes | audTypes |
+|----------|----------|---------|----------|----------|
+| 48kHz Media Playback | 49.4s | 346 | 4 | 1 |
+| 44.1kHz Media Playback | 73.0s | 332 | 2 | 1 |
+| Navigation Only | 47.3s | 133 | 2, 4 | 1, 2 |
+| Navigation + Media | 85.3s | 1533 | 2, 4 | 1, 2 |
+| Siri Invocation | 105.8s | 10 | 5 | 1 |
+| Phone Call | 65.9s | 2 | 5 | 1 |
+| Incoming Phone Call | 150.4s | 664 | 2, 5 | 1, 3 |
+| iMessage Notifications | 86.2s | 282 | 2 | 1, 2 |
+
+### Command Sequence Patterns
+
+**Media Playback:**
+```
+MEDIA_START (0x0A) → OUTPUT_START (0x01) → [PCM data] → OUTPUT_STOP (0x02) → MEDIA_STOP (0x0B)
+```
+
+**Navigation Prompt:**
+```
+PHONECALL_STOP (0x06) → OUTPUT_START (0x01) → NAVI_START (0x07) → [PCM data] → NAVI_COMPLETE (0x10) → OUTPUT_STOP (0x02)
+```
+
+**Siri/Voice Assistant:**
+```
+NAVI_STOP (0x08) → SIRI_START (0x09) → [bidirectional audio] → NAVI_STOP (0x08)
+```
+
+**Incoming Phone Call:**
+```
+INCOMING_CALL_INIT (0x0E) → ALERT_START (0x0C) → OUTPUT_START → [ringtone PCM] → ALERT_STOP → OUTPUT_STOP →
+PHONECALL_START (0x05) → INPUT_START (0x03) → [bidirectional voice] → PHONECALL_STOP
+```
+
+### Decode Type by Scenario
+
+| Scenario | decType=1 | decType=2 | decType=4 | decType=5 |
+|----------|-----------|-----------|-----------|-----------|
+| 48kHz Media | 0 | 0 | **346** | 0 |
+| 44.1kHz Media | 0 | **332** | 0 | 0 |
+| Navigation Only | 0 | 5 | **128** | 0 |
+| Nav + Media | 0 | 1 | **1532** | 0 |
+| Siri | 0 | 0 | 0 | **10** |
+| Phone Call | 0 | 0 | 0 | **2** |
+| Incoming Call | 0 | **404** | 0 | **260** |
+| iMessage | 0 | **282** | 0 | 0 |
+
+**Key Insight:** The source audio format determines decType:
+- 48kHz content → decType=4
+- 44.1kHz content (including navigation) → decType=2
+- Voice/Siri/Phone → decType=5 (16kHz mono)
+
+### Audio Type Routing
+
+| Scenario | audType=1 (Main) | audType=2 (Nav) | audType=3 (Mic) |
+|----------|------------------|-----------------|-----------------|
+| 48kHz Media | **346** | 0 | 0 |
+| 44.1kHz Media | **332** | 0 | 0 |
+| Navigation Only | 4 | **129** | 0 |
+| Nav + Media | **1135** | **398** | 0 |
+| Siri | **10** | 0 | 0 |
+| Phone Call | **2** | 0 | 0 |
+| Incoming Call | **637** | 0 | **27** |
+| iMessage | 6 | **276** | 0 |
+
+**Key Insight:** audType determines routing, not content type:
+- audType=1: Normal playback (no ducking)
+- audType=2: Navigation/alerts (triggers media ducking)
+- audType=3: Microphone input (bidirectional for calls)
+
+### Volume Levels Observed
+
+| Scenario | Volume Values |
+|----------|---------------|
+| Navigation Only | 0.2, 1.0 |
+| Navigation + Media | 0.2, 1.0 |
+| iMessage Notifications | 0.1, 1.0 |
+| Other scenarios | 0.0 (not set) |
+
+**Note:** Volume values are only set on navigation/alert streams for ducking control. Media streams have volume=0.0 (handled by system).
 
 ---
 
@@ -474,7 +757,7 @@ Time      Payload                                    Meaning
 
 **Sample Rate Selection:**
 - CarPlay typically uses 48kHz (decType=4) for HD audio
-- Some content may use 44.1kHz (decType=1)
+- Some content uses 44.1kHz (decType=2) - verified in captures
 
 **Packet Timing:**
 - ~60ms intervals (11520 bytes @ 48kHz stereo = 60ms)

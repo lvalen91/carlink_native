@@ -51,47 +51,18 @@ enum class DisplayMode(
     }
 }
 
-/**
- * DataStore instance for display mode preference.
- * Following Android best practices: singleton instance at top level.
- */
 private val Context.displayModeDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "carlink_immersive_preferences", // Keep same name for migration compatibility
 )
 
 /**
- * Manages the display mode preference for the Carlink app.
- *
- * Overview:
- * Controls display behavior when projecting to GM AAOS infotainment systems.
- * Provides three modes for different levels of system UI visibility.
- *
- * Display Modes:
- * - SYSTEM_UI_VISIBLE (default): Both bars visible. AAOS manages display bounds.
- * - STATUS_BAR_HIDDEN: Status bar hidden, nav bar visible. Extra vertical space.
- * - FULLSCREEN_IMMERSIVE: Both bars hidden. Maximum projection area.
- *
- * Usage:
- * Setting changes can be previewed instantly in the Settings UI.
- * App restart is required for changes to take full effect (video dimensions).
- *
- * Technical Details:
- * - Storage: DataStore Preferences with SharedPreferences sync cache
- * - Sync Cache: SharedPreferences for instant startup reads (avoids ANR)
- * - Default: SYSTEM_UI_VISIBLE (AAOS-managed for compatibility)
- * - Target: Android API 32+ (GM AAOS RPO: IOK)
- * - Restart required: Changes affect MainActivity window flags at launch
- *
- * Migration:
- * Automatically migrates from old boolean immersive_mode_enabled preference:
- * - false -> SYSTEM_UI_VISIBLE
- * - true -> FULLSCREEN_IMMERSIVE
+ * Display mode preference with DataStore + SharedPreferences sync cache for ANR-free startup reads.
+ * Migrates from legacy boolean immersive_mode_enabled preference.
  */
-@Suppress("StaticFieldLeak") // Uses applicationContext, not Activity context - no leak
+@Suppress("StaticFieldLeak")
 class DisplayModePreference private constructor(
     context: Context,
 ) {
-    // Store applicationContext to avoid Activity leaks
     private val appContext: Context = context.applicationContext
 
     companion object {
@@ -172,9 +143,6 @@ class DisplayModePreference private constructor(
         }
     }
 
-    /**
-     * Flow for observing display mode changes.
-     */
     val displayModeFlow: Flow<DisplayMode> =
         dataStore.data.map { preferences ->
             // Try new key first, fall back to migration from old key
@@ -234,14 +202,6 @@ class DisplayModePreference private constructor(
         }
     }
 
-    // ==================== Backward Compatibility ====================
-
-    /**
-     * Returns whether fullscreen immersive mode is enabled.
-     * Provided for backward compatibility with existing code.
-     *
-     * @deprecated Use getDisplayModeSync() instead for full mode support.
-     */
     @Deprecated(
         message = "Use getDisplayModeSync() instead",
         replaceWith = ReplaceWith("getDisplayModeSync() == DisplayMode.FULLSCREEN_IMMERSIVE"),
