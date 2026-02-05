@@ -86,6 +86,10 @@
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
+            <!-- GM Homescreen: Hide from launcher while keeping service functional -->
+            <meta-data
+                android:name="com.gm.homescreen.visibility"
+                android:value="HIDDEN" />
         </service>
 
         <!-- APPLICATION-LEVEL DISTRACTION OPTIMIZATION DECLARATION -->

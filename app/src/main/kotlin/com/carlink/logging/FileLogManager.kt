@@ -11,6 +11,8 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 
 /** Persistent log storage with 5MB rotation, 7-day retention, and async writes. */
 @Suppress("StaticFieldLeak")
@@ -26,6 +28,7 @@ class FileLogManager(
         private const val RETENTION_DAYS = 7
         private const val LOGS_DIR = "logs"
         private const val FLUSH_INTERVAL_MS = 1000L
+        private const val SHUTDOWN_TIMEOUT_MS = 2000L
 
         @Volatile
         private var instance: FileLogManager? = null
@@ -40,6 +43,9 @@ class FileLogManager(
     private var currentLogFile: File? = null
     private var currentWriter: OutputStreamWriter? = null
     private val sessionId: String
+
+    // Lock for thread-safe writer access
+    private val writerLock = ReentrantLock()
 
     private val logQueue = ConcurrentLinkedQueue<String>()
     private val executor = Executors.newSingleThreadScheduledExecutor()
@@ -56,7 +62,7 @@ class FileLogManager(
         sessionId = "${sessionPrefix}_${fileDateFormat.format(Date())}"
 
         executor.scheduleAtFixedRate(
-            { flushQueue() },
+            { flushQueueInternal() },
             FLUSH_INTERVAL_MS,
             FLUSH_INTERVAL_MS,
             TimeUnit.MILLISECONDS,
@@ -68,9 +74,11 @@ class FileLogManager(
             return
         }
 
-        createNewLogFile()
+        writerLock.withLock {
+            createNewLogFileLocked()
+            writeHeaderLocked()
+        }
         Logger.addListener(this)
-        writeHeader()
         cleanOldLogs()
 
         logInfo("File logging enabled: ${currentLogFile?.name}", tag = Logger.Tags.FILE_LOG)
@@ -82,15 +90,26 @@ class FileLogManager(
         }
 
         Logger.removeListener(this)
-        flushQueue()
-        closeWriter()
+        flushQueueInternal()
+        writerLock.withLock {
+            closeWriterLocked()
+        }
 
         logInfo("File logging disabled", tag = Logger.Tags.FILE_LOG)
     }
 
     fun release() {
         disable()
-        executor.shutdownNow()
+        executor.shutdown()
+        try {
+            if (!executor.awaitTermination(SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                executor.shutdownNow()
+                android.util.Log.w("CARLINK", "FileLogManager executor did not terminate gracefully")
+            }
+        } catch (e: InterruptedException) {
+            executor.shutdownNow()
+            Thread.currentThread().interrupt()
+        }
     }
 
     fun getLogFiles(): List<File> =
@@ -99,31 +118,59 @@ class FileLogManager(
                 file.isFile && file.name.endsWith(".log")
             }?.sortedByDescending { it.lastModified() } ?: emptyList()
 
-    fun getCurrentLogFile(): File? = currentLogFile
+    fun getCurrentLogFile(): File? = writerLock.withLock { currentLogFile }
+
+    /**
+     * Checks if the given file is the currently active log file being written to.
+     * Used to warn users before exporting an actively written file.
+     */
+    fun isCurrentLogFile(file: File): Boolean = writerLock.withLock {
+        currentLogFile?.absolutePath == file.absolutePath
+    }
 
     fun deleteLogFile(file: File): Boolean =
-        try {
-            if (file == currentLogFile) {
-                closeWriter()
-                createNewLogFile()
+        writerLock.withLock {
+            try {
+                if (file.absolutePath == currentLogFile?.absolutePath) {
+                    closeWriterLocked()
+                    val deleted = file.delete()
+                    createNewLogFileLocked()
+                    writeHeaderLocked()
+                    deleted
+                } else {
+                    file.delete()
+                }
+            } catch (e: Exception) {
+                logError("Failed to delete log file: ${e.message}", tag = Logger.Tags.FILE_LOG)
+                false
             }
-            file.delete()
-        } catch (e: Exception) {
-            logError("Failed to delete log file: ${e.message}", tag = Logger.Tags.FILE_LOG)
-            false
         }
 
     fun deleteAllLogs() {
-        closeWriter()
+        writerLock.withLock {
+            closeWriterLocked()
+        }
         getLogFiles().forEach { it.delete() }
-        createNewLogFile()
+        writerLock.withLock {
+            createNewLogFileLocked()
+            writeHeaderLocked()
+        }
     }
 
     fun getTotalLogSize(): Long = getLogFiles().sumOf { it.length() }
 
-    fun getCurrentLogFileSize(): Long = currentLogFile?.length() ?: 0L
+    fun getCurrentLogFileSize(): Long = writerLock.withLock { currentLogFile?.length() ?: 0L }
 
     fun isEnabled(): Boolean = isEnabled.get()
+
+    /**
+     * Flushes all pending log entries to disk.
+     * Call this before exporting a log file to ensure all data is written.
+     * This is a blocking call that waits for the flush to complete.
+     */
+    fun flush() {
+        flushQueueInternal()
+    }
 
     override fun onLog(
         level: Logger.Level,
@@ -141,8 +188,44 @@ class FileLogManager(
         logQueue.offer(line)
     }
 
-    private fun createNewLogFile() {
-        closeWriter()
+    // Internal flush called by executor - uses lock for writer access
+    private fun flushQueueInternal() {
+        if (!isEnabled.get() && logQueue.isEmpty()) return
+
+        writerLock.withLock {
+            val writer = currentWriter ?: return
+
+            try {
+                val batch = StringBuilder()
+                var count = 0
+
+                while (count < 100) {
+                    val line = logQueue.poll() ?: break
+                    batch.append(line)
+                    count++
+                }
+
+                if (batch.isNotEmpty()) {
+                    writer.write(batch.toString())
+                    writer.flush()
+
+                    currentLogFile?.let { file ->
+                        if (file.length() > MAX_FILE_SIZE) {
+                            closeWriterLocked()
+                            createNewLogFileLocked()
+                            writeHeaderLocked()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("CARLINK", "Failed to flush log queue: ${e.message}")
+            }
+        }
+    }
+
+    // Must be called with writerLock held
+    private fun createNewLogFileLocked() {
+        closeWriterLocked()
 
         val fileName = "${sessionId}_${System.currentTimeMillis()}.log"
         currentLogFile = File(logsDir, fileName)
@@ -155,10 +238,12 @@ class FileLogManager(
                 )
         } catch (e: Exception) {
             logError("Failed to create log file: ${e.message}", tag = Logger.Tags.FILE_LOG)
+            currentLogFile = null
         }
     }
 
-    private fun writeHeader() {
+    // Must be called with writerLock held
+    private fun writeHeaderLocked() {
         val header =
             buildString {
                 appendLine("=".repeat(60))
@@ -180,38 +265,8 @@ class FileLogManager(
         }
     }
 
-    private fun flushQueue() {
-        if (!isEnabled.get() || logQueue.isEmpty()) return
-
-        val writer = currentWriter ?: return
-
-        try {
-            val batch = StringBuilder()
-            var count = 0
-
-            while (count < 100) {
-                val line = logQueue.poll() ?: break
-                batch.append(line)
-                count++
-            }
-
-            if (batch.isNotEmpty()) {
-                writer.write(batch.toString())
-                writer.flush()
-
-                currentLogFile?.let { file ->
-                    if (file.length() > MAX_FILE_SIZE) {
-                        createNewLogFile()
-                        writeHeader()
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("CARLINK", "Failed to flush log queue: ${e.message}")
-        }
-    }
-
-    private fun closeWriter() {
+    // Must be called with writerLock held
+    private fun closeWriterLocked() {
         try {
             currentWriter?.flush()
             currentWriter?.close()
@@ -228,8 +283,11 @@ class FileLogManager(
             .filter { it.lastModified() < cutoffTime }
             .forEach { file ->
                 try {
-                    file.delete()
-                    logInfo("Deleted old log file: ${file.name}", tag = Logger.Tags.FILE_LOG)
+                    // Don't delete current file even if old
+                    if (file.absolutePath != currentLogFile?.absolutePath) {
+                        file.delete()
+                        logInfo("Deleted old log file: ${file.name}", tag = Logger.Tags.FILE_LOG)
+                    }
                 } catch (e: Exception) {
                     logError("Failed to delete old log: ${e.message}", tag = Logger.Tags.FILE_LOG)
                 }

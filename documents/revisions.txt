@@ -124,3 +124,4 @@
 [60] :: Select different resolution
 
 [61] :: Video Code refactoring. Basically revert back to abuharsky app simplicity. Code cleanup elsewhere. Documentation updates
+[62] :: More Code Cleanup. Adjusted Log File Export, Corrected Custom Resolution Options, even more Video logging areas.

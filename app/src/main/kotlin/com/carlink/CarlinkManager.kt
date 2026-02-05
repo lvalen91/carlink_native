@@ -253,16 +253,21 @@ class CarlinkManager(
         actualSurfaceWidth = evenWidth
         actualSurfaceHeight = evenHeight
 
-        // Update config with actual surface dimensions
-        // This ensures adapter is configured for the correct resolution based on actual layout
-        // (with or without system bar insets depending on immersive mode)
-        if (config.width != evenWidth || config.height != evenHeight) {
+        // Update config with actual surface dimensions ONLY if user didn't select a specific resolution
+        // When userSelectedResolution=true, honor the user's choice; otherwise use actual surface size
+        if (!config.userSelectedResolution && (config.width != evenWidth || config.height != evenHeight)) {
             logInfo(
                 "[RES] Updating config from ${config.width}x${config.height} to ${evenWidth}x$evenHeight " +
-                    "(actual surface size)",
+                    "(actual surface size, AUTO mode)",
                 tag = Logger.Tags.VIDEO,
             )
             config = config.copy(width = evenWidth, height = evenHeight)
+        } else if (config.userSelectedResolution) {
+            logInfo(
+                "[RES] Using user-selected resolution ${config.width}x${config.height} " +
+                    "(surface: ${evenWidth}x$evenHeight)",
+                tag = Logger.Tags.VIDEO,
+            )
         }
 
         // LIFECYCLE FIX: If renderer exists, always update surface via setOutputSurface().

@@ -431,6 +431,9 @@ data class AdapterConfig(
     var height: Int = 720,
     var fps: Int = 60,
     var dpi: Int = 160,
+    /** True if user explicitly selected a resolution (non-AUTO). When true, CarlinkManager
+     *  will use these width/height values instead of actual surface dimensions. */
+    val userSelectedResolution: Boolean = false,
     val format: Int = 5,
     val iBoxVersion: Int = 2,
     val packetMax: Int = 49152,

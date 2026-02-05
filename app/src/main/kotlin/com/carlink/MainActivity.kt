@@ -48,7 +48,6 @@ import com.carlink.ui.SettingsScreen
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.settings.DisplayModePreference
-import com.carlink.ui.settings.VideoResolutionConfig
 import com.carlink.ui.theme.CarlinkTheme
 import com.carlink.util.AudioDebugLogger
 import com.carlink.util.IconAssets
@@ -270,7 +269,7 @@ class MainActivity : ComponentActivity() {
         // Get DPI and refresh rate from display metrics
         val displayMetrics = resources.displayMetrics
         val dpi = displayMetrics.densityDpi
-        val refreshRate = windowManager.defaultDisplay.refreshRate.toInt()
+        val refreshRate = display?.refreshRate?.toInt() ?: 60
 
         // Round to even numbers for H.264 compatibility
         val evenWidth = usableWidth and 1.inv()
@@ -286,6 +285,7 @@ class MainActivity : ComponentActivity() {
 
         // Apply video resolution preference
         // AUTO = use detected usable dimensions, otherwise use user-selected resolution
+        val userSelectedResolution = !userConfig.videoResolution.isAuto
         val (configWidth, configHeight) = if (userConfig.videoResolution.isAuto) {
             Pair(evenWidth, evenHeight)
         } else {
@@ -312,6 +312,8 @@ class MainActivity : ComponentActivity() {
                 height = configHeight,
                 fps = refreshRate,
                 dpi = dpi,
+                // Mark if user explicitly selected a resolution (non-AUTO)
+                userSelectedResolution = userSelectedResolution,
                 icon120Data = icon120,
                 icon180Data = icon180,
                 icon256Data = icon256,

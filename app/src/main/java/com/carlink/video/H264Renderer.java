@@ -15,11 +15,14 @@ import android.view.Surface;
 
 import androidx.annotation.NonNull;
 
+import android.util.Log;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
 
+import com.carlink.BuildConfig;
 import com.carlink.util.AppExecutors;
 import com.carlink.util.LogCallback;
 
@@ -52,10 +55,45 @@ public class H264Renderer {
     private static final long PERF_LOG_INTERVAL_MS = 30000;
     private long lastPerfLogTime = 0;
 
+    // Pipeline diagnostic counters (debug builds only)
+    // These help identify WHERE the pipeline breaks when video freezes
+    private final AtomicLong framesReceived = new AtomicLong(0);
+    private final AtomicLong feedAttempts = new AtomicLong(0);
+    private final AtomicLong feedSuccesses = new AtomicLong(0);
+    private volatile long lastInputCallbackTime = 0;
+    private volatile long lastOutputCallbackTime = 0;
+
+    // TODO [SELF_HEALING]: Auto-reset for frozen video pipeline.
+    //
+    // PROBLEM: Codec stuck. Frames arriving, nothing rendering. Frozen = corruption.
+    // SOLUTION: Detect stuck state, reset immediately. Don't try to recover - reset.
+    //
+    // "Corruption must trigger reset." - Not flush, not retry, not recover. Reset.
+    //
+    // DETECTION - Reset when ALL true:
+    //   1. running && surface valid (should be rendering)
+    //   2. framesReceived > 0 in window (USB delivering - not phone sleep/Siri)
+    //   3. framesDecoded == 0 in window (codec producing nothing)
+    //   4. Cooldown elapsed (prevent reset loops)
+    //
+    // ACTION: reset() - Full codec recreation. It works. Keep it simple.
+    //
+    // Note: GM AAOS uses flush() but that's "trying to recover broken state".
+    // Our philosophy: broken = reset. flush() is optional optimization later,
+    // not a recovery strategy. Test flush() only AFTER reset-based watchdog is proven stable.
+
     // Monotonic frame counter for PTS
     private final AtomicLong frameCounter = new AtomicLong(0);
 
     // Buffer overflow threshold
+    // TODO [LIVE_UI_OPTIMIZATION]: Reduce buffer. Buffers are lies.
+    //
+    // "Buffers create corruption. Queues create lies."
+    // 10 frames = 166ms of stale UI state. User already interacted past it.
+    //
+    // GM AAOS: NO buffer. Direct handoff. Frame drops are CORRECT - late == invalid.
+    // Target: 1-2 frames max (thread handoff only), or 0 (direct to codec).
+    // Test: 10 → 5 → 3 → 1. Drops will increase. That's correct behavior.
     private static final int MAX_BUFFER_PACKETS = 10;
 
     public H264Renderer(int width, int height, Surface surface, LogCallback logCallback,
@@ -77,6 +115,14 @@ public class H264Renderer {
 
     private void log(String message) {
         logCallback.log("[H264_RENDERER] " + message);
+    }
+
+    /** Debug log - always outputs in debug builds, bypasses app log level filter.
+     *  Use for pipeline diagnostics that must appear regardless of user log settings. */
+    private void debugLog(String message) {
+        if (BuildConfig.DEBUG) {
+            Log.d("H264_PIPELINE", message);
+        }
     }
 
     public void start() {
@@ -264,6 +310,7 @@ public class H264Renderer {
     }
 
     private boolean fillFirstAvailableCodecBuffer() {
+        feedAttempts.incrementAndGet();
         if (!running || mCodec == null) return false;
         if (ringBuffer.isEmpty()) return false;
 
@@ -285,6 +332,7 @@ public class H264Renderer {
 
             long pts = frameCounter.getAndIncrement();
             mCodec.queueInputBuffer(index, 0, bytesWritten, pts, 0);
+            feedSuccesses.incrementAndGet();
             return true;
         } catch (Exception e) {
             codecAvailableBufferIndexes.offer(index);
@@ -309,8 +357,20 @@ public class H264Renderer {
     }
 
     /** Process video data with direct write callback (zero-copy path). */
+    // TODO [DIRECT_HANDOFF]: Bypass buffer. Feed codec directly or drop.
+    //
+    // "Late frames must be dropped." - Don't queue them, don't preserve them.
+    //
+    // Current: USB → ringBuffer → feedCodec() → MediaCodec (queues stale frames)
+    // Correct: USB → MediaCodec directly, drop if codec busy (GM AAOS approach)
+    //
+    // Dropping is the goal, not a side effect. Codec busy = frame is already late.
+    // Priority: [SELF_HEALING] first (fix freezes), then this (reduce latency).
     public void processData(int length, int skipBytes, PacketRingByteBuffer.DirectWriteCallback callback) {
-        // Always buffer data even if codec not ready - don't drop IDR frames
+        // NOTE: Current behavior buffers even if codec not ready. This preserves IDR frames
+        // but contradicts "late == invalid, drop aggressively" philosophy.
+        // When [DIRECT_HANDOFF] is implemented, change to: feed codec or drop immediately.
+        framesReceived.incrementAndGet();
         logStats();
 
         if (ringBuffer.availablePacketsToRead() > MAX_BUFFER_PACKETS) {
@@ -329,7 +389,7 @@ public class H264Renderer {
     public void processData(byte[] data) {
         if (data == null || data.length == 0) return;
 
-        // Always buffer data even if codec not ready - don't drop IDR frames
+        framesReceived.incrementAndGet();
         logStats();
 
         if (ringBuffer.availablePacketsToRead() > MAX_BUFFER_PACKETS) {
@@ -349,8 +409,27 @@ public class H264Renderer {
     private void logStats() {
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastPerfLogTime >= PERF_LOG_INTERVAL_MS) {
+            // Standard log (respects app log level)
             log("[STATS] Decoded: " + totalFramesDecoded.get() + ", Resets: " + codecResetCount.get());
-            totalFramesDecoded.set(0);
+
+            // Pipeline diagnostic log (debug builds only, always outputs)
+            // Format: Rx=received Dec=decoded Buf=buffered InAvail=input_buffers Feed=attempts/successes
+            //         LastIn/LastOut=ms since last callback, run/codec/surface=component states
+            long rx = framesReceived.getAndSet(0);
+            long dec = totalFramesDecoded.getAndSet(0);
+            long attempts = feedAttempts.getAndSet(0);
+            long successes = feedSuccesses.getAndSet(0);
+            int bufCount = ringBuffer.availablePacketsToRead();
+            int inAvail = codecAvailableBufferIndexes.size();
+            long lastInAge = lastInputCallbackTime > 0 ? currentTime - lastInputCallbackTime : -1;
+            long lastOutAge = lastOutputCallbackTime > 0 ? currentTime - lastOutputCallbackTime : -1;
+            boolean surfaceValid = surface != null && surface.isValid();
+
+            debugLog("Rx:" + rx + " Dec:" + dec + " Buf:" + bufCount + " InAvail:" + inAvail +
+                    " Feed:" + attempts + "/" + successes +
+                    " LastIn:" + lastInAge + "ms LastOut:" + lastOutAge + "ms" +
+                    " run=" + running + " codec=" + (mCodec != null) + " surface=" + surfaceValid);
+
             lastPerfLogTime = currentTime;
         }
     }
@@ -360,6 +439,7 @@ public class H264Renderer {
             @Override
             public void onInputBufferAvailable(@NonNull MediaCodec codec, int index) {
                 if (codec != mCodec) return;
+                lastInputCallbackTime = System.currentTimeMillis();
                 codecAvailableBufferIndexes.offer(index);
 
                 // Try to feed buffered data when input buffer becomes available
@@ -371,6 +451,7 @@ public class H264Renderer {
             @Override
             public void onOutputBufferAvailable(@NonNull MediaCodec codec, int index, @NonNull MediaCodec.BufferInfo info) {
                 if (codec != mCodec || !running) return;
+                lastOutputCallbackTime = System.currentTimeMillis();
 
                 if (info.size > 0) {
                     long count = totalFramesDecoded.incrementAndGet();

@@ -39,3 +39,36 @@ Audio:
 - Buffer aggressively
 - Never stall
 - Never block video
+
+---
+
+## Known Video Issues & Future Improvements
+
+### Video Freeze (Audio Continues)
+**Symptom**: Live UI freezes while audio continues playing. Does not self-recover. User must manually use "Reset Video Decoder" button or navigate away from app.
+
+**Root Cause**: MediaCodec can enter a bad state without triggering `onError()` callback. No automatic recovery mechanism exists.
+
+**Workaround**: Manual reset via Settings → Reset Video Decoder, or navigate to home screen and back.
+
+**Planned Improvements** (see `H264Renderer.java` TODOs):
+
+1. **`[SELF_HEALING]`** - Priority: HIGH
+   - Frozen = corruption. Corruption = reset. Don't try to recover, just reset.
+   - Detect: frames arriving + nothing rendering = stuck. Action: `reset()`.
+
+2. **`[LIVE_UI_OPTIMIZATION]`** - Priority: MEDIUM
+   - Buffers are lies. 10 frames = 166ms of stale state.
+   - Target: 1-2 frames (thread handoff only). Drops are correct behavior.
+
+3. **`[DIRECT_HANDOFF]`** - Priority: LOW (after SELF_HEALING proven)
+   - Feed codec directly or drop. Late frames must be dropped, not queued.
+
+**For Future Debugging**: Frozen video = implement `[SELF_HEALING]`. Just reset.
+
+---
+
+## Reference: GM AAOS Native CarPlay
+
+GM uses NO buffer, direct handoff, drops aggressively. Same philosophy, native implementation.
+See `/gm_aaos/system/lib64/libNmeVideo*.so`.
