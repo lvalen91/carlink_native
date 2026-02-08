@@ -39,7 +39,7 @@ class AudioRingBuffer(
 
     @Volatile private var writePos = 0 // Only modified by writer thread
 
-    @Volatile private var readPos = 0 // Only modified by reader thread
+    @Volatile private var readPos = 0 // Modified by reader thread; also by writer during overflow (see write())
 
     @Volatile var totalBytesWritten: Long = 0
         private set
@@ -70,6 +70,11 @@ class AudioRingBuffer(
         // Overwrite-oldest: discard oldest data when full (Session 4 overflow=568 fix)
         // Align discard to PCM frame boundary to prevent audio corruption
         // (channel phase shift, clicking/popping artifacts)
+        // NOTE: Advancing readPos from the writer violates strict SPSC — if the reader
+        // captured a stale localReadPos, its next update may undo this advance, causing
+        // brief replay of discarded data (~1 packet). Acceptable for projection audio
+        // in an already-degraded overflow state. Alternatives (lock, CAS, drop-newest)
+        // add complexity or are wrong for live audio.
         if (available < length) {
             val minDiscard = length - available
             // Round up to nearest frame boundary for proper sample alignment
@@ -140,8 +145,6 @@ class AudioRingBuffer(
 
     fun fillLevelMs(): Int = if (bytesPerMs > 0) availableForRead() / bytesPerMs else 0
 
-    fun hasEnoughData(thresholdMs: Int = 50): Boolean = fillLevelMs() >= thresholdMs
-
     /** Clear buffer. Only call when both threads are stopped. */
     fun clear() {
         writePos = 0
@@ -163,15 +166,4 @@ class AudioRingBuffer(
             "channels" to channels,
         )
 
-    companion object {
-        fun forMedia(
-            sampleRate: Int = 48000,
-            channels: Int = 2,
-        ) = AudioRingBuffer(capacityMs = 250, sampleRate = sampleRate, channels = channels)
-
-        fun forNavigation(
-            sampleRate: Int = 48000,
-            channels: Int = 2,
-        ) = AudioRingBuffer(capacityMs = 120, sampleRate = sampleRate, channels = channels)
-    }
 }

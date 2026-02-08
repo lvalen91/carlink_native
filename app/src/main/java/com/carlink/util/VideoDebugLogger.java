@@ -62,6 +62,22 @@ public class VideoDebugLogger {
                 ", queued=" + queuedBuffers);
     }
 
+    // Frame drops
+    public static void logIdrDrop(int frameSize, long sessionIdrDrops) {
+        // Always log IDR drops — these cause visible corruption
+        Log.w(TAG, "[VIDEO_DROP] IDR keyframe dropped (" + frameSize + "B) — session total: " + sessionIdrDrops);
+    }
+
+    public static void logDropStats(long totalDrops, long idrDrops, long pDrops, long fed) {
+        if (!debugEnabled) return;
+        if (totalDrops == 0) return;
+        long total = totalDrops + fed;
+        float dropPct = total > 0 ? (totalDrops * 100f / total) : 0;
+        Log.i(TAG, "[VIDEO_DROP] Window: " + totalDrops + " dropped (" +
+                String.format("%.1f", dropPct) + "%) IDR:" + idrDrops + " P:" + pDrops +
+                " fed:" + fed);
+    }
+
     // Surface
     public static void logSurfaceBound(boolean valid) {
         if (!debugEnabled) return;

@@ -1,0 +1,282 @@
+# Known Video Issues & Future Improvements
+
+### Video Freeze (Audio Continues)
+**Symptom**: Live UI freezes while audio continues playing. Does not self-recover. User must manually use "Reset Video Decoder" button or navigate away from app.
+
+**Root Cause Analysis (Feb 2026)**:
+
+MediaCodec enters a "zombie state" - alive by all observable metrics, but internally dead:
+- `mCodec != null` ✓
+- `running == true` ✓
+- `surface.isValid() == true` ✓
+- BUT `onInputBufferAvailable` callbacks stop
+- AND `getInputBuffer(index)` returns null
+- AND `onError` callback never triggers
+
+**Evidence from logcat analysis**:
+```
+H264_PIPELINE: Rx:1330 Dec:0 InAvail:4 Feed:1330/0 LastIn:65502ms run=true codec=true surface=true
+```
+- 1330 frames received, 0 decoded
+- Feed attempts succeed (index obtained) but `getInputBuffer()` returns null
+- Same buffer indexes recycle indefinitely: poll → null → offer → poll → null...
+- Codec stuck for 65+ seconds without triggering error callback
+
+**Diagnostic logging** (comprehensive pipeline visibility):
+- `H264Renderer.java` tracks silent failures: `nullBufferCount`, `feedExceptionCount`
+- NAL-type-aware drop tracking: IDR drops logged immediately (WARNING), P-frame drops batched in 30s stats
+- Periodic `H264_PIPELINE` stats: `Rx:N Dec:N Fed:N Drop:N[IDR:X P:Y] LastIn:Nms LastOut:Nms`
+- `VideoDebugLogger` wired to all lifecycle events: init, start, stop, reset, error, formatChanged, surfaceBound
+- IDR drop counter tracks session-level keyframe loss (correlates directly with pixelation/ghosting duration)
+- `[VIDEO_DROP]` tag in CARLINK log for easy grep of drop events across sessions
+
+**Workaround**: Manual reset via Settings → Reset Video Decoder, or navigate to home screen and back. Home button works because it triggers Activity lifecycle → `stop()` → `resume()` → full codec recreation.
+
+**The Only Bug**: Missing automatic reset when codec stuck. Frame drops elsewhere are **correct behavior** - late frames are invalid, dropping them is right.
+
+**Planned Fix** - see `H264Renderer.java` TODO `[SELF_HEALING]`:
+
+Research completed (Feb 2026). Watchdog design validated against GM AAOS, ExoPlayer, scrcpy, AutoKit, Zlink. No commercial CarPlay app implements this — all rely on manual restart.
+
+- **Detection**: ScheduledExecutor, 1s tick, 2 consecutive failures (2s window). Trigger when `Rx > 0 && Dec == 0` while running.
+- **Recovery**: Full `reset()` (stop+release+create+configure+start+requestKeyframe). NOT `flush()` — Intel VPU doesn't reliably clear poisoned reference surfaces on flush.
+- **Cooldown**: Stepped 3s → 5s → 10s → 15s cap. Never give up permanently. Reset backoff after 30s healthy.
+- **Grace period**: 3s after every start/reset/resume (prevents false positive during codec initialization).
+- **False positive mitigation**: `receivedInWindow == 0` gates out Siri/sleep; `running == false` gates out lifecycle; 2-tick confirmation eliminates transient glitches.
+- **Thread safety**: Existing `codecLock` + volatile fields adequate. Dispatch on `executors.mediaCodec1()`.
+
+**Philosophy**: This is live UI, not media playback. Do not add complexity. Do not preserve frames. Do not retry. Do not buffer "just in case." The fix is simple: detect stuck, reset. Broken = reset. That's it.
+
+**What Is NOT A Bug**:
+- Frames dropped due to late arrival → correct
+- Frames dropped when codec busy → correct (now logged with NAL type: IDR drops are WARNING, P-frame drops are expected)
+- Partial USB reads discarded → correct
+- Pixelation/ghosting after IDR drop → expected, self-heals when next IDR arrives (~2s via RequestKeyFrame)
+
+**Completed Work** (see `H264Renderer.java`):
+
+1. ~~**`[LIVE_UI_OPTIMIZATION]`** - Reduce buffer from 10 frames to 1-2 (thread handoff only).~~ **Done in [64]** - `MAX_BUFFER_PACKETS` reduced from 10 to 2. Eliminates ~133ms of stale UI state.
+
+2. ~~**`[DIRECT_HANDOFF]`** - Eliminate buffer entirely. Feed codec directly or drop. GM AAOS does this.~~ **Done** - `VideoDataProcessor` feeds H264Renderer directly from USB-ReadLoop thread. PacketRingByteBuffer deleted.
+
+3. ~~**NAL-aware drop logging** - Pipeline was blind to what it was dropping.~~ **Done** - `getNalType()` parses H.264 Annex B start codes. IDR drops logged immediately. P-frame drops batched in 30s stats. `VideoDebugLogger` wired to all lifecycle events.
+
+4. ~~**"First frame decoded" fires every 30s** - `logStats()` reset `totalFramesDecoded` counter, causing `count == 1` on next output.~~ **Fixed** - Separate `firstFrameLogged` boolean flag survives counter resets.
+
+---
+
+### Audio+Video Coupled Stutter (Both Degrade Together)
+**Symptom**: Audio and video stutter simultaneously. Previously audio continued cleanly while video degraded independently. Now both streams hitch at the same time as if tied together.
+
+**Root Cause Analysis (Feb 2026)**:
+
+Structured cross-file concurrency analysis revealed that audio and video were **never truly independent**. Both pipelines are fed by a single `USB-ReadLoop` thread (`UsbDeviceWrapper.kt:428`). Any blocking or stall on this thread starves both pipelines simultaneously. Previously audio's ring buffers (200-500ms) masked the coupling. Increased video self-healing (more codec resets) amplifies the contention until audio buffers can no longer absorb it.
+
+**Five identified coupling mechanisms**:
+
+**~~1. `synchronized` lock contention on video ring buffer~~ FIXED**
+PacketRingByteBuffer.java deleted. DIRECT_HANDOFF feeds codec directly from USB-ReadLoop thread — no buffer, no lock, no contention.
+
+**2. Large video frames block audio reads**
+`UsbDeviceWrapper.kt:549-573` — Video payloads read in 16KB chunks via `bulkTransfer()`. A 100KB keyframe = ~7 sequential USB reads. During these reads, no audio can be read. At 60fps with large frames, this creates a regular cadence of audio starvation.
+
+**3. USB write contention from four competing writers**
+Multiple threads call `usbDevice.write()` → `bulkTransfer()` on the same `UsbDeviceConnection`, which the kernel serializes:
+- Heartbeat timer — every 2000ms (`AdapterDriver.kt:236`)
+- Frame interval — every 2000ms (`CarlinkManager.kt:1434`)
+- Microphone capture — every **20ms** (`CarlinkManager.kt:1083`) ← worst offender during Siri/calls
+- One-off commands (touch, media controls)
+
+Each write can stall the read loop's `bulkTransfer`.
+
+**~~4. Per-packet heap allocation for audio payloads~~ FIXED**
+Pre-allocated `audioBuffer` in UsbDeviceWrapper read loop (mirrors `videoBuffer` pattern). Zero-copy offset in MessageParser (`audioDataOffset`/`audioDataLength`). ~393KB/sec GC pressure eliminated.
+
+**~~5. `feedCodec()` dispatch overhead on USB thread~~ FIXED**
+DIRECT_HANDOFF calls `feedDirect()` inline on USB-ReadLoop thread — no executor dispatch, no queue, no context switch.
+
+**Why it got worse**:
+Video self-healing (more frequent codec resets) amplifies all five mechanisms:
+- Each `reset()` does heavyweight native ops (stop/release/create/configure/start) increasing system scheduling pressure
+- Post-reset `keyframeCallback` fires another USB write
+- Codec drains/refills ring buffer creating more synchronized lock contention
+- More `feedCodec()` dispatches pile up in the executor queue
+
+**Architecture violation**:
+The stated philosophy says "Neither may block the other" but the single USB-ReadLoop thread is a shared dependency that processes messages sequentially. Video's synchronized ring buffer, large frame reads, and USB write contention all block audio's data source.
+
+```
+"Video may drop. Audio may buffer. Neither may block the other."
+                                     ↑ violated here — they share USB-ReadLoop
+```
+
+**Planned Fix** (priority order):
+1. ~~Make `PacketRingByteBuffer` lock-free~~ **FIXED** — file deleted, DIRECT_HANDOFF replaces it
+2. ~~Pre-allocate audio payload buffer in read loop~~ **FIXED** — `audioBuffer` with doubling growth
+3. Serialize USB writes through a dedicated write queue (eliminate bulk transfer contention between timer threads and read loop)
+4. ~~`[DIRECT_HANDOFF]` eliminates the video ring buffer and its lock entirely~~ **DONE**
+
+---
+
+## Reference: GM AAOS Native CarPlay Implementation
+
+Analysis of GM Info 3.7 (Intel Atom x7-A3960, Android 12 AAOS) CarPlay implementation via binary analysis of CINEMO/NME framework (~17.5 MB native libraries). See `documents/reference/gminfo/` for full details.
+
+### GM Video Pipeline (CarPlay)
+
+GM uses **CINEMO software decoder** (libNmeVideoSW.so, NVDEC) for CarPlay despite having Intel hardware decoder (`OMX.Intel.hw_vd.h264`) available. Reason: AirPlay timing synchronization, SEI message handling, and `ForceKeyframe()` integration require control that OMX buffer queues don't provide.
+
+```
+iPhone AirPlay → libNmeCarPlay.so → OnFrame()
+    → H264DeliverAnnexB() [validate & forward, NO buffer]
+    → libNmeVideoSW.so (NVDEC software decode)
+    → libNmeVideoRenderer.so (VMR, adaptive frame dropping)
+    → ANativeWindow + EGL → SurfaceFlinger → Display (2400x960@60Hz)
+```
+
+**Key differences from carlink_native:**
+
+| Aspect | GM CINEMO | carlink_native |
+|--------|-----------|----------------|
+| Video buffer | **None** — direct handoff | **None** — DIRECT_HANDOFF (codec busy = drop) |
+| Decoder | Software NVDEC (CPU, ~10ms/frame) | Hardware Intel OMX VPU (~5ms/frame) |
+| Late frame handling | Reference-only mode → drop | Direct handoff, drop if codec busy |
+| Error recovery | `ForceKeyframe()` via AirPlay | MediaCodec `onError` → full reset (watchdog planned) |
+| Total latency | ~20-40ms | Lower than before (buffer + lock eliminated) |
+| Frame dropping | `DecideRenderFPS()` + `DecideRenderQuality()` | Codec busy = drop (inline on USB thread, NAL-type-aware logging) |
+| Quality control | Adaptive: normal → reference-only → drop | Removed (was counterproductive in rev [56]) |
+| Drop visibility | Integrated in CINEMO pipeline | IDR drops → WARNING, P-frame drops → 30s stats, `VideoDebugLogger` lifecycle |
+
+GM's approach validates `[DIRECT_HANDOFF]` as the correct architecture:
+- No ring buffer means no lock contention between threads
+- No buffer means no stale frames accumulating
+- Direct handoff means codec busy = frame dropped (correct behavior)
+- `OnFrame()` validates and forwards in one call — no thread handoff overhead
+
+### GM Audio Pipeline (CarPlay)
+
+12 dedicated audio output buses at 48kHz PCM 16-bit stereo, routed by `USAGE_*` attribute:
+
+| Bus | Usage | CarPlay Stream |
+|-----|-------|----------------|
+| bus0_media_out | `USAGE_MEDIA` | Music, podcasts |
+| bus1_navigation_out | `USAGE_ASSISTANCE_NAVIGATION_GUIDANCE` | Turn-by-turn prompts |
+| bus2_voice_command_out | `USAGE_ASSISTANT` | Siri responses |
+| bus3_call_ring_out | `USAGE_NOTIFICATION_TELEPHONY_RINGTONE` | Ringtone |
+| bus4_call_out | `USAGE_VOICE_COMMUNICATION` | Phone calls |
+| bus6_notification_out | `USAGE_NOTIFICATION` | Alerts |
+
+carlink_native's `DualStreamAudioManager` maps to the same bus routing via 4 AudioTracks with matching `USAGE_*` attributes (media/nav/voice/call).
+
+**Audio codec chain** (GM decodes on adapter side, carlink_native receives raw PCM):
+- GM: iPhone → AirPlay RTP → AAC-LC/ELD/Opus decode → resample to 48kHz → AudioFlinger
+- carlink_native: iPhone → CPC200-CCPA adapter (decodes to PCM) → USB → AudioTrack
+
+**Microphone uplink** (GM has Harman preprocessing — AEC/NS/AGC — that carlink_native lacks):
+- GM: Mic array → Harman preprocessing → AAC-ELD/Opus encode → AirPlay RTP → iPhone
+- carlink_native: AudioRecord 16kHz mono → raw PCM → USB → adapter → iPhone
+
+**Ducking** (priority-based, matches carlink_native's approach):
+- Emergency call → mute all
+- Phone call → media -24dB
+- Navigation → media -12dB
+- Voice assistant → media -12dB
+
+### carlink_native Audio Pipeline (Current State)
+
+**Architecture**: Dual-stream with platform-specific tuning.
+
+```
+USB-ReadLoop → MessageParser (zero-copy offset, no allocation)
+    │
+    ├── Media (48kHz stereo, dt=4) → AudioRingBuffer → AudioTrack (USAGE_MEDIA)
+    ├── Nav (48kHz stereo, dt=2) → AudioRingBuffer → AudioTrack (USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
+    ├── Voice/Siri (16kHz mono, dt=5) → routed to media track
+    └── Commands (13-byte) → START/STOP lifecycle management
+```
+
+**Platform-specific buffer sizing** via `AudioConfig`:
+
+| Platform | Media Buffer | Nav Buffer |
+|----------|-------------|------------|
+| DEFAULT | 500ms | 200ms |
+| GM_AAOS (Intel) | 750ms | 300ms |
+| ARM fallback | 1000ms | 400ms |
+
+**Key behaviors**:
+- **Zero-copy audio path**: Pre-allocated `audioBuffer` in UsbDeviceWrapper. `AudioDataMessage` carries `audioDataOffset=12` + `audioDataLength` — no ByteArray allocation per packet.
+- **Nav stream management**: 9 behaviors handling warmup noise filtering, 0xFF end-of-prompt markers, ducking (media -12dB during nav), track pause after prompt (prevents AAOS volume context sticking on NAV).
+- **Dead AudioTrack recovery**: `handleTrackError()` on `ERROR_DEAD_OBJECT` releases track and nulls references. `ensureMediaTrack()`/`ensureNavTrack()` recreate on next `writeAudio()`.
+- **Format switching**: Rapid 16kHz↔48kHz transitions (Siri start/stop) cause brief AudioTrack prefill underruns. Field test: 47 underruns in 5 min, concentrated during 6 format switches in 13 seconds. Acceptable.
+- **Microphone**: `MicrophoneCaptureManager` with dedicated capture thread (`THREAD_PRIORITY_URGENT_AUDIO`), ring buffer (500ms), `VOICE_COMMUNICATION` source for OS echo cancellation. Field test: 0 overruns across 8 Siri sessions.
+
+### GM Audio/Video Independence
+
+GM's CarPlay implementation achieves true audio/video independence because:
+1. **AirPlay provides separate streams** — audio and video arrive as independent RTP streams, not multiplexed over a single USB bulk pipe
+2. **No shared read thread** — each stream has its own receive path via network sockets
+3. **No shared locks** — video's `OnFrame()` and audio's `OnAudioFrame()` operate on independent data structures
+4. **Jitter absorption at transport layer** — RTP jitter buffer in libNmeCarPlay.so, not in the decode path
+
+carlink_native cannot replicate this because the CPC200-CCPA adapter multiplexes audio and video over a **single USB bulk endpoint**. The adapter's USB protocol forces both streams through one pipe, creating the shared `USB-ReadLoop` dependency that GM's AirPlay architecture avoids entirely.
+
+### GM Cluster Navigation
+
+The instrument cluster receives **text metadata, NOT video**:
+- CarPlay: iAP2 Route Guidance Display (road name, maneuver type, distance, lane guidance)
+- Android Auto: NavigationStateProto (protobuf)
+- ClusterService.apk renders locally using pre-rendered PNG assets
+- CAN bus (~500kbps) is insufficient for video streaming to cluster ECU
+
+### CPC200-CCPA Adapter Protocol Reference
+
+The adapter is a **protocol tunnel** — no transcoding, no buffering, no policy enforcement. Key characteristics from firmware RE analysis (see `documents/reference/firmware/RE_Documention/`):
+
+**Hardware:** NXP i.MX6UL (ARM Cortex-A7), 128MB RAM, 16MB Flash, Realtek RTL88x2CS WiFi/BT
+
+**USB Message Format (16-byte header, little-endian):**
+```
+[0x55AA55AA] [payload_length:4] [type_id:4] [type_id^0xFFFFFFFF:4] [payload:N]
+```
+
+**Video (type 0x06):**
+- 20-byte video header: width(4) + height(4) + encoderState(4) + PTS(4) + flags(4)
+- H.264 High Profile, Annex B, variable frame rate (1-60fps)
+- SPS+PPS ALWAYS bundled with IDR (never standalone), ~3% of packets
+- IDR interval: median 2000ms, range 83-2117ms
+- Frame sizes: avg 24KB (P-frame 23KB, IDR 49KB, max 138KB)
+- Keyframe recovery: send Command 0x0C (FRAME), response within 100-200ms
+
+**Audio (type 0x07):**
+- 12-byte audio header: decode_type(4) + volume(4, float) + audio_type(4)
+- Payload: PCM data OR 13-byte command (1-byte command ID)
+- Media packets (dt=4): 11,532 bytes = 60ms @ 48kHz stereo
+- Voice packets (dt=5): 972 bytes = 30ms @ 16kHz mono
+- 15 verified audio commands controlling stream lifecycle
+
+**Timing constraints:**
+- Heartbeat (type 0xAA): MUST start before init, 2s interval, ~10s firmware watchdog
+- Init sequence: ~1.5s, heartbeat timer starts at t=0 (fires at t=2000ms)
+- WiFi connect: send after 600ms delay post-init
+- First video: ~7-8s into session
+- First audio: ~18s into session
+
+**Known firmware bugs:**
+- CallQuality setting has no effect (translation bug, sample rate is CarPlay-negotiated)
+- Command injection via BoxSettings JSON fields (shell metacharacters in wifiName/btName)
+- Hardcoded encryption keys shared across all devices
+
+### Code Evolution Reference
+
+| Rev | H264Renderer | Key Change | Status |
+|-----|-------------|------------|--------|
+| [13] | 1060 lines | "Stable" (false — had ByteBuffer.wrap() race condition) | Broken |
+| [31] | — | Race condition fixed (System.arraycopy) | Fixed |
+| [52] | 1558 lines | Intel VPU full recreation workaround | Working |
+| [55] | 1888 lines | QC + Source PTS queue (0.14% input efficiency) | Broken |
+| [56] | — | Projection model: buffer 4MB→192KB, QC removed | Improved |
+| [57] | — | Decoder poisoning fix (epoch vs stream PTS mismatch) | Fixed |
+| [61-65] | 538→445 lines | Simplified, DIRECT_HANDOFF, PacketRingByteBuffer deleted | Intermediate |
+| Current [66] | ~540 lines | Pre-allocated audio buffers, atomic USB counters, dead code cleanup, NAL-aware drop logging, VideoDebugLogger wired, firstFrameLogged fix, enhanced [SELF_HEALING] TODO | Current |
+
+See `documents/reference/video_code_reasoning/` for complete analysis of each revision.

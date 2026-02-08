@@ -5,6 +5,7 @@ import java.util.Locale
 import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -28,20 +29,23 @@ class AdapterDriver(
     private val videoProcessor: UsbDeviceWrapper.VideoDataProcessor? = null,
 ) {
     private var heartbeatTimer: Timer? = null
+    private var wifiConnectTimer: Timer? = null
     private val heartbeatInterval = 2000L // 2 seconds
 
     private val isRunning = AtomicBoolean(false)
 
-    // Performance tracking
-    private var messagesSent = 0
-    private var messagesReceived = 0
-    private var bytesSent = 0L
-    private var bytesReceived = 0L
-    private var sendErrors = 0
-    private var receiveErrors = 0
-    private var heartbeatsSent = 0
+    // Performance tracking — atomic because send() is called from multiple
+    // threads (heartbeat timer, mic capture timer, main thread) and the
+    // reading loop callback runs on the USB read thread.
+    private val messagesSent = AtomicInteger(0)
+    private val messagesReceived = AtomicInteger(0)
+    private val bytesSent = AtomicLong(0)
+    private val bytesReceived = AtomicLong(0)
+    private val sendErrors = AtomicInteger(0)
+    private val receiveErrors = AtomicInteger(0)
+    private val heartbeatsSent = AtomicInteger(0)
     private val sessionStart = AtomicLong(0)
-    private var lastHeartbeat: Long = 0
+    private val lastHeartbeat = AtomicLong(0)
     private var initMessagesCount = 0
 
     /**
@@ -92,17 +96,19 @@ class AdapterDriver(
         log("Initialization sequence completed")
 
         // Schedule wifiConnect with timeout (matches pi-carplay behavior)
-        Timer().schedule(
-            object : TimerTask() {
-                override fun run() {
-                    if (isRunning.get()) {
-                        log("Sending wifiConnect command (timeout-based)")
-                        send(MessageSerializer.serializeCommand(CommandMapping.WIFI_CONNECT))
+        wifiConnectTimer = Timer().apply {
+            schedule(
+                object : TimerTask() {
+                    override fun run() {
+                        if (isRunning.get()) {
+                            log("Sending wifiConnect command (timeout-based)")
+                            send(MessageSerializer.serializeCommand(CommandMapping.WIFI_CONNECT))
+                        }
                     }
-                }
-            },
-            600,
-        )
+                },
+                600,
+            )
+        }
 
         // Start reading loop
         log("Starting message reading loop")
@@ -119,6 +125,8 @@ class AdapterDriver(
 
         log("Stopping adapter connection")
 
+        wifiConnectTimer?.cancel()
+        wifiConnectTimer = null
         stopHeartbeat()
         usbDevice.stopReadingLoop()
 
@@ -142,16 +150,16 @@ class AdapterDriver(
         return try {
             val result = usbDevice.write(data, writeTimeout)
             if (result == data.size) {
-                messagesSent++
-                bytesSent += data.size
+                messagesSent.incrementAndGet()
+                bytesSent.addAndGet(data.size.toLong())
                 true
             } else {
-                sendErrors++
+                sendErrors.incrementAndGet()
                 log("Send incomplete: $result/${data.size} bytes")
                 false
             }
         } catch (e: Exception) {
-            sendErrors++
+            sendErrors.incrementAndGet()
             log("Send error: ${e.message}")
             errorHandler(e.message ?: "Send error")
             false
@@ -190,26 +198,30 @@ class AdapterDriver(
             } else {
                 0L
             }
+        val lastHb = lastHeartbeat.get()
         val lastHeartbeatAge =
-            if (lastHeartbeat > 0) {
-                (System.currentTimeMillis() - lastHeartbeat) / 1000
+            if (lastHb > 0) {
+                (System.currentTimeMillis() - lastHb) / 1000
             } else {
                 0L
             }
 
+        val sent = bytesSent.get()
+        val received = bytesReceived.get()
+
         return mapOf(
             "sessionDurationSeconds" to sessionDuration,
             "initMessagesCount" to initMessagesCount,
-            "messagesSent" to messagesSent,
-            "messagesReceived" to messagesReceived,
-            "bytesSent" to bytesSent,
-            "bytesReceived" to bytesReceived,
-            "sendErrors" to sendErrors,
-            "receiveErrors" to receiveErrors,
-            "heartbeatsSent" to heartbeatsSent,
+            "messagesSent" to messagesSent.get(),
+            "messagesReceived" to messagesReceived.get(),
+            "bytesSent" to sent,
+            "bytesReceived" to received,
+            "sendErrors" to sendErrors.get(),
+            "receiveErrors" to receiveErrors.get(),
+            "heartbeatsSent" to heartbeatsSent.get(),
             "lastHeartbeatSecondsAgo" to lastHeartbeatAge,
-            "sendThroughputKBps" to if (sessionDuration > 0) bytesSent / sessionDuration / 1024.0 else 0.0,
-            "receiveThroughputKBps" to if (sessionDuration > 0) bytesReceived / sessionDuration / 1024.0 else 0.0,
+            "sendThroughputKBps" to if (sessionDuration > 0) sent / sessionDuration / 1024.0 else 0.0,
+            "receiveThroughputKBps" to if (sessionDuration > 0) received / sessionDuration / 1024.0 else 0.0,
             "usbStats" to usbDevice.getPerformanceStats(),
         )
     }
@@ -225,8 +237,8 @@ class AdapterDriver(
                     object : TimerTask() {
                         override fun run() {
                             if (isRunning.get()) {
-                                lastHeartbeat = System.currentTimeMillis()
-                                heartbeatsSent++
+                                lastHeartbeat.set(System.currentTimeMillis())
+                                heartbeatsSent.incrementAndGet()
                                 if (!send(MessageSerializer.serializeHeartbeat())) {
                                     log("Heartbeat send failed (count: $heartbeatsSent)")
                                 }
@@ -252,24 +264,25 @@ class AdapterDriver(
                 override fun onMessage(
                     type: Int,
                     data: ByteArray?,
+                    dataLength: Int,
                 ) {
-                    messagesReceived++
-                    bytesReceived += (data?.size ?: 0) + HEADER_SIZE
+                    messagesReceived.incrementAndGet()
+                    bytesReceived.addAndGet((dataLength + HEADER_SIZE).toLong())
 
-                    // For VIDEO_DATA with direct processing, data is empty (processed directly by videoProcessor)
+                    // For VIDEO_DATA with direct processing, data is null (processed directly by videoProcessor)
                     // Just signal the message handler that video is streaming
-                    if (type == MessageType.VIDEO_DATA.id && videoProcessor != null && (data == null || data.isEmpty())) {
+                    if (type == MessageType.VIDEO_DATA.id && videoProcessor != null && (data == null || dataLength == 0)) {
                         // Video data was processed directly by videoProcessor - just signal streaming
                         try {
                             messageHandler(VideoStreamingSignal)
                         } catch (e: Exception) {
-                            receiveErrors++
+                            receiveErrors.incrementAndGet()
                             log("Message handler error: ${e.message}")
                         }
                         return
                     }
 
-                    val header = MessageHeader(data?.size ?: 0, MessageType.fromId(type))
+                    val header = MessageHeader(dataLength, MessageType.fromId(type))
                     val message = MessageParser.parseMessage(header, data)
 
                     // Log received message (except high-frequency types)
@@ -280,13 +293,13 @@ class AdapterDriver(
                     try {
                         messageHandler(message)
                     } catch (e: Exception) {
-                        receiveErrors++
+                        receiveErrors.incrementAndGet()
                         log("Message handler error: ${e.message}")
                     }
                 }
 
                 override fun onError(error: String) {
-                    receiveErrors++
+                    receiveErrors.incrementAndGet()
                     log("Reading loop error: $error")
                     errorHandler(error)
                 }
@@ -303,36 +316,38 @@ class AdapterDriver(
             } else {
                 0L
             }
+        val sent = bytesSent.get()
+        val received = bytesReceived.get()
         val sendThroughput =
             if (sessionDuration > 0) {
-                String.format(Locale.US, "%.1f", bytesSent / sessionDuration / 1024.0)
+                String.format(Locale.US, "%.1f", sent / sessionDuration / 1024.0)
             } else {
                 "0.0"
             }
         val receiveThroughput =
             if (sessionDuration > 0) {
-                String.format(Locale.US, "%.1f", bytesReceived / sessionDuration / 1024.0)
+                String.format(Locale.US, "%.1f", received / sessionDuration / 1024.0)
             } else {
                 "0.0"
             }
 
         log("Adapter Performance Summary:")
-        log("  Session: ${sessionDuration}s | Init: $initMessagesCount msgs | Heartbeats: $heartbeatsSent")
-        log("  TX: $messagesSent msgs / ${bytesSent / 1024}KB / ${sendThroughput}KB/s")
-        log("  RX: $messagesReceived msgs / ${bytesReceived / 1024}KB / ${receiveThroughput}KB/s")
-        log("  Errors: TX=$sendErrors RX=$receiveErrors")
+        log("  Session: ${sessionDuration}s | Init: $initMessagesCount msgs | Heartbeats: ${heartbeatsSent.get()}")
+        log("  TX: ${messagesSent.get()} msgs / ${sent / 1024}KB / ${sendThroughput}KB/s")
+        log("  RX: ${messagesReceived.get()} msgs / ${received / 1024}KB / ${receiveThroughput}KB/s")
+        log("  Errors: TX=${sendErrors.get()} RX=${receiveErrors.get()}")
     }
 
     private fun resetStats() {
-        messagesSent = 0
-        messagesReceived = 0
-        bytesSent = 0
-        bytesReceived = 0
-        sendErrors = 0
-        receiveErrors = 0
-        heartbeatsSent = 0
+        messagesSent.set(0)
+        messagesReceived.set(0)
+        bytesSent.set(0)
+        bytesReceived.set(0)
+        sendErrors.set(0)
+        receiveErrors.set(0)
+        heartbeatsSent.set(0)
         sessionStart.set(0)
-        lastHeartbeat = 0
+        lastHeartbeat.set(0)
         initMessagesCount = 0
     }
 

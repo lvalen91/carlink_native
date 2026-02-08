@@ -335,10 +335,11 @@ class MainActivity : ComponentActivity() {
                 audioTransferMode = userConfig.audioTransferMode,
                 // Hardcoded to 48kHz - professional quality audio for GM AAOS
                 sampleRate = 48000,
-                // User-configured mic, wifi, and call quality
+                // User-configured mic, wifi, call quality, and media delay
                 micType = micType,
                 wifiType = wifiType,
                 callQuality = userConfig.callQuality.value,
+                mediaDelay = userConfig.mediaDelay.delayMs,
             )
 
         logInfo(
@@ -356,6 +357,7 @@ class MainActivity : ComponentActivity() {
         logInfo(
             "[ADAPTER_CONFIG] User config: audioTransferMode=${if (userConfig.audioTransferMode) "bluetooth" else "adapter"}, " +
                 "sampleRate=48000Hz (hardcoded), mic=$micType, wifi=$wifiType, callQuality=${userConfig.callQuality.name}, " +
+                "mediaDelay=${userConfig.mediaDelay.name}(${userConfig.mediaDelay.delayMs}ms), " +
                 "resolution=${userConfig.videoResolution.toStorageString()} (adapter: ${configWidth}x$configHeight)",
             tag = "MAIN",
         )

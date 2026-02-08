@@ -58,13 +58,52 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
         private const val NOTIFICATION_ID = 1001
 
         // Singleton holder for MediaSession token
-        // Set by CarlinkPlugin when MediaSessionManager initializes
+        // Set via updateSessionToken() to push to a running service instance
         @Volatile
         var mediaSessionToken: MediaSessionCompat.Token? = null
+
+        // Current now-playing metadata for notification content
+        @Volatile
+        private var currentTitle: String? = null
+        @Volatile
+        private var currentArtist: String? = null
 
         // Singleton instance for foreground service control
         @Volatile
         private var instance: CarlinkMediaBrowserService? = null
+
+        /**
+         * Push session token to a running service instance.
+         * Resolves race condition where the system starts the service before
+         * MediaSessionManager is initialized — without this, the service may
+         * report a null token that AAOS caches permanently.
+         */
+        fun updateSessionToken(token: MediaSessionCompat.Token) {
+            mediaSessionToken = token
+            instance?.let { service ->
+                service.setSessionToken(token)
+                if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] Session token pushed to running service")
+            }
+        }
+
+        /**
+         * Update notification with current now-playing metadata.
+         * Called from CarlinkManager when media metadata changes.
+         */
+        fun updateNowPlaying(title: String?, artist: String?) {
+            currentTitle = title
+            currentArtist = artist
+            instance?.refreshNotification()
+        }
+
+        /**
+         * Clear now-playing metadata (e.g., on adapter disconnect).
+         */
+        fun clearNowPlaying() {
+            currentTitle = null
+            currentArtist = null
+            instance?.refreshNotification()
+        }
 
         /**
          * Start foreground service mode when adapter connects.
@@ -140,9 +179,16 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
             }
         }
 
-        // Return empty root - allows connection but indicates no browsable content
-        // This is appropriate for projection apps like CarPlay/AA adapters
-        return BrowserRoot(EMPTY_ROOT_ID, null)
+        // Return root with content style extras so AAOS recognises this as a
+        // well-formed media source. The browse tree is empty (projection app with
+        // no local library), but the hints prevent miscategorisation on some
+        // AAOS media center implementations.
+        val rootExtras = Bundle().apply {
+            putInt("android.media.browse.CONTENT_STYLE_BROWSABLE_HINT", 1)
+            putInt("android.media.browse.CONTENT_STYLE_PLAYABLE_HINT", 1)
+            putBoolean("android.media.browse.SEARCH_SUPPORTED", false)
+        }
+        return BrowserRoot(EMPTY_ROOT_ID, rootExtras)
     }
 
     /**
@@ -224,8 +270,8 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
         val builder =
             NotificationCompat
                 .Builder(this, NOTIFICATION_CHANNEL_ID)
-                .setContentTitle("Carlink")
-                .setContentText("Adapter connected")
+                .setContentTitle(currentTitle ?: "Carlink")
+                .setContentText(currentArtist ?: "Adapter connected")
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setOngoing(true)
                 .setSilent(true)
@@ -277,6 +323,22 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
             if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] Exited foreground mode")
         } catch (e: Exception) {
             Log.e(TAG, "[BROWSER_SERVICE] Failed to stop foreground: ${e.message}")
+        }
+    }
+
+    /**
+     * Refresh the foreground notification with current now-playing metadata.
+     * Called when metadata changes or is cleared.
+     */
+    private fun refreshNotification() {
+        if (!isForeground) return
+
+        try {
+            val notification = buildNotification()
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.notify(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            Log.e(TAG, "[BROWSER_SERVICE] Failed to refresh notification: ${e.message}")
         }
     }
 }

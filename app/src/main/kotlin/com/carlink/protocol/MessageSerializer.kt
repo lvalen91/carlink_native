@@ -263,10 +263,10 @@ object MessageSerializer {
      */
     object ConfigKey {
         const val AUDIO_SOURCE = "audio_source"
-        const val SAMPLE_RATE = "sample_rate"
         const val MIC_SOURCE = "mic_source"
         const val WIFI_BAND = "wifi_band"
         const val CALL_QUALITY = "call_quality"
+        const val MEDIA_DELAY = "media_delay"
     }
 
     /**
@@ -340,11 +340,6 @@ object MessageSerializer {
                     messages.add(serializeCommand(command))
                 }
 
-                ConfigKey.SAMPLE_RATE -> {
-                    // Sample rate is part of BoxSettings, need to send full BoxSettings
-                    messages.add(serializeBoxSettings(config))
-                }
-
                 ConfigKey.MIC_SOURCE -> {
                     val command =
                         if (config.micType == "box") {
@@ -367,6 +362,11 @@ object MessageSerializer {
 
                 ConfigKey.CALL_QUALITY -> {
                     // Call quality is part of BoxSettings, need to send full BoxSettings
+                    messages.add(serializeBoxSettings(config))
+                }
+
+                ConfigKey.MEDIA_DELAY -> {
+                    // Media delay is part of BoxSettings, need to send full BoxSettings
                     messages.add(serializeBoxSettings(config))
                 }
             }

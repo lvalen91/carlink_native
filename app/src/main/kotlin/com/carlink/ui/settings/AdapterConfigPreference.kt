@@ -12,7 +12,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.carlink.logging.logError
 import com.carlink.logging.logInfo
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.adapterConfigDataStore: DataStore<Preferences> by preferencesDataStore(
@@ -99,6 +98,24 @@ enum class CallQualityConfig(
 
     companion object {
         val DEFAULT = HD
+    }
+}
+
+/**
+ * Media delay configuration for adapter audio buffer size.
+ * Controls tinyalsa PCM buffer size (pcm_open period_size) on the adapter firmware.
+ * Lower values = less audio latency but more susceptible to USB jitter.
+ * Higher values = more stable but noticeable audio lag.
+ */
+enum class MediaDelayConfig(val delayMs: Int) {
+    LOW(300),
+    MEDIUM(500),
+    STANDARD(1000),
+    HIGH(2000),
+    ;
+
+    companion object {
+        val DEFAULT = STANDARD
     }
 }
 
@@ -201,6 +218,9 @@ class AdapterConfigPreference private constructor(
         // Call quality: stored as value (0=normal, 1=clear, 2=HD)
         private val KEY_CALL_QUALITY = intPreferencesKey("call_quality")
 
+        // Media delay: stored as delay in ms (300, 500, 1000, 2000)
+        private val KEY_MEDIA_DELAY = intPreferencesKey("media_delay")
+
         // Video resolution: stored as string "WIDTHxHEIGHT" or "AUTO"
         private val KEY_VIDEO_RESOLUTION = stringPreferencesKey("video_resolution")
 
@@ -215,6 +235,7 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_MIC_SOURCE = "mic_source"
         private const val SYNC_CACHE_KEY_WIFI_BAND = "wifi_band"
         private const val SYNC_CACHE_KEY_CALL_QUALITY = "call_quality"
+        private const val SYNC_CACHE_KEY_MEDIA_DELAY = "media_delay"
         private const val SYNC_CACHE_KEY_VIDEO_RESOLUTION = "video_resolution"
         private const val SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT = "has_completed_first_init"
         private const val SYNC_CACHE_KEY_PENDING_CHANGES = "pending_changes"
@@ -228,6 +249,7 @@ class AdapterConfigPreference private constructor(
             const val MIC_SOURCE = "mic_source"
             const val WIFI_BAND = "wifi_band"
             const val CALL_QUALITY = "call_quality"
+            const val MEDIA_DELAY = "media_delay"
             const val VIDEO_RESOLUTION = "video_resolution"
         }
     }
@@ -256,21 +278,6 @@ class AdapterConfigPreference private constructor(
         val isBluetooth = syncCache.getBoolean(SYNC_CACHE_KEY_AUDIO_BLUETOOTH, false)
         return if (isBluetooth) AudioSourceConfig.BLUETOOTH else AudioSourceConfig.ADAPTER
     }
-
-    /**
-     * Get current audio source configuration.
-     *
-     * Note: Prefer getAudioSourceSync() for startup reads to avoid ANR.
-     */
-    suspend fun getAudioSource(): AudioSourceConfig =
-        try {
-            val preferences = dataStore.data.first()
-            val isBluetooth = preferences[KEY_AUDIO_SOURCE_BLUETOOTH] ?: false
-            if (isBluetooth) AudioSourceConfig.BLUETOOTH else AudioSourceConfig.ADAPTER
-        } catch (e: Exception) {
-            logError("Failed to read audio source preference: $e", tag = "AdapterConfig")
-            AudioSourceConfig.DEFAULT
-        }
 
     /**
      * Set audio source configuration.
@@ -387,6 +394,37 @@ class AdapterConfigPreference private constructor(
         }
     }
 
+    val mediaDelayFlow: Flow<MediaDelayConfig> =
+        dataStore.data.map { preferences ->
+            val value = preferences[KEY_MEDIA_DELAY] ?: MediaDelayConfig.DEFAULT.delayMs
+            MediaDelayConfig.entries.find { it.delayMs == value } ?: MediaDelayConfig.DEFAULT
+        }
+
+    /**
+     * Get current media delay configuration synchronously.
+     */
+    fun getMediaDelaySync(): MediaDelayConfig {
+        val value = syncCache.getInt(SYNC_CACHE_KEY_MEDIA_DELAY, MediaDelayConfig.DEFAULT.delayMs)
+        return MediaDelayConfig.entries.find { it.delayMs == value } ?: MediaDelayConfig.DEFAULT
+    }
+
+    /**
+     * Set media delay configuration.
+     */
+    suspend fun setMediaDelay(config: MediaDelayConfig) {
+        try {
+            dataStore.edit { preferences ->
+                preferences[KEY_MEDIA_DELAY] = config.delayMs
+            }
+            syncCache.edit().putInt(SYNC_CACHE_KEY_MEDIA_DELAY, config.delayMs).apply()
+            addPendingChange(ConfigKey.MEDIA_DELAY)
+            logInfo("Media delay preference saved: $config (${config.delayMs}ms)", tag = "AdapterConfig")
+        } catch (e: Exception) {
+            logError("Failed to save media delay preference: $e", tag = "AdapterConfig")
+            throw e
+        }
+    }
+
     val videoResolutionFlow: Flow<VideoResolutionConfig> =
         dataStore.data.map { preferences ->
             val value = preferences[KEY_VIDEO_RESOLUTION]
@@ -429,6 +467,8 @@ class AdapterConfigPreference private constructor(
         val wifiBand: WiFiBandConfig,
         /** Call quality configuration */
         val callQuality: CallQualityConfig,
+        /** Media delay configuration */
+        val mediaDelay: MediaDelayConfig,
         /** Video resolution configuration */
         val videoResolution: VideoResolutionConfig,
     ) {
@@ -439,6 +479,7 @@ class AdapterConfigPreference private constructor(
                     micSource = MicSourceConfig.DEFAULT,
                     wifiBand = WiFiBandConfig.DEFAULT,
                     callQuality = CallQualityConfig.DEFAULT,
+                    mediaDelay = MediaDelayConfig.DEFAULT,
                     videoResolution = VideoResolutionConfig.AUTO,
                 )
         }
@@ -455,29 +496,15 @@ class AdapterConfigPreference private constructor(
         val micSource = getMicSourceSync()
         val wifiBand = getWifiBandSync()
         val callQuality = getCallQualitySync()
+        val mediaDelay = getMediaDelaySync()
         val videoResolution = getVideoResolutionSync()
         return UserConfig(
             audioTransferMode = audioSource == AudioSourceConfig.BLUETOOTH,
             micSource = micSource,
             wifiBand = wifiBand,
             callQuality = callQuality,
+            mediaDelay = mediaDelay,
             videoResolution = videoResolution,
-        )
-    }
-
-    /**
-     * Get all user-configured settings as a single object.
-     *
-     * Note: Prefer getUserConfigSync() for startup reads to avoid ANR.
-     */
-    suspend fun getUserConfig(): UserConfig {
-        val audioSource = getAudioSource()
-        return UserConfig(
-            audioTransferMode = audioSource == AudioSourceConfig.BLUETOOTH,
-            micSource = getMicSourceSync(),
-            wifiBand = getWifiBandSync(),
-            callQuality = getCallQualitySync(),
-            videoResolution = getVideoResolutionSync(),
         )
     }
 
@@ -494,6 +521,7 @@ class AdapterConfigPreference private constructor(
                 preferences.remove(KEY_MIC_SOURCE)
                 preferences.remove(KEY_WIFI_BAND)
                 preferences.remove(KEY_CALL_QUALITY)
+                preferences.remove(KEY_MEDIA_DELAY)
                 preferences.remove(KEY_VIDEO_RESOLUTION)
                 preferences.remove(KEY_HAS_COMPLETED_FIRST_INIT)
                 preferences.remove(KEY_PENDING_CHANGES)
@@ -507,6 +535,7 @@ class AdapterConfigPreference private constructor(
                     remove(SYNC_CACHE_KEY_MIC_SOURCE)
                     remove(SYNC_CACHE_KEY_WIFI_BAND)
                     remove(SYNC_CACHE_KEY_CALL_QUALITY)
+                    remove(SYNC_CACHE_KEY_MEDIA_DELAY)
                     remove(SYNC_CACHE_KEY_VIDEO_RESOLUTION)
                     remove(SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT)
                     remove(SYNC_CACHE_KEY_PENDING_CHANGES)
@@ -516,24 +545,6 @@ class AdapterConfigPreference private constructor(
             logError("Failed to reset adapter config preferences: $e", tag = "AdapterConfig")
             throw e
         }
-    }
-
-    /**
-     * Get a summary of current preferences for debugging.
-     */
-    suspend fun getPreferencesSummary(): Map<String, Any?> {
-        val audioSource = getAudioSource()
-        val videoRes = getVideoResolutionSync()
-        return mapOf(
-            "audioSource" to audioSource.name,
-            "audioTransferMode" to if (audioSource == AudioSourceConfig.BLUETOOTH) "true (bluetooth)" else "false (adapter)",
-            "micSource" to getMicSourceSync().name,
-            "wifiBand" to getWifiBandSync().name,
-            "callQuality" to getCallQualitySync().name,
-            "videoResolution" to videoRes.toStorageString(),
-            "hasCompletedFirstInit" to hasCompletedFirstInitSync(),
-            "pendingChanges" to getPendingChangesSync(),
-        )
     }
 
     enum class InitMode {

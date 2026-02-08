@@ -160,11 +160,7 @@ val CarlinkTypography =
 
 object AutomotiveDimens {
     val ButtonMinHeight = 72.dp
-    val ButtonMinWidth = 180.dp
     val ButtonPaddingHorizontal = 24.dp
     val ButtonPaddingVertical = 20.dp
     val IconSize = 28.dp
-    val SpacingSmall = 8.dp
-    val SpacingMedium = 16.dp
-    val SpacingLarge = 24.dp
 }

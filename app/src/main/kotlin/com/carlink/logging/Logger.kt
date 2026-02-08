@@ -302,8 +302,6 @@ inline fun logDebugOnly(
 
 inline fun logVideoUsb(message: () -> String) = logDebugOnly(Logger.Tags.VIDEO_USB, message)
 
-inline fun logVideoRingBuffer(message: () -> String) = logDebugOnly(Logger.Tags.VIDEO_RING_BUFFER, message)
-
 inline fun logVideoCodec(message: () -> String) = logDebugOnly(Logger.Tags.VIDEO_CODEC, message)
 
 inline fun logVideoSurface(message: () -> String) = logDebugOnly(Logger.Tags.VIDEO_SURFACE, message)

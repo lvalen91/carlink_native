@@ -179,33 +179,4 @@ object FileExportService {
             }
         }
 
-    /**
-     * Reads file contents into a byte array.
-     *
-     * Utility function for cases where file reading needs to be done separately
-     * from writing (e.g., to show file size before export).
-     *
-     * @param file Source file to read
-     * @return Result containing byte array on success, or exception on failure
-     */
-    suspend fun readFileBytes(file: File): Result<ByteArray> =
-        withContext(Dispatchers.IO) {
-            try {
-                if (!file.exists()) {
-                    val error = IOException("File does not exist: ${file.name}")
-                    logError("[FILE_EXPORT] ${error.message}", tag = TAG)
-                    return@withContext Result.failure(error)
-                }
-
-                val bytes = file.readBytes()
-                logInfo("[FILE_EXPORT] Read ${bytes.size} bytes from ${file.name}", tag = TAG)
-                Result.success(bytes)
-            } catch (e: IOException) {
-                logError("[FILE_EXPORT] Failed to read ${file.name}: ${e.message}", tag = TAG, throwable = e)
-                Result.failure(e)
-            } catch (e: SecurityException) {
-                logError("[FILE_EXPORT] Permission denied reading ${file.name}: ${e.message}", tag = TAG, throwable = e)
-                Result.failure(e)
-            }
-        }
 }

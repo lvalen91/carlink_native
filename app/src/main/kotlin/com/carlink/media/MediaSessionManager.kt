@@ -1,12 +1,15 @@
 package com.carlink.media
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import com.carlink.BuildConfig
+import com.carlink.MainActivity
 import com.carlink.util.LogCallback
 
 private const val TAG = "CARLINK_MEDIA"
@@ -96,6 +99,20 @@ class MediaSessionManager(
                 MediaSessionCompat(context, "CarlinkMediaSession").apply {
                     // Set callback for handling media button events
                     setCallback(mediaSessionCallback)
+
+                    // Link MediaSession to our Activity so AAOS treats the media
+                    // controls and the app UI as a single unit. Without this, newer
+                    // AAOS firmware demotes the app to a background media source.
+                    setSessionActivity(
+                        PendingIntent.getActivity(
+                            context,
+                            0,
+                            Intent(context, MainActivity::class.java).apply {
+                                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            },
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                        ),
+                    )
 
                     // Set supported actions
                     setPlaybackState(buildPlaybackState(PlaybackStateCompat.STATE_NONE))
@@ -268,7 +285,17 @@ class MediaSessionManager(
 
             try {
                 session.setPlaybackState(buildPlaybackState(PlaybackStateCompat.STATE_STOPPED))
-                log("[MEDIA_SESSION] Playback state: STOPPED")
+
+                // Clear metadata to prevent stale now-playing in cluster/system UI
+                session.setMetadata(
+                    MediaMetadataCompat
+                        .Builder()
+                        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "Carlink")
+                        .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "Not connected")
+                        .build(),
+                )
+
+                log("[MEDIA_SESSION] Playback state: STOPPED, metadata cleared")
             } catch (e: Exception) {
                 log("[MEDIA_SESSION] Failed to set stopped state: ${e.message}")
             }
@@ -316,10 +343,15 @@ class MediaSessionManager(
                 PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
                 PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
 
+        // Speed must be 0f when not playing — AAOS extrapolates position
+        // from (state + speed + position + timestamp), so 1.0f while paused
+        // causes the seek bar to drift in cluster and system media UI.
+        val speed = if (state == PlaybackStateCompat.STATE_PLAYING) 1.0f else 0f
+
         return PlaybackStateCompat
             .Builder()
             .setActions(actions)
-            .setState(state, position, 1.0f)
+            .setState(state, position, speed)
             .build()
     }
 

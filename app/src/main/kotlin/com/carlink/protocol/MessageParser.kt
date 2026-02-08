@@ -77,17 +77,17 @@ object MessageParser {
         header: MessageHeader,
         payload: ByteArray?,
     ): Message {
-        if (payload == null || payload.size < 12) {
+        if (payload == null || header.length < 12) {
             return UnknownMessage(header, payload)
         }
 
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
 
         val decodeType = buffer.int
         val volume = buffer.float
         val audioType = buffer.int
 
-        val remainingBytes = payload.size - 12
+        val remainingBytes = header.length - 12
 
         return when {
             remainingBytes == 1 -> {
@@ -118,16 +118,16 @@ object MessageParser {
             }
 
             remainingBytes > 0 -> {
-                val audioData = ByteArray(remainingBytes)
-                System.arraycopy(payload, 12, audioData, 0, remainingBytes)
                 AudioDataMessage(
                     header = header,
                     decodeType = decodeType,
                     volume = volume,
                     audioType = audioType,
                     command = null,
-                    data = audioData,
+                    data = payload,
                     volumeDuration = null,
+                    audioDataOffset = 12,
+                    audioDataLength = remainingBytes,
                 )
             }
 
@@ -149,7 +149,7 @@ object MessageParser {
         header: MessageHeader,
         payload: ByteArray?,
     ): Message {
-        if (payload == null || payload.size <= 20) {
+        if (payload == null || header.length <= 20) {
             return VideoDataMessage(
                 header = header,
                 width = -1,
@@ -161,7 +161,7 @@ object MessageParser {
             )
         }
 
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
 
         val width = buffer.int
         val height = buffer.int
@@ -174,8 +174,8 @@ object MessageParser {
         val flags = buffer.int
 
         val videoData =
-            if (payload.size > 20) {
-                ByteArray(payload.size - 20).also {
+            if (header.length > 20) {
+                ByteArray(header.length - 20).also {
                     System.arraycopy(payload, 20, it, 0, it.size)
                 }
             } else {
@@ -197,25 +197,28 @@ object MessageParser {
         header: MessageHeader,
         payload: ByteArray?,
     ): Message {
-        if (payload == null || payload.size < 4) {
+        if (payload == null || header.length < 4) {
             return MediaDataMessage(header, MediaType.UNKNOWN, emptyMap())
         }
 
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
         val typeInt = buffer.int
         val mediaType = MediaType.fromId(typeInt)
 
         val mediaPayload: Map<String, Any> =
             when (mediaType) {
                 MediaType.ALBUM_COVER -> {
-                    val imageData = ByteArray(payload.size - 4)
+                    val imageData = ByteArray(header.length - 4)
                     System.arraycopy(payload, 4, imageData, 0, imageData.size)
                     mapOf("AlbumCover" to imageData)
                 }
 
                 MediaType.DATA -> {
-                    try {
-                        val jsonBytes = ByteArray(payload.size - 5) // Exclude type int and trailing null
+                    if (header.length < 6) {
+                        // Need at least: 4 (type int) + 1 (JSON byte) + 1 (trailing null)
+                        emptyMap()
+                    } else try {
+                        val jsonBytes = ByteArray(header.length - 5) // Exclude type int and trailing null
                         System.arraycopy(payload, 4, jsonBytes, 0, jsonBytes.size)
                         val jsonString = String(jsonBytes, StandardCharsets.UTF_8).trim('\u0000')
                         val json = JSONObject(jsonString)
@@ -238,10 +241,10 @@ object MessageParser {
         header: MessageHeader,
         payload: ByteArray?,
     ): Message {
-        if (payload == null || payload.size < 4) {
+        if (payload == null || header.length < 4) {
             return CommandMessage(header, CommandMapping.INVALID)
         }
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
         val commandId = buffer.int
         return CommandMessage(header, CommandMapping.fromId(commandId))
     }
@@ -250,15 +253,15 @@ object MessageParser {
         header: MessageHeader,
         payload: ByteArray?,
     ): Message {
-        if (payload == null || payload.size < 4) {
+        if (payload == null || header.length < 4) {
             return PluggedMessage(header, PhoneType.UNKNOWN, null)
         }
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
         val phoneTypeId = buffer.int
         val phoneType = PhoneType.fromId(phoneTypeId)
 
         val wifi =
-            if (payload.size >= 8) {
+            if (header.length >= 8) {
                 buffer.int
             } else {
                 null
@@ -271,10 +274,10 @@ object MessageParser {
         header: MessageHeader,
         payload: ByteArray?,
     ): Message {
-        if (payload == null || payload.size < 28) {
+        if (payload == null || header.length < 28) {
             return OpenedMessage(header, 0, 0, 0, 0, 0, 0, 0)
         }
-        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
         return OpenedMessage(
             header = header,
             width = buffer.int,
@@ -350,6 +353,8 @@ class AudioDataMessage(
     val command: AudioCommand?,
     val data: ByteArray?,
     val volumeDuration: Float?,
+    val audioDataOffset: Int = 0,
+    val audioDataLength: Int = data?.size ?: 0,
 ) : Message(header) {
     override fun toString(): String {
         val format = AudioFormats.fromDecodeType(decodeType)
@@ -357,7 +362,7 @@ class AudioDataMessage(
         return when {
             command != null -> "AudioData(command=${command.name})"
             volumeDuration != null -> "AudioData(volumeDuration=$volumeDuration)"
-            else -> "AudioData(format=$formatInfo, audioType=$audioType, bytes=${data?.size ?: 0})"
+            else -> "AudioData(format=$formatInfo, audioType=$audioType, bytes=$audioDataLength)"
         }
     }
 }

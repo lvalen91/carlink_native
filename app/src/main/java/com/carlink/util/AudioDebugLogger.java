@@ -218,8 +218,8 @@ public class AudioDebugLogger {
 
     // Performance
     public static void logPerfSummary(
-            int mediaFillMs, int navFillMs, int voiceFillMs, int callFillMs,
-            int mediaUnderruns, int navUnderruns, int voiceUnderruns, int callUnderruns) {
+            int mediaFillMs, int navFillMs,
+            int mediaUnderruns, int navUnderruns) {
 
         if (!debugEnabled || !perfEnabled) return;
 
@@ -227,13 +227,13 @@ public class AudioDebugLogger {
         if (now - lastPerfLogTime < PERF_LOG_INTERVAL_MS) return;
         lastPerfLogTime = now;
 
-        int totalUnderruns = mediaUnderruns + navUnderruns + voiceUnderruns + callUnderruns;
+        int totalUnderruns = mediaUnderruns + navUnderruns;
 
         Log.i(TAG, String.format(
-                "[AUDIO_PERF] Buffers: media=%dms nav=%dms voice=%dms call=%dms | " +
-                "Packets: media=%d nav=%d voice=%d call=%d | Underruns: %d",
-                mediaFillMs, navFillMs, voiceFillMs, callFillMs,
-                mediaPackets, navPackets, voicePackets, callPackets,
+                "[AUDIO_PERF] Buffers: media=%dms nav=%dms | " +
+                "Packets: media=%d nav=%d | Underruns: %d",
+                mediaFillMs, navFillMs,
+                mediaPackets, navPackets,
                 totalUnderruns));
     }
 

@@ -2,16 +2,12 @@ package com.carlink.ui
 
 import android.content.pm.PackageManager
 import android.view.HapticFeedbackConstants
-import androidx.activity.ComponentActivity
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,35 +30,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Article
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.DisplaySettings
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
-import androidx.compose.material.icons.filled.Hd
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Layers
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PhoneDisabled
-import androidx.compose.material.icons.filled.PhoneInTalk
 import androidx.compose.material.icons.filled.PowerOff
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsInputComponent
-import androidx.compose.material.icons.filled.SignalCellularAlt
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.VideoSettings
-import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -70,16 +49,12 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -88,16 +63,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.CarlinkManager
 import com.carlink.logging.FileLogManager
@@ -106,24 +78,13 @@ import com.carlink.logging.logWarn
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.AdapterConfigurationDialog
-import com.carlink.ui.settings.ConfigurationOptionCard
 import com.carlink.ui.settings.DisplayModeDialog
 import com.carlink.ui.settings.LogsTabContent
-import com.carlink.ui.settings.AudioSourceConfig
-import com.carlink.ui.settings.CallQualityConfig
-import com.carlink.ui.settings.DebugModePreference
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.settings.DisplayModePreference
-import com.carlink.ui.settings.MicSourceConfig
 import com.carlink.ui.settings.SettingsTab
-import com.carlink.ui.settings.VideoResolutionConfig
-import com.carlink.ui.settings.WiFiBandConfig
 import com.carlink.ui.theme.AutomotiveDimens
 import kotlinx.coroutines.launch
-import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /** Settings screen with NavigationRail for device control, display settings, and log management. */
 @Composable
@@ -135,25 +96,6 @@ fun SettingsScreen(
     var selectedTab by remember { mutableStateOf(SettingsTab.CONTROL) }
     val context = LocalContext.current
     val colorScheme = MaterialTheme.colorScheme
-
-    // Debug mode preference - controls visibility of developer tabs
-    val debugModePreference = remember { DebugModePreference.getInstance(context) }
-    val debugModeEnabled by debugModePreference.debugModeEnabledFlow.collectAsStateWithLifecycle(
-        initialValue = debugModePreference.isDebugModeEnabledSync(),
-    )
-
-    // Get visible tabs based on debug mode
-    val visibleTabs = remember(debugModeEnabled) {
-        SettingsTab.getVisibleTabs(debugModeEnabled)
-    }
-
-    // Auto-switch to CONTROL tab if current tab becomes hidden (debug mode disabled)
-    LaunchedEffect(debugModeEnabled, selectedTab) {
-        if (selectedTab.requiresDebugMode && !debugModeEnabled) {
-            logInfo("[UI_STATE] Debug mode disabled - switching from $selectedTab to CONTROL", tag = "UI")
-            selectedTab = SettingsTab.CONTROL
-        }
-    }
 
     // Log settings screen entry and tab changes
     LaunchedEffect(Unit) {
@@ -217,7 +159,7 @@ fun SettingsScreen(
                     containerColor = colorScheme.surface,
                 ) {
                     Spacer(modifier = Modifier.weight(1f))
-                    visibleTabs.forEach { tab ->
+                    SettingsTab.entries.forEach { tab ->
                         NavigationRailItem(
                             selected = selectedTab == tab,
                             onClick = {
@@ -266,7 +208,7 @@ fun SettingsScreen(
                         .weight(1f),
             ) {
                 when (selectedTab) {
-                    SettingsTab.CONTROL -> ControlTabContent(carlinkManager, debugModePreference)
+                    SettingsTab.CONTROL -> ControlTabContent(carlinkManager)
                     SettingsTab.LOGS -> LogsTabContent(context, fileLogManager)
                 }
             }
@@ -283,7 +225,6 @@ private enum class ButtonSeverity {
 @Composable
 private fun ControlTabContent(
     carlinkManager: CarlinkManager,
-    debugModePreference: DebugModePreference,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -298,11 +239,6 @@ private fun ControlTabContent(
 
     val adapterConfigPreference = remember { AdapterConfigPreference.getInstance(context) }
     var showAdapterConfigDialog by remember { mutableStateOf(false) }
-
-    // Debug mode state
-    val debugModeEnabled by debugModePreference.debugModeEnabledFlow.collectAsStateWithLifecycle(
-        initialValue = debugModePreference.isDebugModeEnabledSync(),
-    )
 
     val windowInfo = LocalWindowInfo.current
     val density = LocalDensity.current
@@ -466,16 +402,6 @@ private fun ControlTabContent(
                 }
             }
 
-            // Developer Options Card - full width
-            DeveloperOptionsCard(
-                debugModeEnabled = debugModeEnabled,
-                onDebugModeChanged = { enabled ->
-                    scope.launch {
-                        debugModePreference.setDebugModeEnabled(enabled)
-                        logInfo("[UI_ACTION] Debug mode ${if (enabled) "enabled" else "disabled"}", tag = "UI")
-                    }
-                },
-            )
         }
     }
 
@@ -554,70 +480,6 @@ private fun ControlCard(
             Spacer(modifier = Modifier.height(20.dp))
 
             content()
-        }
-    }
-}
-
-/**
- * Developer Options Card with debug mode toggle.
- * When enabled, shows the Logs tab in the NavigationRail.
- */
-@Composable
-private fun DeveloperOptionsCard(
-    debugModeEnabled: Boolean,
-    onDebugModeChanged: (Boolean) -> Unit,
-) {
-    val colorScheme = MaterialTheme.colorScheme
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(24.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // Icon
-            Icon(
-                imageVector = Icons.Default.Build,
-                contentDescription = null,
-                tint = colorScheme.primary,
-                modifier = Modifier.size(24.dp),
-            )
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            // Title and description
-            Column(
-                modifier = Modifier.weight(1f),
-            ) {
-                Text(
-                    text = "Developer Options",
-                    style = MaterialTheme.typography.headlineSmall.copy(
-                        fontWeight = FontWeight.SemiBold,
-                    ),
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Enable the Logs tab",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                )
-            }
-
-            Spacer(modifier = Modifier.width(16.dp))
-
-            // Switch
-            Switch(
-                checked = debugModeEnabled,
-                onCheckedChange = onDebugModeChanged,
-            )
         }
     }
 }

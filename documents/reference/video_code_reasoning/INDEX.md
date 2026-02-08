@@ -105,10 +105,11 @@ See `17_USB_CAPTURE_STREAM_ANALYSIS.md` for complete quantitative data.
 
 ## Critical Findings (Quick Reference)
 
-### The Current Problem (Rev [55])
+### Historical Problem (Rev [55], resolved)
 - **Codec input starvation**: 3,461 ring buffer writes, only ~5 codec inputs
 - **Quality Control dropping frames**: 14,000+ frames dropped, situation not improving
 - **Temporary fix**: Surface recreation works for ~30 seconds then degrades
+- **Resolution**: QC removed in [56], ring buffer eliminated via DIRECT_HANDOFF in [61+], PacketRingByteBuffer deleted
 
 ### Project Lineage
 ```
@@ -116,19 +117,22 @@ abuharsky/carplay (Jan 2024) - Original ~216 lines
         ↓
 lvalen91/Carlink (Aug 2025) - Flutter expansion ~860 lines
         ↓
-carlink_native (Dec 2025) - Native rewrite, now ~1888 lines
+carlink_native (Dec 2025) - Native rewrite, H264Renderer peaked ~1888 lines, now ~540 lines
         ↓
 MotoInsight fork (Jan 2026) - Independent approach ~1249 lines
 ```
 
-### Code Complexity Growth
-| Version | Lines | Features Added |
-|---------|-------|----------------|
+### Code Complexity Arc
+| Version | Lines | Change |
+|---------|-------|--------|
 | Original | ~216 | Basic MediaCodec |
 | [13] | ~1060 | First "stable" claim |
 | [31] | ~1100 | ByteBuffer fix |
 | [52] | ~1558 | Intel VPU workaround |
-| [55] | ~1888 | QC, Source PTS, reduced buffers |
+| [55] | ~1888 | QC, Source PTS, reduced buffers (peak complexity) |
+| [56] | — | Projection model, QC removed, buffer 4MB→192KB |
+| [61] | ~538 | Simplified, DIRECT_HANDOFF, PacketRingByteBuffer deleted |
+| [66] | ~540 | Pre-allocated audio, atomic counters, dead code removed, NAL-aware drop logging, VideoDebugLogger wired, [SELF_HEALING] TODO enhanced |
 
 ### Key Issues Addressed Over Time
 - setCallback order (Carlink Dec 2025)
@@ -138,18 +142,21 @@ MotoInsight fork (Jan 2026) - Independent approach ~1249 lines
 - Intel VPU flush insufficiency ([52])
 - Various video stability issues (ongoing)
 
-### Current State [55]
-- 1888 lines (+78% from baseline)
-- Quality Control with lag threshold of 5 frames
-- Source PTS queue requiring synchronization
-- 4MB buffers (reduced from 16MB)
+### Current State [66]
+- ~540 lines (down from peak 1888 in [55])
+- DIRECT_HANDOFF: USB → `feedDirect()` → MediaCodec inline, no buffer, no queue
+- NAL-type-aware drop logging: IDR drops → WARNING, P-frame drops → 30s batch stats
+- VideoDebugLogger wired to all lifecycle events (init, start, stop, reset, error, formatChanged)
+- Monotonic `frameCounter` for PTS (source PTS from adapter used for logging only)
+- `firstFrameLogged` flag survives `logStats()` counter resets (was firing every 30s)
+- [SELF_HEALING] watchdog fully researched, not yet implemented (see H264Renderer.java TODO)
 
-### Recommendation for [56]
-1. Disable Quality Control (or raise threshold to 60)
-2. Disable Source PTS queue
-3. Increase buffer size to 8MB
-4. Simplify callback path
-5. Add diagnostic logging
+### Historical Recommendation for [56] (COMPLETED)
+1. ~~Disable Quality Control~~ Done
+2. ~~Disable Source PTS queue~~ Done (monotonic counter)
+3. ~~Buffer sizing~~ N/A (buffer eliminated via DIRECT_HANDOFF)
+4. ~~Simplify callback path~~ Done
+5. ~~Add diagnostic logging~~ Done (comprehensive pipeline stats + NAL-aware drops)
 
 ---
 
@@ -231,13 +238,22 @@ Overall: 24KB average
 ```
 /Users/zeno/Downloads/carlink_native/
 ├── app/src/main/java/com/carlink/video/
-│   ├── H264Renderer.java (1888 lines)
-│   └── PacketRingByteBuffer.java (480 lines)
+│   └── H264Renderer.java (~540 lines, DIRECT_HANDOFF + NAL-aware drop logging)
+├── app/src/main/java/com/carlink/util/
+│   ├── VideoDebugLogger.java (wired to H264Renderer lifecycle)
+│   └── AudioDebugLogger.java (audio pipeline diagnostics)
+├── app/src/main/kotlin/com/carlink/audio/
+│   ├── DualStreamAudioManager.kt (dual-stream media+nav, platform-tuned buffers)
+│   ├── AudioRingBuffer.kt (lock-free SPSC, overwrite-oldest)
+│   ├── MicrophoneCaptureManager.kt (ring buffer, VOICE_COMMUNICATION)
+│   ├── AudioConfig.kt (DEFAULT/GM_AAOS/ARM buffer profiles)
+│   └── AudioFormats.kt (decode_type → format mapping)
 └── documents/
     ├── reference/ (platform docs)
     ├── revisions.txt (change log)
     └── video_code_reasoning/ (this directory)
 ```
+Note: PacketRingByteBuffer.java was deleted — replaced by DIRECT_HANDOFF.
 
 ### Historical Archives
 ```
@@ -246,7 +262,7 @@ Overall: 24KB average
 ├── carlink_native_30.zip (Unstable - aggressive recovery)
 ├── carlink_native_52.zip (Intel VPU workaround)
 ├── carlink_native_54.zip (GM AAOS optimization)
-└── carlink_native_55.zip (Current)
+└── carlink_native_55.zip (Historical)
 ```
 
 ### Logcat Capture
@@ -262,10 +278,11 @@ If you're a Claude session picking up this work:
 
 1. **Read `13_PROJECTION_VIDEO_PHILOSOPHY.md`** - Core philosophy and Never Do checklist
 2. **Read `18_RECEIVER_CONTRACT_AND_OPERATIONS.md`** - Receiver contract and operational guidance
-3. **Read `15_REV57_DECODER_POISONING_ANALYSIS.md`** - Latest root cause analysis
-4. **Revision [13]** is the stable baseline - compare against it
-5. **Test changes** using the protocol in document 05
-6. **Log changes** in revisions.txt with entry [58]+
+3. **Read `15_REV57_DECODER_POISONING_ANALYSIS.md`** - Decoder poisoning root cause analysis
+4. **Read the [SELF_HEALING] TODO in `H264Renderer.java`** - Comprehensive watchdog design with detection, recovery, cooldown, thread safety, and false positive mitigation. Research completed Feb 2026.
+5. **Revision [13]** is the stable baseline - compare against it
+6. **Test changes** using the protocol in document 05
+7. **Log changes** in revisions.txt with entry [67]+
 
 **Key Principles (memorize):**
 - "A frame that arrives too late must never be decoded"
@@ -284,5 +301,6 @@ If you're a Claude session picking up this work:
 - **Updated:** 2026-01-30 (Rev [57] implemented and compiled)
 - **Updated:** 2026-01-30 (Document 13 enhanced: Integrated rules.txt - Never Do checklist, Audio/Sync philosophy)
 - **Updated:** 2026-01-30 (Document 18 added: Receiver Contract and Operations Guide)
-- **Current Revision:** [57] (decoder poisoning fixes implemented)
-- **Next Revision:** [58] (proper staleness check with correct time base - see TODO in code)
+- **Updated:** 2026-02-07 (Rev [66]: NAL-aware drop logging, VideoDebugLogger wired, audio pipeline documented, [SELF_HEALING] TODO enhanced with research findings)
+- **Current Revision:** [66]
+- **Major milestones since [57]:** [58] stall detection fix + telemetry, [61] video code simplification + DIRECT_HANDOFF, [64] MAX_BUFFER_PACKETS 10→2, [66] pre-allocated audio buffers + atomic USB counters + dead code cleanup + NAL-aware drop logging + VideoDebugLogger wiring + firstFrameLogged fix + [SELF_HEALING] TODO enhanced with research

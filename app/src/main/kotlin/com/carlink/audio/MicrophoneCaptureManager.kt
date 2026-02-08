@@ -108,6 +108,10 @@ class MicrophoneCaptureManager(
     // 500ms buffer prevents overruns when main thread blocked (Session 6 fix)
     private val bufferCapacityMs = 500
     private val captureChunkMs = 20
+    // Pre-allocated read buffer — reused by readChunk() to avoid per-call allocation.
+    // Sized for max readChunk request (640 bytes = 20ms of 16kHz mono PCM16).
+    // Safe to reuse: caller (sendMicrophoneData) consumes data synchronously before next tick.
+    private var readBuffer = ByteArray(640)
 
     private val lock = Any()
 
@@ -243,15 +247,18 @@ class MicrophoneCaptureManager(
         }
 
         val toRead = minOf(available, maxBytes)
-        val output = ByteArray(toRead)
-        val bytesRead = buffer.read(output, 0, toRead)
-
-        return if (bytesRead > 0) {
-            AudioDebugLogger.logMicSend(bytesRead, buffer.fillLevelMs())
-            output.copyOf(bytesRead)
-        } else {
-            null
+        // Grow pre-allocated buffer if needed (rare — only if maxBytes increases)
+        if (readBuffer.size < toRead) {
+            readBuffer = ByteArray(toRead)
         }
+        val bytesRead = buffer.read(readBuffer, 0, toRead)
+
+        if (bytesRead <= 0) return null
+
+        AudioDebugLogger.logMicSend(bytesRead, buffer.fillLevelMs())
+        // Common case: bytesRead == readBuffer.size → return pre-allocated buffer directly (zero alloc)
+        // Rare case: partial read → copyOf to avoid sending stale bytes (caller uses array.size)
+        return if (bytesRead == readBuffer.size) readBuffer else readBuffer.copyOf(bytesRead)
     }
 
     /** Get current decode type (3, 5, 6, or 7), or -1 if not capturing. */

@@ -4,7 +4,6 @@ import android.content.Context
 import android.hardware.usb.UsbManager
 import android.os.PowerManager
 import android.view.Surface
-import com.carlink.audio.ActiveStreamType
 import com.carlink.audio.DualStreamAudioManager
 import com.carlink.audio.MicrophoneCaptureManager
 import com.carlink.logging.Logger
@@ -41,6 +40,7 @@ import com.carlink.video.H264Renderer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -148,7 +148,6 @@ class CarlinkManager(
     // Video
     private var h264Renderer: H264Renderer? = null
     private var videoSurface: Surface? = null
-    private var videoInitialized = false // Track if video subsystem is ready for decoding
     private var lastVideoDiscardWarningTime = 0L // Throttle discard warnings
 
     // Actual surface dimensions for touch normalization
@@ -362,11 +361,9 @@ class CarlinkManager(
         }
 
         // Start the H264 renderer to initialize MediaCodec and begin decoding
-        // This MUST be called before processData() - MediaCodec requires start() before queueInputBuffer()
+        // This MUST be called before feedDirect() - MediaCodec requires start() before queueInputBuffer()
         h264Renderer?.start()
 
-        // Mark video as initialized - videoProcessor will now process frames instead of discarding
-        videoInitialized = true
         logInfo("Video subsystem initialized and ready for decoding", tag = Logger.Tags.VIDEO)
 
         // Initialize audio manager with platform-specific config
@@ -416,8 +413,12 @@ class CarlinkManager(
                         },
                     )
                 }
-            // Share session token with MediaBrowserService for AAOS cluster integration
-            CarlinkMediaBrowserService.mediaSessionToken = mediaSessionManager?.getSessionToken()
+            // Push session token to MediaBrowserService for AAOS cluster integration.
+            // Uses updateSessionToken() to also push to an already-running service instance,
+            // resolving the race where the system starts the service before this point.
+            mediaSessionManager?.getSessionToken()?.let {
+                CarlinkMediaBrowserService.updateSessionToken(it)
+            }
             logInfo("MediaSession initialized (ADAPTER audio mode)", tag = Logger.Tags.ADAPTR)
         } else {
             logInfo("MediaSession skipped (BLUETOOTH audio mode - audio via phone BT)", tag = Logger.Tags.ADAPTR)
@@ -477,8 +478,8 @@ class CarlinkManager(
             return
         }
 
-        // Create video processor for direct USB -> ring buffer data flow
-        // This bypasses message parsing for zero-copy performance (matches Flutter architecture)
+        // Create video processor for direct USB -> codec data flow
+        // This bypasses message parsing for zero-copy performance (DIRECT_HANDOFF)
         val videoProcessor = createVideoProcessor()
 
         // Create and start adapter driver
@@ -571,7 +572,6 @@ class CarlinkManager(
 
         // Stop audio
         if (audioInitialized) {
-            audioManager?.setActiveStreamType(ActiveStreamType.MEDIA)
             audioManager?.release()
             audioInitialized = false
             logInfo("Audio released on stop", tag = Logger.Tags.AUDIO)
@@ -617,6 +617,10 @@ class CarlinkManager(
         mediaSessionManager?.release()
         CarlinkMediaBrowserService.mediaSessionToken = null
         mediaSessionManager = null
+
+        // Cancel coroutine scope to stop any in-flight coroutines that hold
+        // references to this manager and its context
+        scope.cancel()
 
         logInfo("CarlinkManager released", tag = Logger.Tags.ADAPTR)
     }
@@ -785,7 +789,8 @@ class CarlinkManager(
 
             State.DISCONNECTED -> {
                 mediaSessionManager?.setStateStopped()
-                // Stop foreground service when disconnected
+                // Clear now-playing and stop foreground service
+                CarlinkMediaBrowserService.clearNowPlaying()
                 CarlinkMediaBrowserService.stopConnectionForeground(context)
                 // Release wake lock - CPU can sleep now
                 releaseWakeLock()
@@ -883,7 +888,9 @@ class CarlinkManager(
 
                 // Feed video data to renderer (fallback when direct processing not used)
                 message.data?.let { data ->
-                    h264Renderer?.processData(data)
+                    if (data.size > 20) {
+                        h264Renderer?.feedDirect(data, 20, data.size - 20)
+                    }
                 }
             }
 
@@ -898,7 +905,7 @@ class CarlinkManager(
                     // Safety net: ensure frame interval running when video starts
                     ensureFrameIntervalRunning()
                 }
-                // Video data already processed directly into ring buffer by videoProcessor
+                // Video data already processed directly by videoProcessor (DIRECT_HANDOFF)
             }
 
             is AudioDataMessage -> {
@@ -934,7 +941,7 @@ class CarlinkManager(
     private fun processAudioData(message: AudioDataMessage) {
         // Handle volume ducking
         message.volumeDuration?.let { duration ->
-            audioManager?.setDucking(message.volume?.toFloat() ?: 1.0f)
+            audioManager?.setDucking(message.volume)
             return
         }
 
@@ -944,8 +951,8 @@ class CarlinkManager(
         // Skip if no audio data
         val audioData = message.data ?: return
 
-        // Write audio
-        audioManager?.writeAudio(audioData, message.audioType, message.decodeType)
+        // Write audio with offset+length to avoid copy
+        audioManager?.writeAudio(audioData, message.audioDataOffset, message.audioDataLength, message.audioType, message.decodeType)
     }
 
     private fun handleAudioCommand(command: AudioCommand) {
@@ -972,14 +979,12 @@ class CarlinkManager(
 
             AudioCommand.AUDIO_SIRI_START -> {
                 logInfo("[AUDIO_CMD] Siri started - enabling microphone (mode: SIRI)", tag = Logger.Tags.MIC)
-                audioManager?.setActiveStreamType(ActiveStreamType.SIRI)
                 activeVoiceMode = VoiceMode.SIRI
                 startMicrophoneCapture(decodeType = 5, audioType = 3)
             }
 
             AudioCommand.AUDIO_PHONECALL_START -> {
                 logInfo("[AUDIO_CMD] Phone call started - enabling microphone (mode: PHONECALL)", tag = Logger.Tags.MIC)
-                audioManager?.setActiveStreamType(ActiveStreamType.PHONE_CALL)
                 activeVoiceMode = VoiceMode.PHONECALL
                 startMicrophoneCapture(decodeType = 5, audioType = 3)
             }
@@ -989,51 +994,36 @@ class CarlinkManager(
                 // USB capture shows: PHONECALL_START arrives ~130ms BEFORE SIRI_STOP
                 if (activeVoiceMode == VoiceMode.PHONECALL) {
                     logInfo(
-                        "[AUDIO_CMD] Siri stopped but phone call active - keeping PHONE_CALL stream",
+                        "[AUDIO_CMD] Siri stopped but phone call active - keeping mic for call",
                         tag = Logger.Tags.MIC,
                     )
-                    // Don't reset stream type - phone call takes priority
                 } else {
                     logInfo("[AUDIO_CMD] Siri stopped - disabling microphone", tag = Logger.Tags.MIC)
-                    audioManager?.setActiveStreamType(ActiveStreamType.MEDIA)
                     activeVoiceMode = VoiceMode.NONE
                     stopMicrophoneCapture()
                 }
-                audioManager?.stopVoiceTrack()
             }
 
             AudioCommand.AUDIO_PHONECALL_STOP -> {
                 logInfo("[AUDIO_CMD] Phone call stopped - disabling microphone", tag = Logger.Tags.MIC)
-                audioManager?.setActiveStreamType(ActiveStreamType.MEDIA)
                 activeVoiceMode = VoiceMode.NONE
                 stopMicrophoneCapture()
-                audioManager?.stopCallTrack()
             }
 
             AudioCommand.AUDIO_MEDIA_START -> {
                 logDebug("[AUDIO_CMD] Media audio START command received", tag = Logger.Tags.AUDIO)
-                // Only set to MEDIA if no priority stream active
-                if (activeVoiceMode == VoiceMode.NONE) {
-                    audioManager?.setActiveStreamType(ActiveStreamType.MEDIA)
-                }
             }
 
             AudioCommand.AUDIO_MEDIA_STOP -> {
                 logDebug("[AUDIO_CMD] Media audio STOP command received", tag = Logger.Tags.AUDIO)
-                // Media track typically stays active, but log for debugging
             }
 
             AudioCommand.AUDIO_ALERT_START -> {
                 logDebug("[AUDIO_CMD] Alert started", tag = Logger.Tags.AUDIO)
-                audioManager?.setActiveStreamType(ActiveStreamType.ALERT)
             }
 
             AudioCommand.AUDIO_ALERT_STOP -> {
                 logDebug("[AUDIO_CMD] Alert stopped", tag = Logger.Tags.AUDIO)
-                // Only reset if not in voice mode
-                if (activeVoiceMode == VoiceMode.NONE) {
-                    audioManager?.setActiveStreamType(ActiveStreamType.MEDIA)
-                }
             }
 
             AudioCommand.AUDIO_OUTPUT_START -> {
@@ -1165,6 +1155,9 @@ class CarlinkManager(
             albumArt = mediaInfo.albumCover,
         )
         mediaSessionManager?.updatePlaybackState(playing = true)
+
+        // Update foreground notification with current now-playing
+        CarlinkMediaBrowserService.updateNowPlaying(mediaInfo.songTitle, mediaInfo.songArtist)
     }
 
     /**
@@ -1443,11 +1436,8 @@ class CarlinkManager(
     }
 
     /**
-     * Create a video processor for direct USB -> ring buffer data flow.
-     * This bypasses message parsing and matches Flutter's zero-copy architecture.
-     *
-     * The processor reads USB data directly into the H264Renderer's ring buffer,
-     * skipping the 20-byte video header but extracting the source PTS.
+     * Create a video processor for direct USB -> codec data flow.
+     * [DIRECT_HANDOFF]: Data is already in a buffer. Feed codec directly or drop.
      *
      * Video header structure (20 bytes):
      * - offset 0: width (4 bytes)
@@ -1455,45 +1445,25 @@ class CarlinkManager(
      * - offset 8: encoderState (4 bytes) - protocol ID: 3=AA, 7=CarPlay
      * - offset 12: pts (4 bytes) - SOURCE PRESENTATION TIMESTAMP (milliseconds)
      * - offset 16: flags (4 bytes) - always 0
-     *
-     * NOTE: Source PTS is critical for CarPlay which uses variable frame rate.
-     * Frames are only sent when UI changes, so synthetic 60fps timestamps would
-     * cause incorrect frame pacing.
      */
     private fun createVideoProcessor(): UsbDeviceWrapper.VideoDataProcessor {
         return object : UsbDeviceWrapper.VideoDataProcessor {
-            override fun processVideoDirect(
-                payloadLength: Int,
-                sourcePtsMs: Int,
-                readCallback: (buffer: ByteArray, offset: Int, length: Int) -> Int,
-            ) {
-                // Get the H264Renderer - if not available, discard data
-                val renderer =
-                    h264Renderer ?: run {
-                        // Still need to read and discard the data to prevent USB buffer overflow
-                        val discardBuffer = ByteArray(payloadLength)
-                        readCallback(discardBuffer, 0, payloadLength)
-
-                        // Log warning (throttled to every 2 seconds to avoid log spam)
-                        val now = System.currentTimeMillis()
-                        if (now - lastVideoDiscardWarningTime > 2000) {
-                            lastVideoDiscardWarningTime = now
-                            logWarn(
-                                "Video frame discarded - H264Renderer not initialized. " +
-                                    "Ensure initialize(surface) is called before video streaming starts.",
-                                tag = Logger.Tags.VIDEO,
-                            )
-                        }
-                        return
+            override fun processVideoDirect(data: ByteArray, dataLength: Int, sourcePtsMs: Int) {
+                val renderer = h264Renderer ?: run {
+                    // Data already read by UsbDeviceWrapper — just discard by returning
+                    val now = System.currentTimeMillis()
+                    if (now - lastVideoDiscardWarningTime > 2000) {
+                        lastVideoDiscardWarningTime = now
+                        logWarn("Video frame discarded - H264Renderer not initialized.", tag = Logger.Tags.VIDEO)
                     }
+                    return
+                }
 
-                // payloadLength includes the 20-byte video header
-                // skipBytes=20 tells the ring buffer to skip the header when reading
-                logVideoUsb { "processVideoDirect: payloadLength=$payloadLength, pts=$sourcePtsMs" }
+                logVideoUsb { "processVideoDirect: dataLength=$dataLength, pts=$sourcePtsMs" }
 
-                renderer.processData(payloadLength, 20) { buffer, offset ->
-                    // Read USB data directly into the ring buffer
-                    readCallback(buffer, offset, payloadLength)
+                // Skip 20-byte video header, feed H.264 data directly to codec
+                if (dataLength > 20) {
+                    renderer.feedDirect(data, 20, dataLength - 20)
                 }
             }
         }

@@ -10,7 +10,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.carlink.logging.logError
 import com.carlink.logging.logInfo
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 /**
@@ -165,21 +164,6 @@ class DisplayModePreference private constructor(
         )
 
     /**
-     * Returns the current display mode.
-     *
-     * Note: Prefer getDisplayModeSync() for startup reads to avoid ANR.
-     */
-    suspend fun getDisplayMode(): DisplayMode =
-        try {
-            val preferences = dataStore.data.first()
-            preferences[KEY_DISPLAY_MODE]?.let { DisplayMode.fromValue(it) }
-                ?: DisplayMode.SYSTEM_UI_VISIBLE
-        } catch (e: Exception) {
-            logError("Failed to read display mode preference: $e", tag = "DisplayModePreference")
-            DisplayMode.SYSTEM_UI_VISIBLE
-        }
-
-    /**
      * Sets the display mode preference.
      * Updates both DataStore and sync cache atomically.
      * Note: App restart required for changes to take full effect.
@@ -202,9 +186,4 @@ class DisplayModePreference private constructor(
         }
     }
 
-    @Deprecated(
-        message = "Use getDisplayModeSync() instead",
-        replaceWith = ReplaceWith("getDisplayModeSync() == DisplayMode.FULLSCREEN_IMMERSIVE"),
-    )
-    fun isImmersiveModeEnabled(): Boolean = getDisplayModeSync() == DisplayMode.FULLSCREEN_IMMERSIVE
 }

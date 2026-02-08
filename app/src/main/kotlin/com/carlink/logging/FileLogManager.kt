@@ -118,16 +118,6 @@ class FileLogManager(
                 file.isFile && file.name.endsWith(".log")
             }?.sortedByDescending { it.lastModified() } ?: emptyList()
 
-    fun getCurrentLogFile(): File? = writerLock.withLock { currentLogFile }
-
-    /**
-     * Checks if the given file is the currently active log file being written to.
-     * Used to warn users before exporting an actively written file.
-     */
-    fun isCurrentLogFile(file: File): Boolean = writerLock.withLock {
-        currentLogFile?.absolutePath == file.absolutePath
-    }
-
     fun deleteLogFile(file: File): Boolean =
         writerLock.withLock {
             try {
@@ -146,22 +136,9 @@ class FileLogManager(
             }
         }
 
-    fun deleteAllLogs() {
-        writerLock.withLock {
-            closeWriterLocked()
-        }
-        getLogFiles().forEach { it.delete() }
-        writerLock.withLock {
-            createNewLogFileLocked()
-            writeHeaderLocked()
-        }
-    }
-
     fun getTotalLogSize(): Long = getLogFiles().sumOf { it.length() }
 
     fun getCurrentLogFileSize(): Long = writerLock.withLock { currentLogFile?.length() ?: 0L }
-
-    fun isEnabled(): Boolean = isEnabled.get()
 
     /**
      * Flushes all pending log entries to disk.

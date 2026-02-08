@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.SettingsInputComponent
 import androidx.compose.material.icons.filled.SignalCellularAlt
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
@@ -98,6 +99,9 @@ fun AdapterConfigurationDialog(
     val savedCallQuality by adapterConfigPreference.callQualityFlow.collectAsStateWithLifecycle(
         initialValue = CallQualityConfig.DEFAULT,
     )
+    val savedMediaDelay by adapterConfigPreference.mediaDelayFlow.collectAsStateWithLifecycle(
+        initialValue = MediaDelayConfig.DEFAULT,
+    )
     val savedVideoResolution by adapterConfigPreference.videoResolutionFlow.collectAsStateWithLifecycle(
         initialValue = VideoResolutionConfig.AUTO,
     )
@@ -151,6 +155,7 @@ fun AdapterConfigurationDialog(
     var selectedMicSource by remember { mutableStateOf(savedMicSource) }
     var selectedWifiBand by remember { mutableStateOf(savedWifiBand) }
     var selectedCallQuality by remember { mutableStateOf(savedCallQuality) }
+    var selectedMediaDelay by remember { mutableStateOf(savedMediaDelay) }
     var selectedVideoResolution by remember { mutableStateOf(savedVideoResolution) }
 
     // Sync local state when saved value loads (for initial load)
@@ -158,6 +163,7 @@ fun AdapterConfigurationDialog(
     LaunchedEffect(savedMicSource) { selectedMicSource = savedMicSource }
     LaunchedEffect(savedWifiBand) { selectedWifiBand = savedWifiBand }
     LaunchedEffect(savedCallQuality) { selectedCallQuality = savedCallQuality }
+    LaunchedEffect(savedMediaDelay) { selectedMediaDelay = savedMediaDelay }
     LaunchedEffect(savedVideoResolution) { selectedVideoResolution = savedVideoResolution }
 
     // Track if any changes were made
@@ -167,6 +173,7 @@ fun AdapterConfigurationDialog(
             selectedMicSource != savedMicSource ||
             selectedWifiBand != savedWifiBand ||
             selectedCallQuality != savedCallQuality ||
+            selectedMediaDelay != savedMediaDelay ||
             selectedVideoResolution != savedVideoResolution
 
     // Responsive dialog width - 60% of container width, clamped between 320dp and 600dp
@@ -386,6 +393,59 @@ fun AdapterConfigurationDialog(
                         )
                     }
 
+                    // Media Delay Configuration
+                    ConfigurationOptionCard(
+                        title = "Media Delay",
+                        description = "Audio buffer size on adapter",
+                        icon = Icons.Default.Timer,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            AudioSourceButton(
+                                label = "Low",
+                                icon = Icons.Default.Timer,
+                                isSelected = selectedMediaDelay == MediaDelayConfig.LOW,
+                                onClick = { selectedMediaDelay = MediaDelayConfig.LOW },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "Medium",
+                                icon = Icons.Default.Timer,
+                                isSelected = selectedMediaDelay == MediaDelayConfig.MEDIUM,
+                                onClick = { selectedMediaDelay = MediaDelayConfig.MEDIUM },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "Standard",
+                                icon = Icons.Default.Timer,
+                                isSelected = selectedMediaDelay == MediaDelayConfig.STANDARD,
+                                onClick = { selectedMediaDelay = MediaDelayConfig.STANDARD },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "High",
+                                icon = Icons.Default.Timer,
+                                isSelected = selectedMediaDelay == MediaDelayConfig.HIGH,
+                                onClick = { selectedMediaDelay = MediaDelayConfig.HIGH },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                when (selectedMediaDelay) {
+                                    MediaDelayConfig.LOW -> "300ms — Lowest latency, may glitch on poor USB"
+                                    MediaDelayConfig.MEDIUM -> "500ms — Balanced latency and stability"
+                                    MediaDelayConfig.STANDARD -> "1000ms — Firmware default (recommended)"
+                                    MediaDelayConfig.HIGH -> "2000ms — Maximum buffer for problematic setups"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
+                    }
+
                     // Video Resolution Configuration
                     ConfigurationOptionCard(
                         title = "Video Resolution",
@@ -503,13 +563,14 @@ fun AdapterConfigurationDialog(
                     // Apply & Restart button - all adapter config changes require restart
                     Button(
                         onClick = {
-                            logWarn("[UI_ACTION] Adapter Config: Apply & Restart clicked - audio=$selectedAudioSource, mic=$selectedMicSource, wifi=$selectedWifiBand, callQuality=$selectedCallQuality, resolution=${selectedVideoResolution.toStorageString()}", tag = "UI")
+                            logWarn("[UI_ACTION] Adapter Config: Apply & Restart clicked - audio=$selectedAudioSource, mic=$selectedMicSource, wifi=$selectedWifiBand, callQuality=$selectedCallQuality, mediaDelay=$selectedMediaDelay, resolution=${selectedVideoResolution.toStorageString()}", tag = "UI")
                             scope.launch {
                                 // Save all configuration
                                 adapterConfigPreference.setAudioSource(selectedAudioSource)
                                 adapterConfigPreference.setMicSource(selectedMicSource)
                                 adapterConfigPreference.setWifiBand(selectedWifiBand)
                                 adapterConfigPreference.setCallQuality(selectedCallQuality)
+                                adapterConfigPreference.setMediaDelay(selectedMediaDelay)
                                 adapterConfigPreference.setVideoResolution(selectedVideoResolution)
 
                                 // All adapter config changes require restart

@@ -441,7 +441,7 @@ data class AdapterConfig(
     /** Night mode: false=light theme, true=dark theme for CarPlay display */
     val nightMode: Boolean = false,
     val boxName: String = "carlink",
-    val mediaDelay: Int = 300,
+    val mediaDelay: Int = 1000,
     /** Audio transfer mode: true=bluetooth, false=adapter (USB audio, default) */
     val audioTransferMode: Boolean = false,
     /** Sample rate for media audio (48000 Hz). Controls mediaSound in BoxSettings. */
