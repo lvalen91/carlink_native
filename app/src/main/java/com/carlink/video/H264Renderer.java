@@ -21,6 +21,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 
 import com.carlink.BuildConfig;
 import com.carlink.util.AppExecutors;
@@ -33,6 +35,17 @@ public class H264Renderer {
     /** Callback to request keyframe (IDR) from adapter after codec reset. */
     public interface KeyframeRequestCallback {
         void onKeyframeNeeded();
+    }
+
+    /** Pre-allocated frame buffer for staging between USB and feeder threads.
+     *  Ownership transfer via AtomicReference provides happens-before guarantee. */
+    private static final class StagedFrame {
+        final byte[] data;
+        int length;
+        long timestamp;
+        StagedFrame(int capacity) {
+            this.data = new byte[capacity];
+        }
     }
 
     private volatile MediaCodec mCodec;
@@ -142,6 +155,18 @@ public class H264Renderer {
     // on different threads (codec internal thread, executor, main thread).
     private final Object codecLock = new Object();
 
+    // Single-slot staging: USB thread writes here, feeder thread reads.
+    // 3 buffers guarantee USB thread always has a write buffer available.
+    private static final int STAGED_FRAME_CAPACITY = 512 * 1024;  // 512KB, covers 1080p I-frames
+    private static final int STAGED_FRAME_COUNT = 3;               // write + pending + feed
+
+    private final AtomicReference<StagedFrame> pendingFrame = new AtomicReference<>(null);
+    private final ConcurrentLinkedQueue<StagedFrame> framePool = new ConcurrentLinkedQueue<>();
+    private StagedFrame writeFrame;                                // USB thread only
+    private volatile Thread feederThread;
+    private final AtomicLong stagingDropCount = new AtomicLong(0);
+    private final AtomicLong oversizedDropCount = new AtomicLong(0);
+
     public H264Renderer(int width, int height, Surface surface, LogCallback logCallback,
                         AppExecutors executors, String preferredDecoderName) {
         this.width = width;
@@ -183,10 +208,12 @@ public class H264Renderer {
         try {
             initCodec(width, height, surface);
             mCodec.start();
+            initStaging();
             VideoDebugLogger.logCodecStarted();
             log("[VIDEO] codec started");
         } catch (Exception e) {
             log("start error: " + e);
+            stopStaging();
             running = false;
 
             log("restarting in 5s");
@@ -203,6 +230,7 @@ public class H264Renderer {
         if (!running) return;
 
         running = false;
+        stopStaging();  // Join feeder BEFORE stopping codec
 
         synchronized (codecLock) {
             if (mCodec != null) {
@@ -367,6 +395,110 @@ public class H264Renderer {
         return null;
     }
 
+    /** Initialize staging buffers and start the feeder thread. Call after mCodec.start(). */
+    private void initStaging() {
+        pendingFrame.set(null);
+        framePool.clear();
+        stagingDropCount.set(0);
+        oversizedDropCount.set(0);
+
+        // Allocate 3 StagedFrames: 1 → writeFrame, 2 → framePool
+        writeFrame = new StagedFrame(STAGED_FRAME_CAPACITY);
+        for (int i = 1; i < STAGED_FRAME_COUNT; i++) {
+            framePool.offer(new StagedFrame(STAGED_FRAME_CAPACITY));
+        }
+
+        Thread t = new Thread(this::feederLoop, "H264-Feeder");
+        t.setDaemon(true);
+        feederThread = t;
+        t.start();
+        debugLog("Feeder thread started");
+    }
+
+    /** Stop the feeder thread and release staging buffers. Call before mCodec.stop(). */
+    private void stopStaging() {
+        Thread t = feederThread;
+        feederThread = null;
+        if (t != null) {
+            LockSupport.unpark(t);
+            try {
+                t.join(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            if (t.isAlive()) {
+                debugLog("Feeder thread did not exit within 1s");
+            }
+        }
+        pendingFrame.set(null);
+        framePool.clear();
+        writeFrame = null;
+    }
+
+    /** Feeder thread main loop — takes frames from pendingFrame and feeds to codec. */
+    private void feederLoop() {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_DISPLAY);
+        try {
+            while (running) {
+                StagedFrame frame = pendingFrame.getAndSet(null);
+                if (frame != null) {
+                    feedFrameToCodec(frame);
+                    framePool.offer(frame);
+                } else {
+                    LockSupport.parkNanos(1_000_000L);  // 1ms — 0.5ms avg added latency
+                }
+            }
+        } catch (Exception e) {
+            debugLog("Feeder thread exception: " + e);
+        }
+        debugLog("Feeder thread exited");
+    }
+
+    /** Feed a staged frame to the codec. Called only from feeder thread. */
+    private void feedFrameToCodec(StagedFrame frame) {
+        if (mCodec == null) return;
+
+        Integer index = codecAvailableBufferIndexes.poll();
+        if (index == null) {
+            // Codec busy → drop. Track what we're dropping.
+            totalDropCount.incrementAndGet();
+            int nalType = getNalType(frame.data, 0, frame.length);
+            if (nalType == NAL_IDR) {
+                long sessionTotal = sessionIdrDrops.incrementAndGet();
+                idrDropCount.incrementAndGet();
+                VideoDebugLogger.logIdrDrop(frame.length, sessionTotal);
+                debugLog("DROP IDR (keyframe) size=" + frame.length + " idrDrops=" + sessionTotal);
+                log("[VIDEO] WARNING: Dropped IDR keyframe (" + frame.length + "B) — expect pixelation until next keyframe. Session IDR drops: " + sessionTotal);
+            } else {
+                pFrameDropCount.incrementAndGet();
+            }
+            return;
+        }
+
+        try {
+            ByteBuffer inputBuffer = mCodec.getInputBuffer(index);
+            if (inputBuffer == null) {
+                long count = nullBufferCount.incrementAndGet();
+                if (count == 1 || count % 100 == 0) {
+                    debugLog("feedFrameToCodec: getInputBuffer null (count=" + count + ")");
+                }
+                codecAvailableBufferIndexes.offer(index);
+                return;
+            }
+            inputBuffer.clear();
+            inputBuffer.put(frame.data, 0, frame.length);
+            mCodec.queueInputBuffer(index, 0, frame.length, frame.timestamp, 0);
+            feedSuccesses.incrementAndGet();
+        } catch (Exception e) {
+            long count = feedExceptionCount.incrementAndGet();
+            lastFeedException = e.getClass().getSimpleName() + ": " + e.getMessage();
+            if (count == 1 || count % 100 == 0) {
+                debugLog("feedFrameToCodec exception (count=" + count + "): " + lastFeedException);
+            }
+            codecAvailableBufferIndexes.offer(index);
+        }
+    }
+
     // H.264 NAL unit types (ITU-T H.264 Table 7-1)
     private static final int NAL_SLICE = 1;       // Non-IDR slice (P/B frame)
     private static final int NAL_IDR = 5;         // IDR slice (keyframe)
@@ -410,62 +542,58 @@ public class H264Renderer {
     }
 
     /**
-     * Feed H.264 data directly to codec. No buffer, no queue.
-     * Called from USB-ReadLoop thread. [DIRECT_HANDOFF] implementation.
+     * Stage H.264 data for codec feeding. GC-immune USB thread fast path.
+     * Called from USB-ReadLoop thread. [SINGLE_SLOT_HANDOFF] implementation.
      *
-     * USB → MediaCodec directly, drop if codec busy (GM AAOS approach).
-     * Dropping is the goal, not a side effect. Codec busy = frame is already late.
+     * USB → System.arraycopy → AtomicReference.getAndSet(). No JNI, no codec calls.
+     * Feeder thread handles all codec interaction on its own timeline.
      *
-     * @return true if frame was accepted, false if dropped (codec busy = correct)
+     * @return true if frame was staged, false if dropped (oversized or no buffer)
      */
     public boolean feedDirect(byte[] data, int offset, int length) {
-        if (!running || mCodec == null) return false;
+        if (!running) return false;
         framesReceived.incrementAndGet();
         logStats();
 
-        Integer index = codecAvailableBufferIndexes.poll();
-        if (index == null) {
-            // Codec busy → drop. Track what we're dropping.
-            totalDropCount.incrementAndGet();
-            int nalType = getNalType(data, offset, length);
-            if (nalType == NAL_IDR) {
-                long idrDrops = idrDropCount.incrementAndGet();
-                long sessionTotal = sessionIdrDrops.incrementAndGet();
-                // Always log IDR drops — losing a keyframe corrupts all frames until next IDR
-                VideoDebugLogger.logIdrDrop(length, sessionTotal);
-                debugLog("DROP IDR (keyframe) size=" + length + " idrDrops=" + sessionTotal);
-                log("[VIDEO] WARNING: Dropped IDR keyframe (" + length + "B) — expect pixelation until next keyframe. Session IDR drops: " + sessionTotal);
-            } else {
-                pFrameDropCount.incrementAndGet();
-            }
+        // Guard: reject frames exceeding staging capacity (corrupted USB data)
+        if (length > STAGED_FRAME_CAPACITY) {
+            oversizedDropCount.incrementAndGet();
+            debugLog("DROP oversized frame: " + length + "B > " + STAGED_FRAME_CAPACITY + "B");
             return false;
         }
 
-        try {
-            ByteBuffer inputBuffer = mCodec.getInputBuffer(index);
-            if (inputBuffer == null) {
-                long count = nullBufferCount.incrementAndGet();
-                if (count == 1 || count % 100 == 0) {
-                    debugLog("feedDirect: getInputBuffer null (count=" + count + ")");
-                }
-                codecAvailableBufferIndexes.offer(index);
-                return false;
+        StagedFrame wf = writeFrame;
+        if (wf == null) return false;  // Staging not initialized
+
+        // The only real work: memcpy into pre-allocated buffer
+        System.arraycopy(data, offset, wf.data, 0, length);
+        wf.length = length;
+        wf.timestamp = frameCounter.getAndIncrement();
+
+        // Atomic publish — feeder thread takes ownership
+        StagedFrame prev = pendingFrame.getAndSet(wf);
+
+        if (prev != null) {
+            // Previous frame was overwritten before feeder could take it — staging drop.
+            // Reuse prev as next writeFrame (it's ours now).
+            stagingDropCount.incrementAndGet();
+            int nalType = getNalType(prev.data, 0, prev.length);
+            if (nalType == NAL_IDR) {
+                long sessionTotal = sessionIdrDrops.incrementAndGet();
+                idrDropCount.incrementAndGet();
+                debugLog("STAGE overwrite IDR size=" + prev.length + " idrDrops=" + sessionTotal);
+                log("[VIDEO] WARNING: Staging overwrite dropped IDR (" + prev.length + "B). Session IDR drops: " + sessionTotal);
             }
-            inputBuffer.clear();
-            inputBuffer.put(data, offset, length);
-            long pts = frameCounter.getAndIncrement();
-            mCodec.queueInputBuffer(index, 0, length, pts, 0);
-            feedSuccesses.incrementAndGet();
-            return true;
-        } catch (Exception e) {
-            long count = feedExceptionCount.incrementAndGet();
-            lastFeedException = e.getClass().getSimpleName() + ": " + e.getMessage();
-            if (count == 1 || count % 100 == 0) {
-                debugLog("feedDirect exception (count=" + count + "): " + lastFeedException);
-            }
-            codecAvailableBufferIndexes.offer(index);
-            return false;
+            writeFrame = prev;
+        } else {
+            // Feeder took the previous frame — get a fresh buffer from pool
+            writeFrame = framePool.poll();
+            // writeFrame may be null briefly if feeder hasn't returned its buffer yet.
+            // Next feedDirect() call will return false (null guard above). This is fine —
+            // the feeder will return the buffer to the pool within ~1ms.
         }
+
+        return true;
     }
 
     private void logStats() {
@@ -509,6 +637,14 @@ public class H264Renderer {
             sb.append(" LastIn:").append(lastInAge).append("ms LastOut:").append(lastOutAge).append("ms")
               .append(" run=").append(running).append(" codec=").append(mCodec != null)
               .append(" surface=").append(surfaceValid);
+
+            // Staging drop counters (reset each interval)
+            long stageDrops = stagingDropCount.getAndSet(0);
+            long oversized = oversizedDropCount.getAndSet(0);
+            if (stageDrops > 0 || oversized > 0) {
+                sb.append(" STAGE[overwrite:").append(stageDrops)
+                  .append(" oversized:").append(oversized).append("]");
+            }
 
             // Only append failure info if there were failures (keeps log clean when healthy)
             if (nullBufs > 0 || exceptions > 0) {

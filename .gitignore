@@ -23,6 +23,9 @@ signing.properties
 
 # Build outputs
 **/build/
+**/app/build/
+**/app/debug/
+**/app/release/
 **/outputs/
 **/.cxx/
 **/generated/

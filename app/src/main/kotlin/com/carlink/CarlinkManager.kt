@@ -442,12 +442,13 @@ class CarlinkManager(
             )
         }
 
-        setState(State.CONNECTING)
-
-        // Stop any existing connection
+        // Stop any existing connection before entering CONNECTING state
+        // so that FGS started at CONNECTING isn't immediately stopped by stop()→DISCONNECTED
         if (adapterDriver != null) {
             stop()
         }
+
+        setState(State.CONNECTING)
 
         // Reset video renderer (only if initialized)
         h264Renderer?.reset()
@@ -783,7 +784,9 @@ class CarlinkManager(
         when (state) {
             State.CONNECTING -> {
                 mediaSessionManager?.setStateConnecting()
-                // Acquire wake lock early to ensure USB operations aren't interrupted
+                // Start foreground service early to maintain process priority during handshake
+                CarlinkMediaBrowserService.startConnectionForeground(context)
+                // Acquire wake lock to ensure USB operations aren't interrupted
                 acquireWakeLock()
             }
 
@@ -797,7 +800,7 @@ class CarlinkManager(
             }
 
             State.STREAMING -> {
-                // Start foreground service to keep app active when backgrounded
+                // Defensive: ensure FGS is running (idempotent if already started at CONNECTING)
                 CarlinkMediaBrowserService.startConnectionForeground(context)
                 // Ensure wake lock is held during streaming
                 acquireWakeLock()
@@ -813,7 +816,7 @@ class CarlinkManager(
      */
     private fun acquireWakeLock() {
         if (!wakeLock.isHeld) {
-            wakeLock.acquire(10 * 60 * 1000L) // 10 minute timeout as safety
+            wakeLock.acquire() // No timeout — released explicitly on DISCONNECTED
             logInfo("[WAKE_LOCK] Acquired partial wake lock for USB streaming", tag = Logger.Tags.USB)
         }
     }
@@ -1231,8 +1234,13 @@ class CarlinkManager(
                 tag = Logger.Tags.USB,
             )
             reconnectAttempts = 0
+            // Stop FGS since we're no longer attempting to reconnect
+            CarlinkMediaBrowserService.stopConnectionForeground(context)
             return
         }
+
+        // Maintain foreground priority during reconnect delay to prevent LMK kill
+        CarlinkMediaBrowserService.startConnectionForeground(context)
 
         // Calculate delay with exponential backoff, capped at max
         val delay =

@@ -129,3 +129,4 @@
 [64] :: H264Renderer.java MAX_BUFFER_PACKETS from 10 to 2
 [65] :: Dependency Updates
 [66] :: Video Direct Handoff to MediaCodec, no buffering. Codec is fed inline on the USB thread. NAL Type 30s logcat logging. Back to two audio output streams (Nav + Everything else) for simplification. Audio zero-copy, buffer tuning. Microphone cleanup. Just a bunch of cleaning up. Added media delay option to adapter config
+[67] :: Decoupling (Single-Slot Handoff) Video-Audio to allow interrupted Video and Audio if GC Pressure occurs.

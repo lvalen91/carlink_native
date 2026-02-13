@@ -11,7 +11,7 @@ android {
         applicationId = "zeno.carlink"
         minSdk = 32
         targetSdk = 36
-        versionCode = 66
+        versionCode = 68
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
