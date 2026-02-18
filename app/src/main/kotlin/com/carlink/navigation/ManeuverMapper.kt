@@ -188,23 +188,4 @@ object ManeuverMapper {
 
         return builder.build()
     }
-
-    /**
-     * Build a Maneuver from a ManeuverStep (used for the secondary/upcoming step in a burst).
-     */
-    fun buildManeuver(step: ManeuverStep, context: Context): Maneuver {
-        val type = mapManeuverType(step.maneuverType, step.turnSide)
-        val builder = Maneuver.Builder(type)
-
-        getRoundaboutExitNumber(step.maneuverType)?.let {
-            builder.setRoundaboutExitNumber(it)
-        }
-
-        val iconRes = getIconResource(step.maneuverType, step.turnSide)
-        val bitmap = rasterizeIcon(context, iconRes)
-        val icon = CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build()
-        builder.setIcon(icon)
-
-        return builder.build()
-    }
 }

@@ -9,11 +9,7 @@ import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.NavigationManager
 import androidx.car.app.navigation.NavigationManagerCallback
-import androidx.car.app.navigation.model.Destination
 import androidx.car.app.navigation.model.NavigationTemplate
-import androidx.car.app.navigation.model.Step
-import androidx.car.app.navigation.model.TravelEstimate
-import androidx.car.app.navigation.model.Trip
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.carlink.logging.Logger
@@ -21,10 +17,9 @@ import com.carlink.logging.logError
 import com.carlink.logging.logInfo
 import com.carlink.logging.logNavi
 import com.carlink.logging.logWarn
-import com.carlink.navigation.DistanceFormatter
-import com.carlink.navigation.ManeuverMapper
 import com.carlink.navigation.NavigationState
 import com.carlink.navigation.NavigationStateManager
+import com.carlink.navigation.TripBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,8 +27,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import java.time.Duration
-import java.time.ZonedDateTime
 
 /**
  * Navigation relay session for DISPLAY_TYPE_MAIN.
@@ -177,7 +170,7 @@ class ClusterMainSession : Session() {
             }
 
             try {
-                val trip = buildTrip(state)
+                val trip = TripBuilder.buildTrip(state, carContext)
                 navManager.updateTrip(trip)
                 logNavi {
                     "[CLUSTER_MAIN] Trip relayed: maneuver=${state.maneuverType}, " +
@@ -205,41 +198,6 @@ class ClusterMainSession : Session() {
             }
             isNavigating = false
         }
-    }
-
-    /**
-     * Build a Trip from NavigationState — same logic as CarlinkClusterSession.buildTrip().
-     */
-    private fun buildTrip(state: NavigationState): Trip {
-        val tripBuilder = Trip.Builder()
-
-        val maneuver = ManeuverMapper.buildManeuver(state, carContext)
-        val stepBuilder = Step.Builder()
-        stepBuilder.setManeuver(maneuver)
-        state.roadName?.let { stepBuilder.setCue(it) }
-
-        val stepEstimate = TravelEstimate.Builder(
-            DistanceFormatter.toDistance(state.remainDistance),
-            ZonedDateTime.now().plus(Duration.ofSeconds(state.timeToDestination.toLong())),
-        ).build()
-
-        tripBuilder.addStep(stepBuilder.build(), stepEstimate)
-
-        if (state.destinationName != null || state.distanceToDestination > 0) {
-            val destBuilder = Destination.Builder()
-            state.destinationName?.let { destBuilder.setName(it) }
-
-            val destEstimate = TravelEstimate.Builder(
-                DistanceFormatter.toDistance(state.distanceToDestination),
-                ZonedDateTime.now().plus(Duration.ofSeconds(state.timeToDestination.toLong())),
-            ).build()
-
-            tripBuilder.addDestination(destBuilder.build(), destEstimate)
-        }
-
-        tripBuilder.setLoading(false)
-
-        return tripBuilder.build()
     }
 
     /**

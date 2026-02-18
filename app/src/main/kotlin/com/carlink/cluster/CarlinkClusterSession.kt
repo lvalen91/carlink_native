@@ -9,12 +9,9 @@ import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.NavigationManager
 import androidx.car.app.navigation.NavigationManagerCallback
-import androidx.car.app.navigation.model.Destination
 import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.car.app.navigation.model.RoutingInfo
 import androidx.car.app.navigation.model.Step
-import androidx.car.app.navigation.model.TravelEstimate
-import androidx.car.app.navigation.model.Trip
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.carlink.logging.Logger
@@ -26,6 +23,7 @@ import com.carlink.navigation.DistanceFormatter
 import com.carlink.navigation.ManeuverMapper
 import com.carlink.navigation.NavigationState
 import com.carlink.navigation.NavigationStateManager
+import com.carlink.navigation.TripBuilder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,8 +31,6 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-import java.time.Duration
-import java.time.ZonedDateTime
 
 /**
  * Cluster session — observes NavigationStateManager and pushes Trip updates
@@ -51,6 +47,7 @@ class CarlinkClusterSession : Session() {
     private var navigationManager: NavigationManager? = null
     private var scope: CoroutineScope? = null
     private var isNavigating = false
+    private var hasSeenActiveNav = false
 
     override fun onCreateScreen(intent: Intent): Screen {
         logInfo("[CLUSTER] Cluster session screen created", tag = Logger.Tags.NAVI)
@@ -136,6 +133,8 @@ class CarlinkClusterSession : Session() {
         }
 
         if (state.isActive) {
+            hasSeenActiveNav = true
+
             // Start navigation if not already started
             if (!isNavigating) {
                 logInfo("[CLUSTER] Navigation started", tag = Logger.Tags.NAVI)
@@ -150,7 +149,7 @@ class CarlinkClusterSession : Session() {
 
             // Build and push Trip
             try {
-                val trip = buildTrip(state)
+                val trip = TripBuilder.buildTrip(state, carContext)
                 navManager.updateTrip(trip)
                 logNavi {
                     "[CLUSTER] Trip updated: maneuver=${state.maneuverType}, " +
@@ -163,7 +162,7 @@ class CarlinkClusterSession : Session() {
 
             // Update cluster screen
             screen?.updateState(state)
-        } else if (state.isIdle && isNavigating) {
+        } else if (state.isIdle && isNavigating && hasSeenActiveNav) {
             // Navigation ended
             logInfo("[CLUSTER] Navigation ended (NaviStatus=0)", tag = Logger.Tags.NAVI)
             try {
@@ -176,43 +175,6 @@ class CarlinkClusterSession : Session() {
         }
     }
 
-    /**
-     * Build a Trip object from current NavigationState.
-     */
-    private fun buildTrip(state: NavigationState): Trip {
-        val tripBuilder = Trip.Builder()
-
-        // Build current step with maneuver
-        val maneuver = ManeuverMapper.buildManeuver(state, carContext)
-        val stepBuilder = Step.Builder()
-        stepBuilder.setManeuver(maneuver)
-        state.roadName?.let { stepBuilder.setCue(it) }
-
-        // Step travel estimate (distance + time to next maneuver)
-        val stepEstimate = TravelEstimate.Builder(
-            DistanceFormatter.toDistance(state.remainDistance),
-            ZonedDateTime.now().plus(Duration.ofSeconds(state.timeToDestination.toLong())),
-        ).build()
-
-        tripBuilder.addStep(stepBuilder.build(), stepEstimate)
-
-        // Destination info (if available)
-        if (state.destinationName != null || state.distanceToDestination > 0) {
-            val destBuilder = Destination.Builder()
-            state.destinationName?.let { destBuilder.setName(it) }
-
-            val destEstimate = TravelEstimate.Builder(
-                DistanceFormatter.toDistance(state.distanceToDestination),
-                ZonedDateTime.now().plus(Duration.ofSeconds(state.timeToDestination.toLong())),
-            ).build()
-
-            tripBuilder.addDestination(destBuilder.build(), destEstimate)
-        }
-
-        tripBuilder.setLoading(false)
-
-        return tripBuilder.build()
-    }
 }
 
 /**
