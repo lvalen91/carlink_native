@@ -437,10 +437,11 @@ class MainActivity : ComponentActivity() {
     ): ByteArray {
         val safeW = videoW - insetLeft - insetRight
         val safeH = videoH - insetTop - insetBottom
+        val hasInsets = (insetTop or insetBottom or insetLeft or insetRight) != 0
         return ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN)
             .putInt(safeW).putInt(safeH)
             .putInt(insetLeft).putInt(insetTop)
-            .putInt(1) // drawUIOutsideSafeArea = true
+            .putInt(if (hasInsets) 1 else 0) // wallpaper outside safe area only when cutouts exist
             .array()
     }
 
