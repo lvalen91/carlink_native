@@ -129,6 +129,7 @@ RE_Documention/
 | 7 | 0x07 | AudioData | PCM audio or commands |
 | 8 | 0x08 | Command | Control commands |
 | 25 | 0x19 | BoxSettings | JSON configuration |
+| 41 | 0x29 | GnssData | GPS/GNSS to phone (NMEA) |
 | 170 | 0xAA | HeartBeat | Keep-alive (2s interval) |
 
 ### Audio Types
@@ -225,6 +226,7 @@ This consolidation drew from:
 | Audio Commands | VERIFIED | 21 controlled sessions |
 | Video Protocol | VERIFIED | Frame timing analysis |
 | Initialization | VERIFIED | Cold start testing |
+| GPS/GNSS Pipeline | VERIFIED | Binary analysis + live config testing |
 | Crypto Stack | DOCUMENTED | Binary analysis |
 
 ---
@@ -256,6 +258,9 @@ This consolidation drew from:
 
 | Date | Change |
 |------|--------|
+| 2026-02-17 | **iPhone GPS fusion live testing:** Added iPhone-side GPS behavior documentation to host_app_guide.md — `accessoryd` → `locationd` → `CL-fusion` pipeline, best-accuracy-wins model, `numHypothesis`/`isPassthrough` interpretation, practical scenarios for vehicle GPS priority, debugging via `idevicesyslog`; updated GPS data flow diagram to show full end-to-end path including iPhone processing; corrected DashboardInfo/GNSSCapability relationship in configuration.md; added iPhone verification section + Android Auto GPS path to usb_protocol.md |
+| 2026-02-18 | **Deep r2 binary analysis:** CiAP2LocationEngine full object layout (0x1F4+ bytes, flags 0x1F0-0x1F3), 3-stage GPS gating mechanism, GNSSCapability bitmask (bit 0=GPGGA, 1=GPRMC, 3=PASCD), **DashboardInfo correction** (bit 1=vehicleStatus NOT location), ARMadb-driver type 0x29 handler (strstr+file write to HU_GPS_DATA, forward as 0x22), VirtualBoxGPS NMEA parser (GPGGA/GPRMC/PASCD parsing, $GPVAI/$RMTINFO generation, speed thread), libdmsdpdvgps.so ENCRYPTED, complete iAP2 identification component table (26 components), 7 AskStartItems sub-types, r2 PLT mislabel fix (0x14e3c=strstr not dbus_bus_add_match); updated usb_protocol.md, key_binaries.md |
+| 2026-02-17 | **GPS/GNSS forwarding analysis:** Added GnssData (0x29) payload format with dual delivery paths (USB direct + /tmp/gnss_info), per-binary GPS pipeline roles (ARMadb-driver → ARMiPhoneIAP2 CiAP2LocationEngine → iPhone), iAP2 Location Registration Flow disassembly, GNSSCapability=0 blocking discovery; updated usb_protocol.md, key_binaries.md, host_app_guide.md |
 | 2026-01-20 | Added device_identification.md with phoneType analysis (verified: 3=CarPlay both USB/Wireless, 5=AndroidAuto USB, wifi field determines transport); verified cpuTemp is adapter temperature; verified SessionToken (0xA3) decryption using USB key with AES-128-CBC; documented decode_type=3 (8kHz) as NEVER OBSERVED; documented CallQuality→VoiceQuality firmware bug; consolidated heartbeat documentation; **Added web_interface.md** documenting 2025.10 firmware Boa web server, server.cgi API (MD5 signed), Vue.js frontend, all configurable settings via HTTP |
 | 2026-01-18 | Added cpc200_ccpa_firmware_binaries source: boot scripts, timeout constants, custom init hook |
 | 2026-01-16 | Initial consolidation from 4 source directories |

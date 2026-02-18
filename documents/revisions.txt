@@ -136,4 +136,4 @@
 
 [71] :: Testing GM Cluster Nav Metadata integration. AOSP/Vanilla AOSP works fine, but not GM AAOS.
 [72] :: Stale Nav Icons and Name fix test
-[73] :: Duplicate trip code.
+[73] :: Duplicate trip code. Location access and forwarding to CPC200-CCPA adapter. Set needed firmware settings via command injection

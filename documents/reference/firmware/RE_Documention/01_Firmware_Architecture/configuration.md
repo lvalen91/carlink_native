@@ -321,11 +321,23 @@ Detailed bitmask specifying which GNSS features are advertised to the phone duri
 | Value | Behavior |
 |-------|----------|
 | 0 | No GNSS capability advertised; **LocationEngine disabled** |
-| 1+ | GNSS capability bitmask; **enables LocationEngine** (when DashboardInfo bit 1 is set) |
+| 1+ | GNSS capability bitmask; **enables LocationEngine for GPS forwarding to phone** |
 
-**CRITICAL:** This setting is **REQUIRED** for `iAP2LocationEngine` to be enabled. Without `GNSSCapability ≥ 1`, setting `DashboardInfo` bit 1 has no effect.
+**CRITICAL:** This setting is **REQUIRED** for `iAP2LocationEngine` to be enabled and for the adapter to advertise `locationInformationComponent` during iAP2 identification. Without `GNSSCapability ≥ 1`, the phone never learns the adapter can provide location data and never sends `StartLocationInformation`.
+
+**DashboardInfo bit 1 is NOT required** for GPS forwarding to the phone. `GNSSCapability` alone gates the adapter→phone GPS path. DashboardInfo bit 1 controls the phone→HUD location data direction, which is a separate engine. Live-tested Feb 2026: `DashboardInfo=5` (bits 0+2, no bit 1) + `GNSSCapability=3` → GPS forwarding to iPhone fully operational.
 
 **Binary Evidence:** `GNSSCapability=%d` format string in ARMiPhoneIAP2
+
+**GNSSCapability Bitmask:**
+
+| Bit | Value | NMEA Sentence | Purpose |
+|-----|-------|---------------|---------|
+| 0 | 1 | `$GPGGA` | Global Positioning System Fix Data |
+| 1 | 2 | `$GPRMC` | Recommended Minimum Specific GPS Transit Data |
+| 3 | 8 | `$PASCD` | Proprietary (dead-reckoning/compass) |
+
+Recommended: `GNSSCapability=3` (GPGGA + GPRMC).
 
 ### DashboardInfo (Live-Tested & Verified Feb 2026)
 **Type:** Bitmask (0-7) | **Default:** 1
@@ -335,7 +347,7 @@ Controls which iAP2 data engines are enabled during identification. This is a **
 | Bit | Value | iAP2 Engine | Data Type | Requirements |
 |-----|-------|-------------|-----------|--------------|
 | 0 | 1 | **iAP2MediaPlayerEngine** | NowPlaying info (track, artist, album) | None |
-| 1 | 2 | **iAP2LocationEngine** | GPS/Location (NMEA, position) | GNSSCapability ≥ 1 |
+| 1 | 2 | **iAP2LocationEngine** | Location FROM phone TO HUD | GNSSCapability ≥ 1 (for phone→HUD direction; GPS forwarding adapter→phone uses GNSSCapability alone) |
 | 2 | 4 | **iAP2RouteGuidanceEngine** | Navigation TBT (turn-by-turn directions) | None |
 
 **IMPORTANT:** `iAP2CallStateEngine` is always enabled regardless of DashboardInfo value.

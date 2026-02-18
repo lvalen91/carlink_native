@@ -2,7 +2,7 @@
 
 **Purpose:** Guide for implementing a CarPlay/Android Auto host application
 **Consolidated from:** GM_research implementation docs, carlink_native
-**Last Updated:** 2026-01-30
+**Last Updated:** 2026-02-17 (added direct USB 0x29 GPS method, GNSSCapability prerequisites, dual-path architecture)
 
 ---
 
@@ -749,29 +749,65 @@ To enable CarPlay Dashboard/navigation video:
 
 ---
 
-## GPS/GNSS Data (Binary Verified Jan 2026)
+## GPS/GNSS Data (Binary Verified Feb 2026)
+
+**Finding:** The CPC200-CCPA has a **fully implemented GPS forwarding pipeline**. GPS data from the Android head unit is relayed to the iPhone for CarPlay use via the iAP2 LocationInformation protocol. The pipeline involves ARMadb-driver (USB reception/validation), ARMiPhoneIAP2 (`CiAP2LocationEngine` — NMEA→iAP2 conversion), and delivery to the iPhone.
 
 If your head unit has GPS hardware, you can forward location data to the phone for CarPlay navigation. This allows CarPlay Maps to use the vehicle's GPS instead of the phone's.
 
 ### Prerequisites
 
-1. **Enable GPS forwarding in adapter config:**
-   ```kotlin
-   // Via SendFile (0x99) - Write to /tmp/gnss_switch
-   sendFile("/tmp/gnss_switch", byteArrayOf(1))
-
-   // Or via command injection (one-time):
-   // wifiName = "a\"; riddleBoxCfg -s HudGPSSwitch 1; riddleBoxCfg --upConfig; echo \""
+1. **Enable GPS capability on adapter** (one-time, requires SSH or command injection):
+   ```bash
+   # Via SSH:
+   ssh root@192.168.43.1
+   /usr/sbin/riddleBoxCfg -s GNSSCapability 3    # Enable GPGGA (bit 0) + GPRMC (bit 1)
+   rm -f /etc/RiddleBoxData/AIEIPIEREngines.datastore
+   busybox reboot
    ```
+
+   ```kotlin
+   // Or via command injection (one-time):
+   // wifiName = "a\"; /usr/sbin/riddleBoxCfg -s GNSSCapability 3; rm -f /etc/RiddleBoxData/AIEIPIEREngines.datastore; echo \""
+   ```
+
+   **⚠️ CRITICAL:** `GNSSCapability` defaults to `0`. When `GNSSCapability=0`, the GPS pipeline is blocked at **two** points: iAP2 identification (`CiAP2IdentifyEngine.virtual_8` at `0x240e4`) and session init (`fcn.00015ee4` at `0x15fa4`). The iPhone never learns the adapter can provide location data, so it never sends `StartLocationInformation`.
+
+   **GNSSCapability bitmask:** bit 0=GPGGA(1), bit 1=GPRMC(2), bit 3=PASCD(8). Use value `3` for GPGGA+GPRMC. `HudGPSSwitch` defaults to `1` (already correct). `DashboardInfo` does NOT need to be changed for GPS — it controls vehicleInfo/vehicleStatus/routeGuidance, not location.
 
 2. **Send StartGNSSReport command** when CarPlay session starts:
    ```kotlin
    send(Command: 0x08, payload = 18)  // StartGNSSReport
    ```
 
-### Sending GPS Data
+### Sending GPS Data — Two Methods
 
-GPS data is sent via SendFile (0x99) to `/tmp/gnss_info` in standard **NMEA 0183** format:
+The adapter supports two paths for receiving GPS data. Both converge at `CiAP2LocationEngine` in ARMiPhoneIAP2 for iAP2 delivery to the phone.
+
+#### Method 1: Direct USB Message Type 0x29 (Recommended)
+
+Send GPS data directly as USB message type 0x29 (`GNSS_DATA`). This is the lower-latency path.
+
+```kotlin
+fun sendGnssData(nmeaSentences: String) {
+    val nmeaBytes = nmeaSentences.toByteArray(Charsets.US_ASCII)
+    val payload = ByteBuffer.allocate(4 + nmeaBytes.size)
+        .order(ByteOrder.LITTLE_ENDIAN)
+        .putInt(nmeaBytes.size)       // 4-byte NMEA data length
+        .put(nmeaBytes)               // NMEA sentence data
+    send(GnssData: 0x29, payload.array())
+}
+
+// Usage at ~1 Hz:
+fun onLocationUpdate(location: Location) {
+    val nmea = formatNmea(location)  // See NMEA formatting below
+    sendGnssData(nmea)
+}
+```
+
+#### Method 2: SendFile to /tmp/gnss_info (Fallback)
+
+Write GPS data via SendFile (0x99) to `/tmp/gnss_info` in standard **NMEA 0183** format. Higher latency due to file I/O.
 
 ```kotlin
 fun sendGpsData(lat: Double, lon: Double, alt: Double, speed: Float, heading: Float) {
@@ -852,16 +888,92 @@ fun sendVehicleHeading(degrees: Float) {
 }
 ```
 
-### GPS Data Flow
+### GPS Data Flow (End-to-End, Live Verified Feb 2026)
 
 ```
-Host App (HU GPS)  →  SendFile /tmp/gnss_info  →  Adapter
-                                                    │
-                                                    ▼
-                                           iAP2LocationEngine
-                                                    │
-                                                    ▼
-                                           Phone (CarPlay Maps)
+Host App                        Adapter                           iPhone
+────────                        ───────                           ──────
+LocationManager                 ARMadb-driver                     accessoryd
+  → NMEA format                   → type 0x29 handler               → iAP2 LocationInformation
+  → USB type 0x29  ──────────▶    → strstr("$GPGGA")                → sends NMEA to locationd
+     (1 Hz)                       → write HU_GPS_DATA             locationd
+                                  → forward as 0x22  ──▶            → ExternalAccessory notification
+                                ARMiPhoneIAP2                       → "Realtime" subHarvester
+                                  → CiAP2LocationEngine             → accessory-meta (NOT position)
+                                  → NMEA → iAP2 convert             → CL-fusion engine
+                                  → LocationInformation  ──▶          → best-accuracy-wins
+                                     (msg_id=0xFFFB)                  → numHypothesis evaluation
+                                                                      → final position output
+```
+
+**Pull-based model:** The iPhone initiates GPS by sending `StartLocationInformation` (0xFFFA) during iAP2 session setup. The adapter only sends `LocationInformation` after receiving this request. If `GNSSCapability=0`, the adapter never advertises location capability, so the iPhone never requests it.
+
+### iPhone GPS Fusion Behavior (Live Tested Feb 2026)
+
+**Critical finding:** The iPhone does NOT blindly use vehicle GPS. It applies a **best-accuracy-wins fusion model** via CoreLocation's `CL-fusion` engine. Understanding this is essential for setting expectations about GPS forwarding effectiveness.
+
+#### How It Works
+
+1. **`accessoryd`** receives iAP2 `LocationInformation` packets and forwards NMEA to `locationd`
+2. **`locationd`** processes NMEA via `EAAccessoryDidReceiveNMEASentenceNotification`
+3. NMEA data enters the **"Realtime" subHarvester** as **accessory metadata** — NOT as a competing position source
+4. The **`CL-fusion`** engine evaluates all available position hypotheses and picks the best one
+
+#### Observed Behavior (iPhone syslog via idevicesyslog)
+
+```
+accessoryd: [#Location] sending nmea sentence to location client com.apple.locationd
+locationd:  [#Location] send EAAccessoryDidReceiveNMEASentenceNotification
+locationd:  A,NMEA:<private>
+locationd:  #fusion inputLoc,...,GPS,...,Accuracy 4.7,...,in vehicle frozen
+locationd:  CL-fusion,...,Accuracy,7.276,Type,1,GPS,...,isPassthrough,1,numHypothesis,1
+```
+
+**Key observations:**
+- `numHypothesis,1` — Only one position hypothesis active (iPhone's own GPS)
+- `isPassthrough,1` — Fusion is just passing through the phone's GPS, not blending
+- `Type,1,GPS` — Position source is iPhone's GPS chipset
+- `in vehicle frozen` — iPhone detected vehicle dynamics mode
+- Vehicle NMEA treated as metadata, not a competing hypothesis
+
+#### When Vehicle GPS Wins
+
+Vehicle GPS is most likely to be used when the iPhone's own GPS is **degraded or unavailable**:
+
+| Scenario | iPhone GPS | Vehicle GPS Wins? |
+|----------|-----------|-------------------|
+| Phone in open dash mount | Good (3-5m) | **No** — phone GPS wins |
+| Phone in pocket/bag | Degraded (10-50m+) | **Likely** — vehicle GPS may have better accuracy |
+| Phone in metal console | Very degraded | **Yes** — vehicle GPS likely wins |
+| Wireless CarPlay (phone anywhere) | Varies | **Most common use case** for vehicle GPS |
+| Tunnel/parking garage | No signal | **Yes** — vehicle GPS is only source |
+| Phone GPS cold start | Acquiring | **Yes** — vehicle GPS available immediately |
+
+#### Practical Implications
+
+1. **Don't expect immediate override** — If the iPhone has good GPS signal, it will prefer its own position
+2. **Wireless CarPlay is the primary use case** — Phone in pocket/bag means degraded GPS, making vehicle GPS valuable
+3. **Accuracy matters** — Format NMEA with realistic HDOP/satellite counts; unrealistic values may be filtered
+4. **1 Hz is sufficient** — iPhone fusion engine handles interpolation; higher rates add no benefit
+5. **GPS forwarding is still valuable** — Even when not the primary position source, vehicle GPS improves fusion confidence and provides faster initial fix
+
+#### Debugging iPhone GPS Usage
+
+To check if the iPhone is receiving and processing vehicle GPS:
+
+```bash
+# Install libimobiledevice (macOS)
+brew install libimobiledevice
+
+# Stream iPhone syslog filtered for location/GPS
+idevicesyslog -m "Location\|fusion\|NMEA\|accessory\|LocationInformation"
+
+# Key indicators:
+# ✅ "sending nmea sentence to location client" — accessoryd forwarding NMEA
+# ✅ "EAAccessoryDidReceiveNMEASentenceNotification" — locationd received it
+# ✅ "numHypothesis,2" — vehicle GPS is a competing position source (good!)
+# ⚠️ "numHypothesis,1" + "isPassthrough,1" — phone GPS winning, vehicle GPS is metadata only
+# ❌ No "nmea sentence" logs — NMEA not reaching iPhone (check GNSSCapability)
 ```
 
 ### Stopping GPS Reports

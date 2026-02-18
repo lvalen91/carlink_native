@@ -187,6 +187,11 @@ class AdapterDriver(
     ): Boolean = send(MessageSerializer.serializeAudio(data, decodeType, audioType))
 
     /**
+     * Send GNSS/NMEA data to the adapter for forwarding to the phone.
+     */
+    fun sendGnssData(nmeaSentences: String): Boolean = send(MessageSerializer.serializeGnssData(nmeaSentences))
+
+    /**
      * Get performance statistics.
      */
     fun getPerformanceStats(): Map<String, Any> {

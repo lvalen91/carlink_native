@@ -72,12 +72,21 @@ class MainActivity : ComponentActivity() {
     private var fileLogManager: FileLogManager? = null
     private var currentDisplayMode: DisplayMode = DisplayMode.SYSTEM_UI_VISIBLE
 
-    // Permission launcher
+    // Permission launchers — chained: mic callback triggers location request
+    private val locationPermissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestPermission(),
+        ) { isGranted ->
+            logInfo("Location permission ${if (isGranted) "granted" else "denied"}", tag = "MAIN")
+        }
+
     private val micPermissionLauncher =
         registerForActivityResult(
             ActivityResultContracts.RequestPermission(),
         ) { isGranted ->
             logInfo("Microphone permission ${if (isGranted) "granted" else "denied"}", tag = "MAIN")
+            // Chain: request location after mic dialog completes
+            requestLocationPermission()
         }
 
     /**
@@ -141,7 +150,7 @@ class MainActivity : ComponentActivity() {
         // so display dimensions are calculated correctly for the active mode
         initializeCarlinkManager()
 
-        // Request microphone permission if needed
+        // Request permissions if needed (location is chained after mic dialog)
         requestMicrophonePermission()
 
         // Register USB detachment receiver for immediate disconnect detection
@@ -391,11 +400,30 @@ class MainActivity : ComponentActivity() {
                 Manifest.permission.RECORD_AUDIO,
             ) == PackageManager.PERMISSION_GRANTED -> {
                 logInfo("Microphone permission already granted", tag = "MAIN")
+                // Already granted — chain to location request directly
+                requestLocationPermission()
             }
 
             else -> {
                 logInfo("Requesting microphone permission", tag = "MAIN")
                 micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                // Location will be requested in mic launcher callback
+            }
+        }
+    }
+
+    private fun requestLocationPermission() {
+        when {
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+            ) == PackageManager.PERMISSION_GRANTED -> {
+                logInfo("Location permission already granted", tag = "MAIN")
+            }
+
+            else -> {
+                logInfo("Requesting location permission", tag = "MAIN")
+                locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
             }
         }
     }

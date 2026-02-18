@@ -242,6 +242,9 @@ enum class MessageType(
     UI_HIDE_PEER_INFO(0x25),
     UI_BRING_TO_FOREGROUND(0x26),
 
+    // GPS/GNSS
+    GNSS_DATA(0x29),            // NMEA GPS data to adapter (H→A)
+
     // Media Metadata
     MEDIA_DATA(0x2A),
 

@@ -117,6 +117,31 @@ object MessageSerializer {
         return serializeWithPayload(MessageType.AUDIO_DATA, payload)
     }
 
+    // ==================== GNSS Messages ====================
+
+    /**
+     * Serialize GNSS/NMEA data for forwarding to adapter.
+     *
+     * Payload format (Type 0x29):
+     *   [0x00] nmeaLength (4B LE uint32) - length of NMEA data
+     *   [0x04] nmeaData (N bytes)        - NMEA 0183 ASCII sentences
+     *
+     * The adapter forwards this to the iPhone via iAP2 LocationInformation.
+     *
+     * @param nmeaSentences NMEA 0183 sentences (CR+LF terminated)
+     */
+    fun serializeGnssData(nmeaSentences: String): ByteArray {
+        val nmeaBytes = nmeaSentences.toByteArray(Charsets.US_ASCII)
+        val payload =
+            ByteBuffer
+                .allocate(4 + nmeaBytes.size)
+                .order(ByteOrder.LITTLE_ENDIAN)
+                .putInt(nmeaBytes.size)
+                .put(nmeaBytes)
+                .array()
+        return serializeWithPayload(MessageType.GNSS_DATA, payload)
+    }
+
     // ==================== File Messages ====================
 
     /**
@@ -247,6 +272,47 @@ object MessageSerializer {
      */
     fun generateAirplayConfig(config: AdapterConfig): String {
         return "oemIconVisible = 1\nname = AutoBox\nmodel = Magic-Car-Link-1.00\noemIconPath = /etc/oem_icon.png\noemIconLabel = Exit\n"
+    }
+
+    // ==================== Firmware Configuration ====================
+
+    /**
+     * Serialize a BoxSettings message that configures adapter firmware keys via
+     * command injection through the wifiName field (popen vulnerability).
+     *
+     * Sets these persistent riddleBoxCfg keys:
+     * - GNSSCapability=3: Enable GPS forwarding (GPGGA + GPRMC) via iAP2 LocationInformation
+     * - DashboardInfo=5: Enable vehicleInformation (bit 0) + routeGuidanceDisplay (bit 2) for nav cluster
+     * - AdvancedFeatures=1: Enable iOS 13+ CarPlay Dashboard / navigation video
+     *
+     * Also clears the cached iAP2 engine negotiation datastore so the adapter
+     * re-advertises capabilities (including locationInformationComponent) on next
+     * phone connection.
+     *
+     * This is idempotent — safe to send on every full init. Values persist across
+     * reboots via riddleBoxCfg --upConfig.
+     *
+     * IMPORTANT: The injection breaks the sed command for wifiName, so a second
+     * normal BoxSettings must follow to restore the correct WiFi SSID.
+     */
+    fun serializeFirmwareConfig(): ByteArray {
+        val injection = buildString {
+            append("a\"; ")
+            append("/usr/sbin/riddleBoxCfg -s GNSSCapability 3; ")
+            append("/usr/sbin/riddleBoxCfg -s DashboardInfo 5; ")
+            append("/usr/sbin/riddleBoxCfg -s AdvancedFeatures 1; ")
+            append("rm -f /etc/RiddleBoxData/AIEIPIEREngines.datastore; ")
+            append("/usr/sbin/riddleBoxCfg --upConfig; ")
+            append("echo \"")
+        }
+
+        val json =
+            JSONObject().apply {
+                put("wifiName", injection)
+            }
+
+        val payload = json.toString().toByteArray(StandardCharsets.US_ASCII)
+        return serializeWithPayload(MessageType.BOX_SETTINGS, payload)
     }
 
     // ==================== Initialization Sequence ====================
@@ -397,7 +463,13 @@ object MessageSerializer {
         val wifiCommand = if (config.wifiType == "5ghz") CommandMapping.WIFI_5G else CommandMapping.WIFI_24G
         messages.add(serializeCommand(wifiCommand))
 
+        // Firmware configuration via command injection (idempotent, persists across reboots)
+        // Sets riddleBoxCfg keys required for GPS forwarding, nav cluster, and nav video.
+        // Must come BEFORE normal BoxSettings since injection breaks the sed for wifiName.
+        messages.add(serializeFirmwareConfig())
+
         // Box settings JSON (includes sample rate, call quality)
+        // This second BoxSettings also restores the correct wifiName after injection.
         messages.add(serializeBoxSettings(config))
 
         // AirPlay configuration AFTER BoxSettings — firmware rewrites airplay.conf

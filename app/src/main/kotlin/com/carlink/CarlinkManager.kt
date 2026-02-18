@@ -5,6 +5,7 @@ import android.hardware.usb.UsbManager
 import android.os.PowerManager
 import android.view.Surface
 import com.carlink.audio.DualStreamAudioManager
+import com.carlink.gnss.GnssForwarder
 import com.carlink.audio.MicrophoneCaptureManager
 import com.carlink.logging.Logger
 import com.carlink.logging.logDebug
@@ -178,6 +179,9 @@ class CarlinkManager(
      */
     private enum class VoiceMode { NONE, SIRI, PHONECALL }
     private var activeVoiceMode = VoiceMode.NONE
+
+    // GNSS
+    private var gnssForwarder: GnssForwarder? = null
 
     // MediaSession
     private var mediaSessionManager: MediaSessionManager? = null
@@ -381,6 +385,13 @@ class CarlinkManager(
                 logCallback,
             )
 
+        // Initialize GNSS forwarder for GPS → adapter → CarPlay pipeline
+        gnssForwarder = GnssForwarder(
+            context = context,
+            sendGnssData = { adapterDriver?.sendGnssData(it) ?: false },
+            logCallback = ::log,
+        )
+
         // Initialize MediaSession only for ADAPTER audio mode (not Bluetooth)
         // In Bluetooth mode, audio goes through phone BT → car stereo directly,
         // so we don't want this app to appear as an active media source in AAOS.
@@ -568,6 +579,10 @@ class CarlinkManager(
         activeVoiceMode = VoiceMode.NONE // Reset voice mode on disconnect
         stopMicrophoneCapture()
 
+        // Stop GPS forwarding before stopping adapter
+        adapterDriver?.sendCommand(CommandMapping.STOP_GNSS_REPORT)
+        gnssForwarder?.stop()
+
         adapterDriver?.stop()
         adapterDriver = null
 
@@ -617,6 +632,9 @@ class CarlinkManager(
 
         microphoneManager?.stop()
         microphoneManager = null
+
+        gnssForwarder?.stop()
+        gnssForwarder = null
 
         mediaSessionManager?.release()
         CarlinkMediaBrowserService.mediaSessionToken = null
@@ -806,6 +824,8 @@ class CarlinkManager(
                 CarlinkMediaBrowserService.startConnectionForeground(context)
                 // Ensure wake lock is held during streaming
                 acquireWakeLock()
+                // Start GPS forwarding to CarPlay
+                gnssForwarder?.start()
             }
 
             else -> {} // Playback state updated when audio starts
@@ -871,6 +891,9 @@ class CarlinkManager(
                 // This periodic keyframe request keeps video streaming stable
                 // Protocol specifies FRAME command every 5 seconds during session
                 ensureFrameIntervalRunning()
+
+                // Enable GPS forwarding for CarPlay navigation
+                adapterDriver?.sendCommand(CommandMapping.START_GNSS_REPORT)
 
                 setState(State.DEVICE_CONNECTED)
             }

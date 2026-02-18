@@ -3,7 +3,7 @@
 **Status:** VERIFIED against 25+ capture sessions + firmware binary analysis
 **Consolidated from:** All research projects (GM_research, carlink_native, pi-carplay)
 **Firmware Version:** 2025.10.15.1127 (binary analysis reference version)
-**Last Updated:** 2026-02-03 (Complete binary verification of all message types via radare2 disassembly)
+**Last Updated:** 2026-02-18 (Corrected DashboardInfo gating, GNSSCapability bitmask, ARMadb-driver forwarding path, file write path, 7 location sub-types)
 
 ---
 
@@ -818,6 +818,212 @@ $GPRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A
 **Size limit:** Firmware logs `GNSSSentencesSize:%zu, GNSSSentences too long` if data exceeds buffer.
 
 See `command_ids.md` for StartGNSSReport (18) and StopGNSSReport (19) commands.
+
+### GnssData (0x29) - GPS/GNSS Location Data (Binary Verified Feb 2026)
+
+**Direction:** Host → Adapter (OUT)
+**Purpose:** Forward GPS location data from head unit to connected phone for CarPlay/Android Auto navigation.
+
+**Finding:** The CPC200-CCPA has a **fully implemented GPS forwarding pipeline**. GPS data sent via this message type is converted to iAP2 LocationInformation by `CiAP2LocationEngine` in ARMiPhoneIAP2 and delivered to the iPhone for use in CarPlay Maps.
+
+**Payload Structure:**
+
+```
+Offset  Size  Field         Description
+------  ----  -----         -----------
+0x00    4     nmeaLength    Length of NMEA data in bytes (LE uint32)
+0x04    N     nmeaData      NMEA 0183 sentences (ASCII, \r\n terminated)
+```
+
+**Header Example:**
+```
+55 AA 55 AA    Magic
+9E 00 00 00    Payload length (158 bytes, LE uint32)
+29 00 00 00    Type = 0x29 (LE uint32)
+D6 FF FF FF    Type check = ~0x29 (LE uint32)
+```
+
+**Supported NMEA Sentences (from CiAP2LocationEngine disassembly):**
+
+| Sentence | iAP2 Mapping | Purpose | Required |
+|----------|-------------|---------|----------|
+| `$GPGGA` | `globalPositionSystemFixData` | Position, altitude, fix quality, satellites | Yes |
+| `$GPRMC` | `recommendedMinimumSpecificGPSTransitData` | Position, speed, course, date | Yes |
+| `$GPGSV` | `gpsSatellitesInView` | Satellite visibility info | Optional |
+| `$PASCD` | (proprietary) | Vehicle-specific data | Optional |
+
+**ARMadb-driver Processing (r2 disassembly verified Feb 2026):**
+
+The type 0x29 handler at `0x1f5ce` in ARMadb-driver:
+1. Reads NMEA payload from message offset `+0x10`, skips 4-byte length prefix
+2. Calls `strstr(nmea_data, "$GPGGA")` — if found, writes to `/tmp/RiddleBoxData/HU_GPS_DATA` via `fopen("wb")`
+3. **Regardless of strstr result**, forwards to phone as internal type `0x22` via `fcn.00017328` link dispatch
+4. Size limit: `GNSSSentencesSize:%zu, GNSSSentences too long` if NMEA exceeds 0x400 (1KB) buffer
+
+**Note:** The `$GPGGA` check only controls file writing. All NMEA data is forwarded to the phone unconditionally.
+
+**Data Flow (Binary Verified Feb 2026):**
+
+```
+Host App                    ARMadb-driver                        ARMiPhoneIAP2          Phone
+  │ USB Type 0x29            │                                     │                      │
+  │ [4B len][NMEA ASCII]     │                                     │                      │
+  ├─────────────────────────►│                                     │                      │
+  │                          │ strstr($GPGGA)?                     │                      │
+  │                          │   Y→ fwrite /tmp/RiddleBoxData/     │                      │
+  │                          │       HU_GPS_DATA                   │                      │
+  │                          │                                     │                      │
+  │                          │ Forward as type 0x22 ──────────────►│                      │
+  │                          │ (always, regardless of GPGGA)       │ CiAP2LocationEngine  │
+  │                          │                                     │ stores in             │
+  │                          │                                     │ NMEASentence entity   │
+  │                          │                                     │                      │
+  │                          │                                     │ iAP2 0xFFFB ─────────►│
+  │                          │                                     │ LocationInformation   │
+  │                          │                                     │              CarPlay  │
+  │                          │                                     │              Maps     │
+```
+
+**Type 0x28 vs 0x29:**
+
+| Type | Name | File Write | Forward States | Purpose |
+|------|------|-----------|----------------|---------|
+| 0x28 | iAP2 PlistBinary | No | CarPlay only (state 3) | iAP2 binary plist GPS inquiry |
+| 0x29 | GNSS_DATA | Yes (if $GPGGA) | CarPlay (3), Android Auto (5-7) | NMEA GPS data |
+
+**GPS File Paths:**
+
+| Path | Written By | Content | Purpose |
+|------|-----------|---------|---------|
+| `/tmp/RiddleBoxData/HU_GPS_DATA` | ARMadb-driver (type 0x29 handler) | Raw NMEA binary (fopen "wb") | Debug/diagnostic dump of incoming GPS data |
+| `/tmp/gnss_info` | CiAP2LocationEngine `fcn.0002c190` | NMEA type config string ("GPGGA,GPRMC,PASCD,") | Stores which NMEA sentence types are enabled |
+
+**Configuration Requirements:**
+
+| Config Key | Required Value | Default | Purpose |
+|------------|---------------|---------|---------|
+| `HudGPSSwitch` | 1 | 1 | Enable GPS from head unit (already correct on most units) |
+| `GNSSCapability` | ≥ 1 | **0** | Register `locationInformationComponent` in iAP2 identification. **MUST be changed.** |
+
+**GNSSCapability Bitmask (set by `fcn.0002c190` in ARMiPhoneIAP2):**
+
+| Bit | Value | NMEA Sentence | Purpose |
+|-----|-------|---------------|---------|
+| 0 | 1 | `$GPGGA` | Global Positioning System Fix Data |
+| 1 | 2 | `$GPRMC` | Recommended Minimum Specific GPS Transit Data |
+| 3 | 8 | `$PASCD` | Proprietary (dead-reckoning/compass) |
+
+Setting `GNSSCapability=1` enables GPGGA only. `GNSSCapability=3` enables GPGGA+GPRMC. `GNSSCapability=11` enables all three.
+
+**DashboardInfo Clarification:** DashboardInfo does NOT gate location. Its bits control:
+- Bit 0 (0x01): vehicleInformation init
+- Bit 1 (0x02): vehicleStatus init
+- Bit 2 (0x04): routeGuidanceDisplay init
+
+Location/GPS is gated **only** by `GNSSCapability > 0`.
+
+**⚠️ CRITICAL:** When `GNSSCapability=0` (factory default), the GPS pipeline is blocked at **two** points:
+1. `CiAP2IdentifyEngine.virtual_8` at `0x240e4`: skips GPS session entity setup during identification
+2. `fcn.00015ee4` at `0x15fa4`: skips `CiAP2LocationEngine_Generate` during session init
+
+The iPhone never learns the adapter can provide location data and never sends `StartLocationInformation`. Fix:
+
+```bash
+ssh root@192.168.43.1
+/usr/sbin/riddleBoxCfg -s GNSSCapability 3    # Enable GPGGA + GPRMC
+rm -f /etc/RiddleBoxData/AIEIPIEREngines.datastore
+busybox reboot
+```
+
+See `01_Firmware_Architecture/configuration.md` for full GNSSCapability documentation.
+
+**iAP2 Location Data Types (7 sub-types in AskStartItems):**
+
+| ID | Object Offset | Name | Source |
+|----|--------------|------|--------|
+| 1 | +0x38 | GloblePositionSystemFixData | NMEA `$GPGGA` |
+| 2 | +0x58 | RecommendedMinimumSpecificGPSTransistData | NMEA `$GPRMC` |
+| 3 | +0x78 | GPSSataellitesInView | NMEA `$GPGSV` |
+| 4 | +0x98 | VehicleSpeedData | CAN/sensor |
+| 5 | +0xB8 | VehicleGyroData | CAN/sensor |
+| 6 | +0xD8 | VehicleAccelerometerData | CAN/sensor |
+| 7 | +0xF8 | VehicleHeadingData | CAN/sensor |
+
+Note: String names contain firmware typos ("Globle", "Transist", "Sataellites") — these are internal identifiers.
+
+**Related Commands (Type 0x08):**
+
+| Command ID | Name | Direction | Purpose |
+|------------|------|-----------|---------|
+| 18 | StartGNSSReport | H→A | Tell adapter to start GPS forwarding to phone |
+| 19 | StopGNSSReport | H→A | Tell adapter to stop GPS forwarding |
+
+See `command_ids.md` and `command_details.md` for full command documentation.
+
+**Binaries Involved:**
+
+| Binary | GPS Role |
+|--------|----------|
+| ARMadb-driver | Receives USB type 0x29, validates NMEA, forwards via IPC |
+| ARMiPhoneIAP2 | `CiAP2LocationEngine` — NMEA→iAP2 conversion, iAP2 identification GPS registration |
+| AppleCarPlay | Receives GNSS_DATA for status logging (location delivery is via iAP2, not CarPlay A/V) |
+| bluetoothDaemon | GNSS_DATA/GNSSCapability references (Bluetooth-path GPS) |
+| libdmsdpgpshandler.so | `VirtualBoxGPS::ProcessGNSSData()` — HiCar GPS path |
+| libdmsdpdvgps.so | GPS device service: `GpsReceiveLocationData`, `GpsSendServiceData` |
+
+See `05_Reference/binary_analysis/key_binaries.md` for GPS pipeline details.
+
+**End-to-End Verification (Live-Tested Feb 2026):**
+
+The complete GPS pipeline was verified with a CarLink Native host app on GM AAOS emulator, CPC200-CCPA adapter (firmware 2025.10.15.1127), and iPhone Air (iOS 18):
+
+```
+1. iAP2 Identification:
+   [iAP2LocationEngine] CiAP2LocationEngine_Generate
+   [iAP2Engine] Enable iAP2 iAP2LocationEngine Capability
+   [iAP2IdentifyEngine] GNSSCapability=3
+   identifyItemsArray: "FFFA: StartLocationInformation", "FFFC: StopLocationInformation",
+                       "friendlyName": "locationInformationComponent"
+   iPhone → IdentifyAccept ✓
+
+2. iPhone requests GPS (pull-based):
+   [CiAP2Session_CarPlay] Message from iPhone: 0xFFFA StartLocationInformation
+
+3. Adapter sends at ~1Hz:
+   [iAP2Engine] Send_changes:LocationInformation(0xFFFB), msgLen: 148
+
+4. iPhone receives and parses:
+   accessoryd: [#Location] sending nmea sentence to location client com.apple.locationd
+   locationd(ExternalAccessory): [#Location] send EAAccessoryDidReceiveNMEASentenceNotification
+   locationd: A,NMEA:<private>
+
+5. iPhone fusion engine processes:
+   #fusion inputLoc,...,GPS,...,Accuracy 4.7,...,in vehicle frozen
+   CL-fusion,...,Accuracy,7.276,Type,1,GPS,...,isPassthrough,1,numHypothesis,1
+   shouldBypassFusion,vehicleConnected,...
+```
+
+**iPhone GPS Fusion Behavior:**
+
+The iPhone does NOT simply switch to vehicle GPS. It uses a **best-accuracy-wins fusion model**:
+- `accessoryd` receives iAP2 NMEA and forwards to `locationd` via `EAAccessoryDidReceiveNMEASentenceNotification`
+- `locationd` recognizes the accessory (`make="Magic Tec.", model="Magic-Car-Link-1.00"`) and processes NMEA via the "Realtime" subHarvester
+- The fusion engine (`CL-fusion`) evaluates all location hypotheses by `horizontalAccuracy`
+- When the iPhone's own GPS has acceptable accuracy (e.g., 4.7m indoors), it wins (`isPassthrough=1, numHypothesis=1`)
+- Vehicle GPS is more likely to win when: phone is in pocket/bag (degraded GPS), wireless CarPlay (phone not mounted), or phone GPS is unavailable
+
+**Android Auto GPS Path (Feb 2026):**
+
+When connected via Android Auto (ARMAndroidAuto process), the adapter converts NMEA to protobuf:
+```
+gps_location {
+  timestamp: 0              ← adapter clock wrong (stuck 2020-01-02), cannot derive epoch
+  latitude_e7: 647166676
+  longitude_e7: -1472666682
+  accuracy_e3: 899
+}
+```
+The `timestamp: 0` issue is a firmware limitation — the adapter derives time from NMEA time-of-day fields but has no epoch reference. Android Auto clients may reject zero-timestamp fixes.
 
 ### Touch (0x05) - Touch Input (Updated Jan 2026)
 

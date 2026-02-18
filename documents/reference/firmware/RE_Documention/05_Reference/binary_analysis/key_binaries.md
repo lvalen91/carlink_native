@@ -2,7 +2,7 @@
 
 **Purpose:** Reference for firmware binary analysis
 **Consolidated from:** GM_research, pi-carplay firmware extraction
-**Last Updated:** 2026-01-19 (added shell execution analysis)
+**Last Updated:** 2026-02-18 (deep r2 analysis: LocationEngine object layout, GNSS gating, VirtualBoxGPS NMEA parser, DashboardInfo correction, dvgps encryption)
 
 ---
 
@@ -311,6 +311,176 @@ iAP2MediaPlayerEngine
 iAP2RouteGuidanceEngine
 iAP2WiFiConfigEngine
 ```
+
+### GPS Pipeline — Per-Binary Roles (Deep r2 Analysis Feb 2026)
+
+The adapter's GPS forwarding involves multiple binaries in a pipeline:
+
+| Binary | GPS Role | Key Functions/Strings |
+|--------|----------|----------------------|
+| **ARMadb-driver** | Receives USB type 0x29; `strstr($GPGGA)` for file write to `/tmp/RiddleBoxData/HU_GPS_DATA`; forwards ALL data as type 0x22 via link dispatch | `GNSS_DATA`, `HU_GPS_DATA`, `$GPGGA` |
+| **ARMiPhoneIAP2** | `CiAP2LocationEngine`: NMEA→iAP2 conversion; registers `locationInformationComponent` (ID 0x16) in iAP2 identification | `CiAP2LocationEngine`, `GNSSCapability`, `NMEASentence` |
+| **AppleCarPlay** | GNSS_DATA status logging only; location delivery is via iAP2 protocol | `GNSS_DATA` references |
+| **libdmsdpgpshandler.so** | `VirtualBoxGPS::ProcessGNSSData()` — full NMEA parser, HiCar GPS path, speed thread | See VirtualBoxGPS section below |
+| **libdmsdpdvgps.so** | GPS device service — **ENCRYPTED** (high-entropy code, not analyzable statically) | Exports visible but code obfuscated |
+| **boxNetworkService** | No GPS references | — |
+| **riddleBoxCfg** | No GPS references | — |
+| **server.cgi** | No GPS references | — |
+
+**CiAP2LocationEngine Object Layout (0x1F4+ bytes, r2 verified):**
+
+| Offset | Type | Purpose |
+|--------|------|---------|
+| +0x00 | vtable* | Points to `vtable.CiAP2LocationEngine.0` at `0x744d0` |
+| +0x04 | uint32 | Session/state |
+| +0x08 | byte | Active flag |
+| +0x0C | char* | Engine name = `"iAP2LocationEngine"` |
+| +0x10 | AskStartItems | Start-request sub-object (7 data types) |
+| +0x128 | AskStopItems | Stop-request sub-object (1 dummy item) |
+| +0x180 | LocationInformationItems | NMEA/location data container |
+| +0x188 | byte | Data-ready flag |
+| +0x1B8 | string | Raw NMEA sentence buffer |
+| +0x1F0 | byte | **GPGGA enabled** (0=off, nonzero=on) |
+| +0x1F1 | byte | **GPRMC enabled** (0=off, nonzero=on) |
+| +0x1F2 | byte | **PASCD enabled** (0=off, nonzero=on) |
+| +0x1F3 | byte | **Master GNSS enable** (set to 1 on StartLocationInformation) |
+
+**CiAP2LocationEngine Methods (ARMiPhoneIAP2 disassembly):**
+
+| Method | Address | Size | Purpose |
+|--------|---------|------|---------|
+| `virtual_12` (main dispatcher) | `0x2bd14` | 840B | Dispatches 0xFFFA/0xFFFB/0xFFFC iAP2 messages |
+| `virtual_8` (start/init) | `0x2bfa8` | 188B | Handles Start/Stop/LocationInfo responses; sets 0x1F3 flag |
+| `virtual_16` (cleanup) | `0x2bf68` | — | Unregisters 0xFFFA/0xFFFB/0xFFFC from session |
+| `fcn.0002c064` (GNSS receive) | `0x2c064` | — | Receives NMEA from HU, stores in NMEASentence, sends 0xFFFB |
+| `fcn.0002c190` (GNSS config) | `0x2c190` | 244B | Sets 0x1F0-0x1F2 flags, writes GNSSCapability bitmask, writes `/tmp/gnss_info` |
+| `fcn.0002c4f0` (AskStartItems) | `0x2c4f0` | 592B | Registers 7 location data sub-types |
+| `fcn.0002c7c4` (AskStopItems) | `0x2c7c4` | 180B | Registers 1 dummy stop item |
+| `fcn.0002c2e0` (LocationInfoItems) | `0x2c2e0` | — | Registers NMEASentence entity for iAP2 delivery |
+
+**iAP2 Message Types (CiAP2LocationEngine):**
+
+| Value | Name | Direction | Purpose |
+|-------|------|-----------|---------|
+| 0xFFFA | StartLocationInformation | Phone→Adapter | iPhone requests GPS data; sets master enable flag (0x1F3=1) |
+| 0xFFFB | LocationInformation | Adapter→Phone | NMEA data wrapped in iAP2 LocationInformation |
+| 0xFFFC | StopLocationInformation | Phone→Adapter | iPhone stops GPS data |
+
+**Three-Stage GPS Gating (r2 verified Feb 2026):**
+
+```
+Stage 1: CiAP2IdentifyEngine.virtual_8 (0x23ec0, msg type 0x1D00)
+  ┌─ 0x240c8: if [r4+0x11] != 0 (HUD device) → skip GPS
+  ├─ 0x240d4: if HudGPSSwitch != 1 → skip GPS entity setup
+  └─ 0x240e4: GNSSCapability check
+       0x2458c: if GNSSCapability <= 0 → skip
+       0x24598: if GNSSCapability > 0 → fcn.0001ff84 (GPS session setup)
+
+Stage 2: fcn.00015ee4 (session init, post-identification)
+  DashboardInfo bitmask checks (NOT for GPS):
+  ┌─ 0x15f78: tst r7, #1 → bit 0 → vehicleInformation init (fcn.000282b8)
+  ├─ 0x15f84: tst r7, #2 → bit 1 → vehicleStatus init (fcn.0002aa6c)
+  └─ 0x15f90: tst r7, #4 → bit 2 → routeGuidanceDisplay init (fcn.0002ebc4)
+
+Stage 3: GNSSCapability (separate from DashboardInfo)
+  ┌─ 0x15f9c: r0 = get("GNSSCapability")
+  ├─ 0x15fa4: cmp r0, 0
+  ├─ 0x15fa8: if r0 <= 0 → SKIP GPS engine init entirely
+  └─ 0x15fac: fcn.0002c928 → CiAP2LocationEngine_Generate
+```
+
+**⚠️ CORRECTION:** DashboardInfo does NOT gate locationInformationComponent. Previous docs incorrectly stated bit 1 = Location. Actual mapping:
+- Bit 0: vehicleInformation
+- Bit 1: vehicleStatus
+- Bit 2: routeGuidanceDisplay
+
+GPS/Location is gated **only** by `GNSSCapability > 0`.
+
+**GNSSCapability Bitmask (set by fcn.0002c190):**
+
+| Bit | Value | Sentence | Purpose |
+|-----|-------|----------|---------|
+| 0 | 1 | GPGGA | Global Positioning System Fix Data |
+| 1 | 2 | GPRMC | Recommended Minimum GPS Transit Data |
+| 3 | 8 | PASCD | Proprietary (dead-reckoning/compass) |
+
+**AskStartItems — 7 Location Data Sub-Types:**
+
+| ID | Offset | Name (firmware typos preserved) | Source |
+|----|--------|--------------------------------|--------|
+| 1 | +0x38 | GloblePositionSystemFixData | NMEA $GPGGA |
+| 2 | +0x58 | RecommendedMinimumSpecificGPSTransistData | NMEA $GPRMC |
+| 3 | +0x78 | GPSSataellitesInView | NMEA $GPGSV |
+| 4 | +0x98 | VehicleSpeedData | CAN/sensor |
+| 5 | +0xB8 | VehicleGyroData | CAN/sensor |
+| 6 | +0xD8 | VehicleAccelerometerData | CAN/sensor |
+| 7 | +0xF8 | VehicleHeadingData | CAN/sensor |
+
+**GNSS Data Receive Flow (fcn.0002c064 pseudocode):**
+
+```c
+void process_gnss_data(this, data, len) {
+    if (this->flag_0x1f3 == 0) return;     // master enable must be set
+    if (data == NULL || len == 0) return;
+    if (len >= 0x400) { log("GNSSSentences too long"); return; }
+
+    store_string(&this->nmeaBuffer, data);  // at this+0x1B8
+    this->dataReady = 1;                    // [this+0x188]
+    if (this->callback) callback->method_8(sub);
+    dispatch_response(this, sub, 0xFFFB);   // send LocationInformation to iPhone
+}
+```
+
+**iAP2 Identification Component Table (fcn.00023590, all registered unconditionally):**
+
+| ID | Component Name |
+|----|---------------|
+| 0x00-0x09 | name, modelIdentifier, manufacturer, serialNumber, firmwareVersion, hardwareVersion, messagesSent/Received, powerCapability, maxCurrentDraw |
+| 0x0A | supportedExternalAccessoryProtocol |
+| 0x0B-0x0D | appMatchTeamID, currentLanguage, supportedLanguage |
+| 0x0E-0x11 | serialTransport, USBDeviceTransport, USBHostTransport, bluetoothTransport |
+| 0x12 | iAP2HIDComponent |
+| 0x14 | vehicleInformationComponent |
+| **0x15** | **vehicleStatusComponent** |
+| **0x16** | **locationInformationComponent** |
+| 0x17 | USBHostHIDComponent |
+| 0x18 | wirelessCarPlayTransportComponent |
+| 0x1D | bluettoothHIDComponent (firmware typo) |
+| **0x1E** | **routeGuidanceDisplayComponent** |
+
+**VirtualBoxGPS (libdmsdpgpshandler.so, 10KB, r2 fully analyzed):**
+
+C++ class implementing the HiCar/DMSDP GPS handler:
+
+```cpp
+class VirtualBoxGPS {
+    void ProcessGNSSData(uint8_t* data, unsigned int len);  // Full NMEA parser
+    static void SendSpeedFunc(void* arg);                    // Speed reporting thread
+};
+
+// Exported C functions:
+VirtualGPSSetReportFreq(int freq1, int freq2, int freq3);   // 3 independent frequencies
+VirtualGPSGetReportFreq(int* f1, int* f2, int* f3);
+VirtualGPSRegisterCallback(DMSDPGPSCallback*);
+VirtualGPSUnRegisterCallback();
+VirtualGPSBusinessControl(uint, char*, uint, char*, uint);
+```
+
+**ProcessGNSSData parsing:**
+- Validates `$GPGGA`, `$GPRMC`, `$PASCD` prefixes via `memcmp`
+- GPGGA: extracts time, lat, lon, fix quality, satellites, HDOP, altitude via `sscanf`/`strtol`/`strtod`
+- GPRMC: extracts time, status, lat, lon, speed (knots→km/h), course, date
+- Generates custom `$GPVAI,%s,%d,,,,,,%06.1f,%s` (speed + time) sentence
+- Generates `$RMTINFO,%s,%s,%s,` (car brand from `/etc/airplay.conf` + device ID from `/tmp/car_deviceID`)
+- Appends `*XX` NMEA checksum
+- Sends via `HiCarSendGNSSData()` and `sendTransferData()` (libboxtrans.so)
+- Tracks driving mode via `HiCarSendDrivingMode()` with stop-time counter (`iStopTimes` static)
+
+**libdmsdpdvgps.so (16KB, ENCRYPTED):**
+
+This library exports GPS service functions (`GpsReceiveLocationData`, `GpsSendServiceData`, etc.) visible in the symbol table, but the `.text` section is **high-entropy encrypted/obfuscated** — no valid ARM/Thumb instructions in function bodies. The entry point and function prologues are invalid opcodes. Analysis requires runtime memory dump from the adapter.
+
+**Critical Configuration:** `GNSSCapability` defaults to `0`, which **disables** the entire GPS pipeline at two points. Must be set to `≥ 1` via `riddleBoxCfg -s GNSSCapability 3` for GPS forwarding to work.
 
 ---
 
