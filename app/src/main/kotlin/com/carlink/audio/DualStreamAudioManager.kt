@@ -4,14 +4,10 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Process
-import android.util.Log
-import com.carlink.BuildConfig
 import com.carlink.platform.AudioConfig
-import com.carlink.util.AudioDebugLogger
 import com.carlink.util.LogCallback
 import java.util.concurrent.atomic.AtomicBoolean
-
-private const val TAG = "CARLINK_AUDIO"
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Audio stream type identifiers from CPC200-CCPA protocol.
@@ -87,8 +83,22 @@ class DualStreamAudioManager(
     private var mediaUnderruns: Int = 0
     private var navUnderruns: Int = 0
     private var writeCount: Long = 0
-    private var lastStatsLog: Long = 0
     private var zeroPacketsFiltered: Long = 0
+
+    // 30s aggregate stats counters (per-window deltas, reset each interval)
+    private val statsInterval = 30_000L
+    private var lastStatsTime = 0L
+    private val windowMediaRx = AtomicLong(0)
+    private val windowNavRx = AtomicLong(0)
+    private val windowMediaPlayed = AtomicLong(0)
+    private val windowNavPlayed = AtomicLong(0)
+    private val windowMediaResiduals = AtomicLong(0)
+    private val windowNavResiduals = AtomicLong(0)
+    private val windowZeroFiltered = AtomicLong(0)
+    private var prevMediaOverflow = 0
+    private var prevNavOverflow = 0
+    private var prevMediaUnderruns = 0
+    private var prevNavUnderruns = 0
 
     private val bufferMultiplier = audioConfig.bufferMultiplier
     private val playbackChunkSize = audioConfig.sampleRate * 2 * 2 * 5 / 1000
@@ -255,7 +265,6 @@ class DualStreamAudioManager(
             }
 
             navEndMarkersDetected++
-            AudioDebugLogger.logNavBufferFlush("end_marker", discardedMs)
             log("[AUDIO] Nav end marker detected, buffers flushed (total: $navEndMarkersDetected)")
         }
     }
@@ -270,53 +279,15 @@ class DualStreamAudioManager(
     ): Int {
         if (!isRunning.get()) return -1
 
-        AudioDebugLogger.logUsbReceive(dataLength, audioType, decodeType)
-
         // Navigation handles zeros separately for consecutive tracking and buffer flush
         val isZeroFilled = isZeroFilledAudio(data, dataOffset, dataLength)
         if (isZeroFilled && audioType != AudioStreamType.NAVIGATION) {
             zeroPacketsFiltered++
-            AudioDebugLogger.logUsbFiltered(audioType, zeroPacketsFiltered)
-            if (BuildConfig.DEBUG && (zeroPacketsFiltered == 1L || zeroPacketsFiltered % 100 == 0L)) {
-                Log.w(TAG, "[AUDIO_FILTER] Filtered $zeroPacketsFiltered zero-filled packets")
-            }
+            windowZeroFiltered.incrementAndGet()
             return 0
         }
 
         writeCount++
-
-        // Log every 500th packet for debugging
-        if (BuildConfig.DEBUG && writeCount % 500 == 1L) {
-            val firstBytes =
-                (dataOffset until minOf(dataOffset + 16, dataOffset + dataLength)).joinToString(" ") {
-                    String.format(java.util.Locale.US, "%02X", data[it])
-                }
-            val bufferStats =
-                mediaBuffer?.let {
-                    "fill=${it.fillLevelMs()}ms overflow=${it.overflowCount} underflow=${it.underflowCount}"
-                } ?: "no-buffer"
-            Log.i(
-                TAG,
-                "[AUDIO_DEBUG] write#$writeCount size=$dataLength type=$audioType " +
-                    "decode=$decodeType first16=[$firstBytes] $bufferStats",
-            )
-        }
-
-        // DEBUG: Log buffer stats every 10 seconds
-        if (BuildConfig.DEBUG) {
-            val now = System.currentTimeMillis()
-            if (now - lastStatsLog > 10000) {
-                lastStatsLog = now
-                mediaBuffer?.let {
-                    Log.i(
-                        TAG,
-                        "[AUDIO_STATS] mediaBuffer: fill=${it.fillLevelMs()}ms/${it.fillLevel() * 100}% " +
-                            "written=${it.totalBytesWritten} read=${it.totalBytesRead} " +
-                            "overflow=${it.overflowCount} underflow=${it.underflowCount}",
-                    )
-                }
-            }
-        }
 
         // Route: Navigation → nav track, everything else → media track
         // CPC200-CCPA sends all non-nav audio (media, Siri, phone, alert) as audioType=1
@@ -328,9 +299,7 @@ class DualStreamAudioManager(
                 val bufferLevelMs = navBuffer?.fillLevelMs() ?: 0
 
                 // Check end marker before track creation (navStartTime may be 0)
-                val preTrackTimeSinceStart = if (navStartTime > 0) System.currentTimeMillis() - navStartTime else 0L
                 if (isNavEndMarker(data, dataOffset, dataLength)) {
-                    AudioDebugLogger.logNavEndMarker(preTrackTimeSinceStart, bufferLevelMs)
                     flushNavBuffers()
                     consecutiveNavZeroPackets = 0
                     return 0
@@ -340,13 +309,10 @@ class DualStreamAudioManager(
                 if (isZeroFilled) {
                     consecutiveNavZeroPackets++
                     zeroPacketsFiltered++
+                    windowZeroFiltered.incrementAndGet()
                     if (consecutiveNavZeroPackets >= navZeroFlushThreshold) {
-                        AudioDebugLogger.logNavZeroFlush(consecutiveNavZeroPackets, bufferLevelMs)
                         flushNavBuffers()
-                        log(
-                            "[AUDIO_FILTER] Nav buffer flushed after $consecutiveNavZeroPackets consecutive " +
-                                "zero packets (total filtered: $zeroPacketsFiltered)",
-                        )
+                        log("[AUDIO_FILTER] Nav buffer flushed after $consecutiveNavZeroPackets consecutive zero packets")
                         consecutiveNavZeroPackets = 0
                     }
                     return 0
@@ -359,23 +325,23 @@ class DualStreamAudioManager(
                 // Skip warmup noise in first ~250ms
                 if (timeSinceStart < navWarmupSkipMs && isWarmupNoise(data, dataOffset, dataLength)) {
                     navWarmupFramesSkipped++
-                    AudioDebugLogger.logNavWarmupSkip(timeSinceStart, "near-silence")
                     if (navWarmupFramesSkipped == 1L || navWarmupFramesSkipped % 10 == 0L) {
                         log("[AUDIO] Skipped nav warmup frame (${timeSinceStart}ms since start, total: $navWarmupFramesSkipped)")
                     }
                     return 0
                 }
 
+                windowNavRx.incrementAndGet()
                 val bytesWritten = navBuffer?.write(data, dataOffset, dataLength) ?: -1
                 if (bytesWritten > 0) {
                     navPackets++
-                    AudioDebugLogger.logNavBufferWrite(bytesWritten, navBuffer?.fillLevelMs() ?: 0, timeSinceStart)
                 }
                 bytesWritten
             }
 
             else -> {
                 // All non-nav audio (media, Siri, phone call, alert) → media track
+                windowMediaRx.incrementAndGet()
                 ensureMediaTrack(decodeType)
                 mediaBuffer?.write(data, dataOffset, dataLength) ?: -1
             }
@@ -458,9 +424,6 @@ class DualStreamAudioManager(
                     track.flush()
                     val discardedMs = navBuffer?.fillLevelMs() ?: 0
                     navBuffer?.clear()
-                    AudioDebugLogger.logNavBufferFlush("stop_command", discardedMs)
-                    AudioDebugLogger.logNavPromptEnd(playDuration, bytesRead, navUnderruns)
-                    AudioDebugLogger.logStreamStop("NAV", playDuration, navPackets)
                     log(
                         "[NAV_STOP] Nav track paused+flushed after ${playDuration}ms - " +
                             "discarded=${discardedMs}ms, packets=$navPackets, underruns=$navUnderruns",
@@ -537,7 +500,6 @@ class DualStreamAudioManager(
 
                 mediaTrack = createAudioTrack(format, AudioStreamType.MEDIA)
                 mediaTrack?.play()
-                AudioDebugLogger.logStreamStart("MEDIA", format.sampleRate, format.channelCount, audioConfig.mediaBufferCapacityMs)
             }
         }
     }
@@ -557,8 +519,6 @@ class DualStreamAudioManager(
                     track.play()
                     navStarted = false
                     navStartTime = System.currentTimeMillis()
-                    AudioDebugLogger.logNavBufferFlush("track_resume", discardedMs)
-                    AudioDebugLogger.logNavPromptStart(format.sampleRate, format.channelCount, audioConfig.navBufferCapacityMs)
                     log("[AUDIO] Resumed paused nav track with flush (same format ${format.sampleRate}Hz)")
                     return
                 }
@@ -579,8 +539,6 @@ class DualStreamAudioManager(
                 navTrack = createAudioTrack(format, AudioStreamType.NAVIGATION)
                 navTrack?.play()
                 navStartTime = System.currentTimeMillis() // Track start time for min duration
-                AudioDebugLogger.logStreamStart("NAV", format.sampleRate, format.channelCount, audioConfig.navBufferCapacityMs)
-                AudioDebugLogger.logNavPromptStart(format.sampleRate, format.channelCount, audioConfig.navBufferCapacityMs)
             }
         }
     }
@@ -719,10 +677,11 @@ class DualStreamAudioManager(
     }
 
     private fun log(message: String) {
-        if (BuildConfig.DEBUG) {
-            Log.d(TAG, message)
-        }
-        logCallback.log(message)
+        logCallback.log("AUDIO", message)
+    }
+
+    private fun logPerf(message: String) {
+        logCallback.logPerf("AUDIO_PERF", message)
     }
 
     /** Playback thread (URGENT_AUDIO priority). Separate buffers per stream for safety. */
@@ -771,6 +730,7 @@ class DualStreamAudioManager(
                                         return@let
                                     }
                                     if (written > 0) {
+                                        windowMediaPlayed.addAndGet(written.toLong())
                                         mediaResidualOffset += written
                                         mediaResidualCount -= written
                                         didWork = true
@@ -803,9 +763,13 @@ class DualStreamAudioManager(
                                                 handleTrackError("MEDIA", written)
                                                 return@let
                                             }
+                                            if (written > 0) {
+                                                windowMediaPlayed.addAndGet(written.toLong())
+                                            }
                                             if (written < bytesRead) {
                                                 mediaResidualOffset = written
                                                 mediaResidualCount = bytesRead - written
+                                                windowMediaResiduals.incrementAndGet()
                                             }
                                             if (written > 0) didWork = true
                                         }
@@ -816,7 +780,6 @@ class DualStreamAudioManager(
                                 if (underruns > mediaUnderruns) {
                                     val newUnderruns = underruns - mediaUnderruns
                                     mediaUnderruns = underruns
-                                    AudioDebugLogger.logTrackUnderrun("MEDIA", underruns)
                                     log(
                                         "[AUDIO_UNDERRUN] Media underrun detected: " +
                                             "+$newUnderruns (total: $underruns)",
@@ -824,7 +787,6 @@ class DualStreamAudioManager(
 
                                     // Recovery: If many underruns and buffer critically low, reset pre-fill
                                     if (newUnderruns >= underrunRecoveryThreshold && buffer.fillLevelMs() < 50) {
-                                        // Force pre-fill again
                                         mediaStarted = false
                                         log(
                                             "[AUDIO_RECOVERY] Resetting media pre-fill due to " +
@@ -845,8 +807,6 @@ class DualStreamAudioManager(
                                 if (!navStarted) {
                                     if (currentNavFillMs < prefillThresholdMs / 2) return@let
                                     navStarted = true
-                                    val waitTimeMs = System.currentTimeMillis() - navStartTime
-                                    AudioDebugLogger.logNavPrefillComplete(currentNavFillMs, waitTimeMs)
                                     log("[AUDIO] Nav pre-fill complete: ${currentNavFillMs}ms buffered, starting playback")
                                 }
 
@@ -864,7 +824,7 @@ class DualStreamAudioManager(
                                     if (written > 0) {
                                         navResidualOffset += written
                                         navResidualCount -= written
-                                        AudioDebugLogger.logNavTrackWrite(written, buffer.fillLevelMs())
+                                        windowNavPlayed.addAndGet(written.toLong())
                                         didWork = true
                                     }
                                 }
@@ -895,14 +855,15 @@ class DualStreamAudioManager(
                                                 handleTrackError("NAV", written)
                                                 return@let
                                             }
+                                            if (written > 0) {
+                                                windowNavPlayed.addAndGet(written.toLong())
+                                            }
                                             if (written < bytesRead) {
                                                 navResidualOffset = written
                                                 navResidualCount = bytesRead - written
+                                                windowNavResiduals.incrementAndGet()
                                             }
-                                            if (written > 0) {
-                                                AudioDebugLogger.logNavTrackWrite(written, buffer.fillLevelMs())
-                                                didWork = true
-                                            }
+                                            if (written > 0) didWork = true
                                         }
                                     }
                                 }
@@ -911,7 +872,6 @@ class DualStreamAudioManager(
                                 if (underruns > navUnderruns) {
                                     val newUnderruns = underruns - navUnderruns
                                     navUnderruns = underruns
-                                    AudioDebugLogger.logTrackUnderrun("NAV", underruns)
                                     log(
                                         "[AUDIO_UNDERRUN] Nav underrun detected: " +
                                             "+$newUnderruns (total: $underruns)",
@@ -932,16 +892,53 @@ class DualStreamAudioManager(
 
                     if (!didWork) sleep(5)
 
-                    AudioDebugLogger.logPerfSummary(
-                        mediaBuffer?.fillLevelMs() ?: 0,
-                        navBuffer?.fillLevelMs() ?: 0,
-                        mediaUnderruns,
-                        navUnderruns,
-                    )
+                    // 30s aggregate stats (gated by AUDIO_PERF tag)
+                    val now = System.currentTimeMillis()
+                    if (now - lastStatsTime >= statsInterval) {
+                        val mRx = windowMediaRx.getAndSet(0)
+                        val nRx = windowNavRx.getAndSet(0)
+                        val mPlay = windowMediaPlayed.getAndSet(0)
+                        val nPlay = windowNavPlayed.getAndSet(0)
+                        val mRes = windowMediaResiduals.getAndSet(0)
+                        val nRes = windowNavResiduals.getAndSet(0)
+                        val zf = windowZeroFiltered.getAndSet(0)
+
+                        val mFill = mediaBuffer?.fillLevelMs() ?: 0
+                        val nFill = navBuffer?.fillLevelMs() ?: 0
+                        val mOvf = (mediaBuffer?.overflowCount ?: 0) - prevMediaOverflow
+                        val nOvf = (navBuffer?.overflowCount ?: 0) - prevNavOverflow
+                        val mUrun = mediaUnderruns - prevMediaUnderruns
+                        val nUrun = navUnderruns - prevNavUnderruns
+
+                        prevMediaOverflow = mediaBuffer?.overflowCount ?: 0
+                        prevNavOverflow = navBuffer?.overflowCount ?: 0
+                        prevMediaUnderruns = mediaUnderruns
+                        prevNavUnderruns = navUnderruns
+
+                        val sb = StringBuilder()
+                        sb.append("Media[Rx:").append(mRx)
+                            .append(" Play:").append(mPlay / 1024).append("KB")
+                            .append(" Buf:").append(mFill).append("ms")
+                            .append(" Ovf:").append(mOvf)
+                            .append(" Urun:").append(mUrun)
+                        if (mRes > 0) sb.append(" Res:").append(mRes)
+                        sb.append("] Nav[Rx:").append(nRx)
+                            .append(" Play:").append(nPlay / 1024).append("KB")
+                            .append(" Buf:").append(nFill).append("ms")
+                            .append(" Ovf:").append(nOvf)
+                            .append(" Urun:").append(nUrun)
+                        if (nRes > 0) sb.append(" Res:").append(nRes)
+                        sb.append("]")
+                        if (zf > 0) sb.append(" Zero:").append(zf)
+                        sb.append(" Duck:").append(if (isDucked) "Y" else "N")
+
+                        logPerf(sb.toString())
+                        lastStatsTime = now
+                    }
                 } catch (e: InterruptedException) {
                     break
                 } catch (e: Exception) {
-                    Log.e(TAG, "[AUDIO] Playback thread error: ${e.message}")
+                    log("[AUDIO] Playback thread error: ${e.message}")
                 }
             }
 
@@ -954,9 +951,7 @@ class DualStreamAudioManager(
         ) {
             when (errorCode) {
                 AudioTrack.ERROR_DEAD_OBJECT -> {
-                    Log.e(TAG, "[AUDIO] $streamType AudioTrack dead, releasing for recreation")
-                    // Release dead track and null references so playback thread stops writing.
-                    // ensureMediaTrack/ensureNavTrack will recreate on next writeAudio call.
+                    log("[AUDIO] $streamType AudioTrack dead, releasing for recreation")
                     synchronized(lock) {
                         when (streamType) {
                             "MEDIA" -> {
@@ -976,11 +971,11 @@ class DualStreamAudioManager(
                 }
 
                 AudioTrack.ERROR_INVALID_OPERATION -> {
-                    Log.e(TAG, "[AUDIO] $streamType AudioTrack invalid operation")
+                    log("[AUDIO] $streamType AudioTrack invalid operation")
                 }
 
                 else -> {
-                    Log.e(TAG, "[AUDIO] $streamType AudioTrack write error: $errorCode")
+                    log("[AUDIO] $streamType AudioTrack write error: $errorCode")
                 }
             }
         }

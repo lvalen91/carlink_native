@@ -55,6 +55,7 @@ object Logger {
         const val VIDEO_CODEC = "VIDEO_CODEC"
         const val VIDEO_SURFACE = "VIDEO_SURFACE"
         const val VIDEO_PERF = "VIDEO_PERF"
+        const val AUDIO_PERF = "AUDIO_PERF"
     }
 
     @Volatile
@@ -71,6 +72,7 @@ object Logger {
             disableTag(Tags.VIDEO_SURFACE)
             disableTag(Tags.USB_RAW)
             disableTag(Tags.AUDIO_DEBUG)
+            disableTag(Tags.AUDIO_PERF)
         }
     }
 
@@ -312,3 +314,5 @@ inline fun logVideoSurface(message: () -> String) = logDebugOnly(Logger.Tags.VID
 inline fun logVideoPerf(message: () -> String) = logDebugOnly(Logger.Tags.VIDEO_PERF, message)
 
 inline fun logNavi(message: () -> String) = logDebugOnly(Logger.Tags.NAVI, message)
+
+inline fun logAudioPerf(message: () -> String) = logDebugOnly(Logger.Tags.AUDIO_PERF, message)

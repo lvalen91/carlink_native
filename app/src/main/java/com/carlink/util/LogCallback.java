@@ -16,4 +16,10 @@ package com.carlink.util;
 public interface LogCallback {
 
     void log(String message);
+
+    /** Log with an explicit tag (routed to Logger with proper tag). */
+    default void log(String tag, String message) { log("[" + tag + "] " + message); }
+
+    /** Performance/diagnostic log — gated by debug logging + tag in release builds. */
+    default void logPerf(String tag, String message) { log(tag, message); }
 }

@@ -348,9 +348,16 @@ object MessageSerializer {
         // === MINIMAL CONFIG: Always sent (every session) ===
         // - DPI: stored in /tmp/ which is cleared on adapter power cycle
         // - Open: display dimensions may change between sessions
+        // - ViewArea/SafeArea: tied to display mode which may change between sessions
         // - Android work mode: must be re-sent on each reconnect to restart AA daemon
         messages.add(serializeNumber(config.dpi, FileAddress.DPI))
         messages.add(serializeOpen(config))
+        config.viewAreaData?.let {
+            messages.add(serializeFile(FileAddress.HU_VIEWAREA_INFO.path, it))
+        }
+        config.safeAreaData?.let {
+            messages.add(serializeFile(FileAddress.HU_SAFEAREA_INFO.path, it))
+        }
         if (config.androidWorkMode) {
             messages.add(serializeBoolean(true, FileAddress.ANDROID_WORK_MODE))
         }

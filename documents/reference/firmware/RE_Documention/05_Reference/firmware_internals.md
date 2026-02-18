@@ -2,7 +2,7 @@
 
 **Purpose:** Technical reference for firmware architecture and internal processing
 **Consolidated from:** carlink_native firmware analysis, binary reverse engineering
-**Last Updated:** 2026-01-22
+**Last Updated:** 2026-02-18 (deep r2 analysis: dual data path, CarPlay mode state machine, codecs, PBAP, hfpd provenance, AirPlay features, 6 audio channels, media plist format, AdvancedFeatures bitmask mapping, MiddleMan interfaces, config file paths)
 
 ---
 
@@ -17,6 +17,207 @@ The CPC200-CCPA operates as an intelligent protocol bridge with severe hardware 
 | CPU | Single-core ARM32 | No complex DSP operations |
 
 **Design Philosophy:** "Smart Interface, Dumb Processing" - the adapter handles protocol translation and format conversion, delegating sophisticated processing (WebRTC, noise cancellation) to the host application.
+
+---
+
+## Dual Data Path Architecture (r2 Analysis Feb 2026)
+
+CarPlay sessions use **two parallel paths** running simultaneously:
+
+```
+iPhone ──── AirPlay Session ────→ AppleCarPlay binary ──→ ARMadb-driver ──→ USB ──→ Host App
+  │                                   ("dumb pipe")
+  │                                   Video (H.264), Audio (PCM/AAC), HID
+  │
+  └──── iAP2 Session ──────────→ ARMiPhoneIAP2 binary ──→ ARMadb-driver ──→ USB ──→ Host App
+                                     (9 engines)
+                                     NaviJSON, GNSS, CallState, MediaPlayer,
+                                     Communication, Power, VehicelStat
+```
+
+**AirPlay layer** (`AppleCarPlay`): Pure A/V relay. Receives H.264 video via AirPlay RTSP, forwards raw NAL units. Receives audio (PCM/AAC/ALAC). Handles HID touch/button relay. Does NOT parse any metadata — all rich content (now playing, caller ID, navigation UI) is rendered as pixels in the video stream.
+
+**iAP2 layer** (`ARMiPhoneIAP2`): Runs in parallel. Parses ALL structured metadata via 9 engines (see `key_binaries.md` for complete field catalogs). Broadcasts parsed data via `BroadCastCFValueIfNeedSend_ToAccessoryDaemon` through the MiddleMan interface.
+
+**Key insight**: NaviJSON and GNSS are confirmed flowing to the host app via USB. DashboardInfo bitmask (default=1) controls which engines are initialized — see `01_Firmware_Architecture/configuration.md` for full bitmask documentation, live test results, and assembly evidence.
+
+**ARMadb-driver relay specifics (r2 Feb 2026)**:
+- ARMadb-driver has **two reception paths**: a BroadCast handler (`aav.0x0001a7f1`) that only extracts playback status + audio signals, and a DashBoard_DATA handler (`fcn.00017b74`) that forwards engine data as opaque USB type 0x2A with subtypes
+- Exhaustive r2 string search: **zero** title/artist/album/CallState/SignalStrength/Battery field name strings in ARMadb-driver — only `OniAPUpdateMediaPlayerPlaybackStatus` callback exists for media
+- NaviJSON confirmed via 0x2A subtype 200; NowPlaying may arrive as 0x2A with a different subtype as opaque binary plist — **USB capture needed to verify which subtypes actually arrive**
+- Battery: CiAP2PowerEngine does NOT call BroadCast at all (r2 verified) — local only
+- Communication/Cellular: broadcast via MiddleMan but no corresponding handler in ARMadb-driver confirmed
+
+---
+
+## CarPlay Mode State Machine (r2 Analysis Feb 2026)
+
+From `AirPlayReceiverSessionMakeModeStateFromDictionary`:
+
+**Mode channels** (from `changeModes` / `modesChanged`):
+
+| Channel | Purpose |
+|---------|---------|
+| `screen` | Main screen active/inactive |
+| `mainAudio` | Primary audio stream |
+| `speech` | Speech recognition (Siri) active |
+| `phoneCall` | Phone call active |
+| `turnByTurn` | Turn-by-turn navigation audio active |
+
+Log: `Modes changed: screen %s, mainAudio %s, speech %s (%s), phone %s, turns %s`
+
+**Sub-properties**: `speechMode`, `speechRecognition`, `usingScreen`, `altScreen`
+
+### Session Control Commands
+
+| Command | Purpose |
+|---------|---------|
+| `startSession` / `sessionDied` | Session lifecycle |
+| `changeModes` / `modesChanged` | Mode state changes |
+| `requestUI` / `requestSiri` | UI/Siri activation |
+| `setNightMode` / `setLimitedUI` | Display mode |
+| `setAudioVolume` (with `durationMs`) | Volume control |
+| `duckAudio` / `unduckAudio` | Audio ducking |
+| `forceKeyFrame` / `forceKeyFrameNeeded` | H.264 IDR request |
+| `setUpStreams` / `tearDownStreams` | AV stream lifecycle |
+| `updateTimestamps` / `timestampsUpdated` | RTP timestamp sync |
+| `disableBluetooth` | Disable BT on device |
+
+### Instrument Cluster / Alt Screen
+
+**Configuration Gate:** `AdvancedFeatures` riddleBoxCfg key (bitmask):
+- Bit 0 → sets exported global `g_bSupportNaviScreen` (enables alt screen video)
+- Bit 1 → sets exported global `g_bSupportViewarea` (enables **main screen** ViewArea/SafeArea negotiation — essential for non-rectangular displays)
+- Set `AdvancedFeatures=3` for both. Can also be bypassed by sending `naviScreenInfo` in BoxSettings (navi only).
+
+| Function/String | Purpose |
+|---|---|
+| `_AltScreenSetup` / `_AltScreenStart` / `_AltScreenTearDown` | Alt screen lifecycle |
+| `_AltScreenThread` | Alt screen render thread |
+| `AirPlayAltScreenReceiver` | Separate video receiver (own port) |
+| `AltVideoFrame` | Message type 0x2C carrier |
+| `altScreenSuggestUIURLs` | URLs HU suggests for alt screen |
+| `maps:/car/instrumentcluster` / `maps:/car/instrumentcluster/map` | Instrument cluster URLs |
+| `g_bSupportNaviScreen` | HU feature flag for NaviScreen (set by AdvancedFeatures bit 0) |
+| `g_bSupportViewarea` | HU feature flag for main screen ViewArea/SafeArea (set from `HU_VIEWAREA_INFO` file having valid dimensions — NOT from AdvancedFeatures) |
+| `g_bNeedNaviStream` | Runtime flag: navi stream is requested |
+| `featureAltScreen` / `featureViewAreas` | Phone feature flags (reported by iPhone) |
+| `HU_VIEWAREA_INFO` / `HU_SAFEAREA_INFO` | **Main screen** view/safe area (gated by `g_bSupportViewarea`) |
+| `HU_NAVISCREEN_INFO` | Alt screen resolution config |
+| `HU_NAVISCREEN_VIEWAREA_INFO` / `HU_NAVISCREEN_SAFEAREA_INFO` | Alt screen layout areas (gated by `g_bSupportNaviScreen`) |
+| `viewAreaTransitionControl` / `viewAreaStatusBarEdge` | View area dict properties (transition hardcoded false) |
+| `drawUIOutsideSafeArea` | 0=black outside SafeArea, 1=home wallpaper extends to ViewArea (Maps/apps/controls stay inside SafeArea regardless — live verified iOS 18) |
+| `DockPosition` | Dock/sidebar position in view area (float64) |
+
+**Runtime Global Flags (AppleCarPlay binary, exported symbols):**
+
+| Global | Purpose |
+|--------|---------|
+| `g_bSupportNaviScreen` | HU supports navi/cluster screen |
+| `g_bSupportViewarea` | HU supports view area reporting |
+| `g_bNeedNaviStream` | Navi stream is needed/requested |
+| `g_bStartSiri` | Siri session is active |
+| `g_bStartPhoneCall` | Phone call is active |
+| `g_bInNaviMode` | Currently in navigation mode |
+| `g_bVideoHide` | Video is hidden (privacy/screen off) |
+
+---
+
+## AirPlay-Layer Features (Binary Strings Feb 2026)
+
+### Focus Domains
+
+The adapter manages 4 independent focus domains for CarPlay resource control:
+
+| Domain | Purpose |
+|--------|---------|
+| `Audio` | Audio output focus (media, nav prompts, calls) |
+| `Video` | Screen/display focus |
+| `Navi` | Navigation audio focus |
+| `NaviScreen` | Navigation video (instrument cluster) focus |
+
+Strings: `AudioFocusGainType`, `VideoFocusGainType`, `NaviFocusGainType`, `NaviScreenFocusGainType`
+
+### 6 Audio Channel States (ARMadb-driver)
+
+Beyond the 3 audio_type values in the USB protocol (1=media, 2=nav, 3=mic), the adapter internally tracks 6 audio channel states:
+
+| Channel | USB audio_type | Purpose |
+|---------|---------------|---------|
+| Media | 1 | Music playback |
+| Navi | 2 | Navigation prompts |
+| PhoneCall | — | Phone call audio |
+| Siri | — | Voice assistant |
+| Alert | — | System alerts |
+| InputConfig | — | Microphone routing |
+
+D-Bus signals: `kRiddleAudioSignal_MEDIA_START/STOP`, `kRiddleAudioSignal_ALERT_START/STOP`, `kRiddleAudioSignal_PHONECALL_Incoming`
+
+**Note:** PhoneCall, Siri, and Alert audio are all sent to the host using the same USB audio_type values — the internal distinction is for the adapter's own focus management, not the USB protocol.
+
+### App Launch Commands
+
+The adapter can programmatically launch specific CarPlay apps on the iPhone:
+
+| Command | Target App |
+|---------|-----------|
+| `LaunchAppMaps` | Apple Maps |
+| `LaunchAppMusic` | Apple Music / Now Playing |
+| `LaunchAppNowPlaying` | Now Playing screen |
+| `LaunchAppPhone` | Phone app |
+
+These are triggered via `RequestAppLaunch` in the iAP2 layer or AirPlay session commands.
+
+### Haptic Feedback
+
+String: `kAirPlayProperty_HIDHaptic` — supports haptic feedback relay to iPhone for button presses.
+
+### Fake iPhone Mode
+
+`InitFakeiPhoneMode` — adapter can impersonate a specific iPhone model to the head unit. Used for compatibility with head units that restrict connections to known iOS devices.
+
+### LimitedUI Mode
+
+`setLimitedUI` — adapter signals the phone that the vehicle is in a restricted UI state (e.g., driving). CarPlay responds by simplifying its interface: shorter lists, larger tap targets, and restricted keyboard input.
+
+---
+
+## CarPlay Audio Codec Support (r2 Analysis Feb 2026)
+
+Complete codec list from `AppleCarPlay_unpacked`:
+
+| Format | Variants |
+|--------|----------|
+| PCM | 8000/16/1, 8000/16/2, 16000/16/1, 16000/16/2, 24000/16/1, 24000/16/2, 32000/16/1, 32000/16/2 |
+| PCM | 44100/16/1, 44100/16/2, 44100/24/1, 44100/24/2, 48000/16/1, 48000/16/2, 48000/24/1, 48000/24/2 |
+| ALAC | 44100/16/2, 44100/24/2, 48000/16/2, 48000/24/2 |
+| AAC-LC | 44100/2, 48000/2 |
+| AAC-ELD | 44100/2, 48000/2 |
+
+Format notation: `codec/sampleRate/bitDepth/channels`
+
+---
+
+## CarPlay Encryption Key Names (r2 Analysis Feb 2026)
+
+> **Full pairing protocol documented in:** `02_Protocol_Reference/wireless_carplay.md`
+
+Binary strings from `AppleCarPlay_unpacked` reveal the internal key derivation labels:
+
+| Key Label | Purpose |
+|-----------|---------|
+| `Control-Read-Encryption-Key` | Decrypt control channel from phone |
+| `Control-Write-Encryption-Key` | Encrypt control channel to phone |
+| `DataStream-Output-Encryption-Key` | Encrypt media/data to phone |
+| `DataStream-Input-Encryption-Key` | Decrypt media/data from phone |
+| `Events-Read-Encryption-Key` | Decrypt event channel from phone |
+| `Events-Write-Encryption-Key` | Encrypt event channel to phone |
+| `Pair-Verify-ECDH-Salt` / `Pair-Verify-ECDH-Info` | HKDF params for pair-verify M1 |
+| `Pair-Verify-Encrypt-Salt` / `Pair-Verify-Encrypt-Info` | HKDF params for pair-verify M3 |
+
+**Additional RTSP endpoint** not in capture data: `/log` (device log retrieval)
+
+**Additional Bonjour service**: `_mfi-config._tcp.` (MFi configuration, alongside `_carplay._tcp` and `_airplay._tcp`)
 
 ---
 
@@ -330,6 +531,15 @@ tinymix 47 63 63       # Additional gain
 
 ## D-Bus Service Integration
 
+### HFP Daemon Provenance
+
+The `hfpd` binary is derived from the **nohands** open-source HFP implementation (`net.sf.nohands.hfpd` D-Bus service). It implements HFP 1.6 with:
+- Three-way calling support (CHLD 0-4)
+- Wideband speech: CVSD + mSBC codecs
+- D-Bus interfaces: `HandsFree`, `SoundIo`, `AudioGateway`
+
+The binary itself is custom-encrypted (high-entropy `.text` section), but the D-Bus policy files and service names confirm the nohands lineage.
+
 ### HFP Daemon Configuration (/etc/hfpd.conf)
 
 ```ini
@@ -387,6 +597,43 @@ OK                   # Command acknowledged
 | 3 | In-band ring tone |
 | 4 | Voice tag |
 | 5 | Call reject |
+
+### MiddleMan IPC Architecture (Binary Strings Feb 2026)
+
+All projection protocols communicate through a MiddleMan interface server using Unix domain sockets:
+
+| Interface Class | Protocol |
+|-----------------|----------|
+| `CCarPlay_MiddleManInterface` | CarPlay (primary) |
+| `CCarPlay_MiddleManInterface_iAP2InternalUse` | CarPlay iAP2 metadata relay |
+| `CAndroidAuto_MiddleManInterface` | Android Auto |
+| `CAndroidMirror_MiddleManInterface` | Android screen mirroring |
+| `CHiCar_MiddleManInterface` | Huawei HiCar |
+| `CICCOA_MiddleManInterface` | China ICCOA standard |
+| `CDVR_MiddleManInterface` | DVR/dashcam feed |
+| `CiOS_MiddleManInterface` | Generic iOS interface |
+| `CNoAirPlay_MiddleManInterface` | Fallback when AirPlay unavailable |
+
+The `CMiddleManClient_iAPBroadCast` class handles iAP2 metadata broadcast relay from `ARMiPhoneIAP2` engines to `ARMadb-driver`.
+
+### Adapter Filesystem Config Paths
+
+| Path | Persistence | Purpose |
+|------|-------------|---------|
+| `/etc/riddle.conf` | Flash | Main JSON config (all riddleBoxCfg keys) |
+| `/etc/riddle_default.conf` | Flash | Factory defaults (copied on reset) |
+| `/etc/riddle_special.conf` | Flash | OEM overrides (synced via `--specialConfig`) |
+| `/tmp/.riddle_default.conf` | RAM | Runtime shadow copy of defaults |
+| `/etc/RiddleBoxData/` | Flash | Persistent data store |
+| `/etc/RiddleBoxData/AIEIPIEREngines.datastore` | Flash | Cached iAP2 engine negotiation (must delete after DashboardInfo/GNSSCapability changes) |
+| `/tmp/RiddleBoxData/` | RAM | Runtime data (HU_GPS_DATA, etc.) |
+| `/etc/airplay.conf` | Flash | Active AirPlay config (copied from brand or car variant) |
+| `/etc/airplay_brand.conf` | Flash | OEM AirPlay config |
+| `/etc/airplay_car.conf` | Flash | Car-specific AirPlay config |
+| `/etc/airplay_siri.conf` | Flash | Siri-specific AirPlay config |
+| `/etc/hostapd.conf` | Flash | WiFi AP config (SSID, channel) |
+| `/etc/bluetooth/hcid.conf` | Flash | Bluetooth name config |
+| `/etc/bluetooth/eir_info` | Flash | Extended Inquiry Response data |
 
 ### org.riddle D-Bus Interface
 
@@ -466,7 +713,7 @@ boxNetworkService &
 |---------|---------|
 | **mdnsd** | CarPlay mDNS discovery (_carplay._tcp) |
 | **boxNetworkService** | Network communication (45KB) |
-| **hfpd** | Bluetooth HFP daemon (static) |
+| **hfpd** | Bluetooth HFP 1.6 daemon (nohands-derived, custom-encrypted binary) |
 | **ARMAndroidAuto** | Android Auto handler (489KB) |
 | **AppleCarPlay** | Main CarPlay receiver (557KB) |
 | **ARMiPhoneIAP2** | iPhone IAP2 protocol (494KB) |
@@ -590,14 +837,21 @@ delete_local_auth_info();
 
 ## iAP2 Protocol Engines (ARMiPhoneIAP2)
 
-```cpp
-iAP2CallStateEngine        // Phone call state machine
-iAP2CommunicationEngine    // Core communication
-iAP2LocationEngine         // GPS/location data
-iAP2MediaPlayerEngine      // Media playback control
-iAP2RouteGuidanceEngine    // Navigation guidance
-iAP2WiFiConfigEngine       // WiFi configuration exchange
-```
+> **Complete field catalogs and message dispatch table in:** `binary_analysis/key_binaries.md`
+
+9 engines run in parallel with AirPlay, parsing structured metadata:
+
+| Engine | Purpose |
+|--------|---------|
+| `CiAP2IdentifyEngine` | Device identification, component registration |
+| `CiAP2MediaPlayerEngine` | NowPlaying: title, artist, album, artwork, duration, playback status |
+| `CiAP2CallStateEngine` | Call state: caller name, number, direction, status, hold/merge flags |
+| `CiAP2CommunicationEngine` | Cellular: signal, carrier, mute, call count, voicemail |
+| `CiAP2RouteGuidanceEngine` | Navigation: NaviJSON (road, maneuver, ETA, distance) |
+| `CiAP2LocationEngine` | GNSS: NMEA passthrough (GPGGA, GPRMC) |
+| `CiAP2PowerEngine` | Battery: charge level, charging state |
+| `CiAP2VehicelStatEngine` | Vehicle: outside temp, range warning |
+| `CiAP2WiFiConfigEngine` | WiFi: SSID, password, channel, P2P mode |
 
 ---
 
@@ -751,6 +1005,21 @@ The adapter uses Realtek's `rtk_btcoex` driver for Bluetooth/WiFi coexistence ma
 |-----|---------|
 | 0x0001 | SDP (Service Discovery Protocol) |
 | 0x0003 | RFCOMM (Serial port emulation) |
+
+### PBAP Support (Binary Strings Feb 2026)
+
+`bluetoothDaemon` registers both PBAP roles via SDP:
+
+| Role | Purpose |
+|------|---------|
+| **PCE** (Phone Book Client Equipment) | Pulls phonebook/call history FROM the phone |
+| **PSE** (Phone Book Server Equipment) | Serves phonebook TO the phone |
+
+SDP record strings: `Phone Book Access - PCE`, `Phone Book Access - PSE`
+
+This enables full phonebook synchronization: contacts, call history (missed/received/dialed), and favorites. The adapter acts as both client (pulling from the iPhone) and server (potentially serving cached data).
+
+**Note:** PBAP data flow to the host app via USB is unconfirmed — this may be used internally by the adapter for caller ID enrichment during HFP calls.
 
 ### HFP AT Command Exchange (Runtime Verified Jan 2026)
 

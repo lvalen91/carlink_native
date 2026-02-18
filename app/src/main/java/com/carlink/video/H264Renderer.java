@@ -15,8 +15,6 @@ import android.view.Surface;
 
 import androidx.annotation.NonNull;
 
-import android.util.Log;
-
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -24,10 +22,8 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import java.util.concurrent.locks.LockSupport;
 
-import com.carlink.BuildConfig;
 import com.carlink.util.AppExecutors;
 import com.carlink.util.LogCallback;
-import com.carlink.util.VideoDebugLogger;
 
 
 public class H264Renderer {
@@ -198,15 +194,11 @@ public class H264Renderer {
     }
 
     private void log(String message) {
-        logCallback.log("[H264_RENDERER] " + message);
+        logCallback.log("H264_RENDERER", message);
     }
 
-    /** Debug log - always outputs in debug builds, bypasses app log level filter.
-     *  Use for pipeline diagnostics that must appear regardless of user log settings. */
-    private void debugLog(String message) {
-        if (BuildConfig.DEBUG) {
-            Log.d("H264_PIPELINE", message);
-        }
+    private void logPerf(String message) {
+        logCallback.logPerf("VIDEO_PERF", message);
     }
 
     public void start() {
@@ -224,8 +216,7 @@ public class H264Renderer {
             initCodec(width, height, surface);
             mCodec.start();
             initStaging();
-            VideoDebugLogger.logCodecStarted();
-            log("[VIDEO] codec started");
+            log("Codec started");
         } catch (Exception e) {
             log("start error: " + e);
             stopStaging();
@@ -268,7 +259,7 @@ public class H264Renderer {
 
         synchronized (codecLock) {
             if (mCodec != null) {
-                VideoDebugLogger.logCodecStopped();
+                log("Codec stopped");
                 try {
                     mCodec.stop();
                 } catch (Exception e) {
@@ -293,8 +284,7 @@ public class H264Renderer {
     public void reset() {
         synchronized (codecLock) {
             long resetCount = codecResetCount.incrementAndGet();
-            VideoDebugLogger.logCodecReset(resetCount);
-            log("[VIDEO] reset - count: " + resetCount);
+            log("Reset #" + resetCount);
 
             Surface savedSurface = this.surface;
             stop();
@@ -410,12 +400,12 @@ public class H264Renderer {
             }
         }
 
-        VideoDebugLogger.logCodecInit(codecName, width, height);
+        log("Init: " + codecName + " @ " + width + "x" + height);
 
         mCodec.setCallback(codecCallback);
         codecAvailableBufferIndexes.clear();
         mCodec.configure(mediaformat, surface, null, 0);
-        VideoDebugLogger.logSurfaceBound(surface != null && surface.isValid());
+        log("Surface bound: valid=" + (surface != null && surface.isValid()));
     }
 
     private MediaCodecInfo findCodecInfo(String codecName) {
@@ -453,7 +443,7 @@ public class H264Renderer {
         t.setDaemon(true);
         feederThread = t;
         t.start();
-        debugLog("Feeder thread started");
+        logPerf("Feeder started");
     }
 
     /** Stop the feeder thread and release staging buffers. Call before mCodec.stop(). */
@@ -468,7 +458,7 @@ public class H264Renderer {
                 Thread.currentThread().interrupt();
             }
             if (t.isAlive()) {
-                debugLog("Feeder thread did not exit within 1s");
+                logPerf("Feeder thread did not exit within 1s");
             }
         }
         // Clear FIFO queue
@@ -523,9 +513,9 @@ public class H264Renderer {
                                 executors.mediaCodec1().execute(() -> {
                                     try {
                                         cb.onKeyframeNeeded();
-                                        debugLog("[KEYFRAME] Reactive keyframe request after staging drop");
+                                        logPerf("Reactive keyframe request after staging drop");
                                     } catch (Exception e) {
-                                        debugLog("[KEYFRAME] Reactive request failed: " + e);
+                                        logPerf("Reactive request failed: " + e);
                                     }
                                 });
                             }
@@ -536,9 +526,9 @@ public class H264Renderer {
                 }
             }
         } catch (Exception e) {
-            debugLog("Feeder thread exception: " + e);
+            logPerf("Feeder exception: " + e);
         }
-        debugLog("Feeder thread exited");
+        logPerf("Feeder stopped");
     }
 
     /** Feed a staged frame to the codec. Called only from feeder thread. */
@@ -553,7 +543,7 @@ public class H264Renderer {
                 syncAcquired = true;
                 log("[VIDEO] Sync acquired (" + nalTypeToString(nalType) + "), feeding to codec");
             } else {
-                debugLog("DROP pre-sync frame (" + nalTypeToString(nalType) + " " + frame.length + "B)");
+                logPerf("Pre-sync drop: " + nalTypeToString(nalType) + " " + frame.length + "B");
                 return;
             }
         }
@@ -566,9 +556,7 @@ public class H264Renderer {
             if (nalType == NAL_IDR) {
                 long sessionTotal = sessionIdrDrops.incrementAndGet();
                 idrDropCount.incrementAndGet();
-                VideoDebugLogger.logIdrDrop(frame.length, sessionTotal);
-                debugLog("DROP IDR (keyframe) size=" + frame.length + " idrDrops=" + sessionTotal);
-                log("[VIDEO] WARNING: Dropped IDR keyframe (" + frame.length + "B) — expect pixelation until next keyframe. Session IDR drops: " + sessionTotal);
+                log("IDR dropped (" + frame.length + "B) session=" + sessionTotal);
             } else {
                 pFrameDropCount.incrementAndGet();
             }
@@ -580,7 +568,7 @@ public class H264Renderer {
             if (inputBuffer == null) {
                 long count = nullBufferCount.incrementAndGet();
                 if (count == 1 || count % 100 == 0) {
-                    debugLog("feedFrameToCodec: getInputBuffer null (count=" + count + ")");
+                    logPerf("getInputBuffer null (count=" + count + ")");
                 }
                 codecAvailableBufferIndexes.offer(index);
                 return;
@@ -593,7 +581,7 @@ public class H264Renderer {
             long count = feedExceptionCount.incrementAndGet();
             lastFeedException = e.getClass().getSimpleName() + ": " + e.getMessage();
             if (count == 1 || count % 100 == 0) {
-                debugLog("feedFrameToCodec exception (count=" + count + "): " + lastFeedException);
+                logPerf("Feed exception (count=" + count + "): " + lastFeedException);
             }
             codecAvailableBufferIndexes.offer(index);
         }
@@ -658,7 +646,7 @@ public class H264Renderer {
         // Guard: reject frames exceeding staging capacity (corrupted USB data)
         if (length > STAGED_FRAME_CAPACITY) {
             oversizedDropCount.incrementAndGet();
-            debugLog("DROP oversized frame: " + length + "B > " + STAGED_FRAME_CAPACITY + "B");
+            logPerf("Oversized drop: " + length + "B > " + STAGED_FRAME_CAPACITY + "B");
             return false;
         }
 
@@ -686,8 +674,7 @@ public class H264Renderer {
             if (nalType == NAL_IDR) {
                 long sessionTotal = sessionIdrDrops.incrementAndGet();
                 idrDropCount.incrementAndGet();
-                debugLog("STAGE queue-full IDR size=" + wf.length + " idrDrops=" + sessionTotal);
-                log("[VIDEO] WARNING: Staging queue full, dropped IDR (" + wf.length + "B). Session IDR drops: " + sessionTotal);
+                log("Staging full, IDR dropped (" + wf.length + "B) session=" + sessionTotal);
             }
             return false;
         }
@@ -698,13 +685,11 @@ public class H264Renderer {
     private void logStats() {
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastPerfLogTime >= PERF_LOG_INTERVAL_MS) {
-            // Standard log (respects app log level)
-            log("[STATS] Decoded: " + totalFramesDecoded.get() + ", Resets: " + codecResetCount.get() +
-                    ", IDR drops(session): " + sessionIdrDrops.get());
+            // Session stats (always logged via H264_RENDERER tag)
+            log("Decoded:" + totalFramesDecoded.get() + " Resets:" + codecResetCount.get() +
+                    " IDR drops:" + sessionIdrDrops.get());
 
-            // Pipeline diagnostic log (debug builds only, always outputs)
-            // Format: Rx=received Dec=decoded InAvail=input_buffers Fed=successes
-            //         LastIn/LastOut=ms since last callback, run/codec/surface=component states
+            // Pipeline diagnostic stats (gated by VIDEO_PERF tag)
             long rx = framesReceived.getAndSet(0);
             long dec = totalFramesDecoded.getAndSet(0);
             long successes = feedSuccesses.getAndSet(0);
@@ -713,11 +698,9 @@ public class H264Renderer {
             long lastOutAge = lastOutputCallbackTime > 0 ? currentTime - lastOutputCallbackTime : -1;
             boolean surfaceValid = surface != null && surface.isValid();
 
-            // Silent failure counters (reset each interval)
             long nullBufs = nullBufferCount.getAndSet(0);
             long exceptions = feedExceptionCount.getAndSet(0);
 
-            // Drop counters (reset each interval — session totals tracked separately)
             long drops = totalDropCount.getAndSet(0);
             long idrDrops = idrDropCount.getAndSet(0);
             long pDrops = pFrameDropCount.getAndSet(0);
@@ -728,7 +711,6 @@ public class H264Renderer {
               .append(" Fed:").append(successes)
               .append(" Drop:").append(drops);
 
-            // Always show IDR drops prominently (even if 0 in this window)
             if (drops > 0) {
                 sb.append("[IDR:").append(idrDrops).append(" P:").append(pDrops).append("]");
             }
@@ -737,7 +719,6 @@ public class H264Renderer {
               .append(" run=").append(running).append(" codec=").append(mCodec != null)
               .append(" surface=").append(surfaceValid);
 
-            // Staging drop counters (reset each interval)
             long stageDrops = stagingDropCount.getAndSet(0);
             long oversized = oversizedDropCount.getAndSet(0);
             if (stageDrops > 0 || oversized > 0) {
@@ -745,7 +726,6 @@ public class H264Renderer {
                   .append(" oversized:").append(oversized).append("]");
             }
 
-            // Only append failure info if there were failures (keeps log clean when healthy)
             if (nullBufs > 0 || exceptions > 0) {
                 sb.append(" FAIL[null:").append(nullBufs)
                   .append(" exc:").append(exceptions).append("]");
@@ -754,8 +734,7 @@ public class H264Renderer {
                 }
             }
 
-            debugLog(sb.toString());
-            VideoDebugLogger.logDropStats(drops, idrDrops, pDrops, successes);
+            logPerf(sb.toString());
 
             lastPerfLogTime = currentTime;
         }
@@ -794,8 +773,8 @@ public class H264Renderer {
             @Override
             public void onError(@NonNull MediaCodec codec, @NonNull MediaCodec.CodecException e) {
                 if (codec != mCodec) return;
-                VideoDebugLogger.logCodecError(e.getDiagnosticInfo(), e.isRecoverable(), e.isTransient());
-                log("[Media Codec] onError: " + e.getDiagnosticInfo());
+                logCallback.log("VIDEO_CODEC", "ERROR: " + e.getDiagnosticInfo() +
+                        " recoverable=" + e.isRecoverable() + " transient=" + e.isTransient());
                 executors.mediaCodec1().execute(() -> reset());
             }
 
@@ -805,8 +784,7 @@ public class H264Renderer {
                 int w = format.getInteger("width");
                 int h = format.getInteger("height");
                 int color = format.containsKey("color-format") ? format.getInteger("color-format") : -1;
-                VideoDebugLogger.logCodecFormatChanged(w, h, color);
-                log("[Media Codec] format changed: " + w + "x" + h);
+                log("Format: " + w + "x" + h + " color=" + color);
             }
         };
     }

@@ -48,9 +48,9 @@ enum class LogPreset(
         description = "Audio events + raw audio data",
         color = Color(0xFFFFD54F), // amber[300]
     ),
-    VIDEO_PIPELINE(
-        displayName = "Video Pipeline",
-        description = "Full video pipeline debug (USB→Ring→Codec→Surface)",
+    PIPELINE_DEBUG(
+        displayName = "Pipeline Debug",
+        description = "Full video + audio pipeline debug",
         color = Color(0xFFA5D6A7), // green[200]
     ),
     ;
@@ -73,8 +73,6 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
             Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
-            com.carlink.util.VideoDebugLogger
-                .setDebugEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
         LogPreset.MINIMAL -> {
@@ -86,8 +84,6 @@ fun LogPreset.apply() {
             Logger.enableAllTags()
             Logger.setTagsEnabled(listOf(Logger.Tags.SERIALIZE, Logger.Tags.TOUCH, Logger.Tags.AUDIO, Logger.Tags.MEDIA), false)
             Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
-            com.carlink.util.VideoDebugLogger
-                .setDebugEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
         LogPreset.NORMAL -> {
@@ -99,8 +95,6 @@ fun LogPreset.apply() {
             Logger.enableAllTags()
             Logger.setTagsEnabled(listOf(Logger.Tags.SERIALIZE, Logger.Tags.TOUCH, Logger.Tags.MEDIA), false)
             Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
-            com.carlink.util.VideoDebugLogger
-                .setDebugEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
         LogPreset.DEBUG -> {
@@ -111,9 +105,7 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.enableAllTags()
             Logger.setTagsEnabled(listOf(Logger.Tags.VIDEO, Logger.Tags.AUDIO, Logger.Tags.USB_RAW), false)
-            // Enable VideoDebugLogger for full diagnostics (Intel VPU, SPS/PPS integrity, stall detection)
             Logger.setDebugLoggingEnabled(true)
-            com.carlink.util.VideoDebugLogger.setDebugEnabled(true)
         }
 
         LogPreset.PERFORMANCE -> {
@@ -123,7 +115,11 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
-            Logger.setTagsEnabled(listOf(Logger.Tags.USB, Logger.Tags.ADAPTR, Logger.Tags.PLATFORM), true)
+            Logger.setTagsEnabled(
+                listOf(Logger.Tags.USB, Logger.Tags.ADAPTR, Logger.Tags.PLATFORM, Logger.Tags.VIDEO_PERF, Logger.Tags.AUDIO_PERF),
+                true,
+            )
+            Logger.setDebugLoggingEnabled(true)
         }
 
         LogPreset.RX_MESSAGES -> {
@@ -147,6 +143,7 @@ fun LogPreset.apply() {
                 listOf(
                     Logger.Tags.VIDEO,
                     Logger.Tags.H264_RENDERER,
+                    Logger.Tags.VIDEO_PERF,
                     Logger.Tags.ADAPTR,
                     Logger.Tags.USB,
                     Logger.Tags.PLATFORM,
@@ -154,6 +151,7 @@ fun LogPreset.apply() {
                 ),
                 true,
             )
+            Logger.setDebugLoggingEnabled(true)
         }
 
         LogPreset.AUDIO_ONLY -> {
@@ -164,12 +162,21 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
             Logger.setTagsEnabled(
-                listOf(Logger.Tags.AUDIO, Logger.Tags.MIC, Logger.Tags.ADAPTR, Logger.Tags.USB, Logger.Tags.PLATFORM, Logger.Tags.CONFIG),
+                listOf(
+                    Logger.Tags.AUDIO,
+                    Logger.Tags.MIC,
+                    Logger.Tags.AUDIO_PERF,
+                    Logger.Tags.ADAPTR,
+                    Logger.Tags.USB,
+                    Logger.Tags.PLATFORM,
+                    Logger.Tags.CONFIG,
+                ),
                 true,
             )
+            Logger.setDebugLoggingEnabled(true)
         }
 
-        LogPreset.VIDEO_PIPELINE -> {
+        LogPreset.PIPELINE_DEBUG -> {
             Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, true)
             Logger.setLogLevel(Logger.LogLevel.INFO, true)
@@ -185,6 +192,9 @@ fun LogPreset.apply() {
                     Logger.Tags.VIDEO_SURFACE,
                     Logger.Tags.VIDEO_PERF,
                     Logger.Tags.H264_RENDERER,
+                    Logger.Tags.AUDIO,
+                    Logger.Tags.AUDIO_PERF,
+                    Logger.Tags.MIC,
                     Logger.Tags.USB,
                     Logger.Tags.ADAPTR,
                 ),
@@ -192,8 +202,6 @@ fun LogPreset.apply() {
             )
             // Override release-build restriction for field diagnostics
             Logger.setDebugLoggingEnabled(true)
-            com.carlink.util.VideoDebugLogger
-                .setDebugEnabled(true)
         }
     }
 }

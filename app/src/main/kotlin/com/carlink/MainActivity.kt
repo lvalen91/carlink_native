@@ -52,9 +52,9 @@ import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.settings.DisplayModePreference
 import com.carlink.ui.theme.CarlinkTheme
-import com.carlink.util.AudioDebugLogger
 import com.carlink.util.IconAssets
-import com.carlink.util.VideoDebugLogger
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Main Activity - Entry Point for Carlink Native
@@ -245,11 +245,10 @@ class MainActivity : ComponentActivity() {
             )
 
         // Configure debug-only logging based on build type
-        // In release builds, verbose video/audio pipeline logging is disabled for performance
+        // In release builds, verbose pipeline logging is disabled for performance
+        // Users can re-enable via Pipeline Debug preset in settings
         val isDebugBuild = BuildConfig.DEBUG
         Logger.setDebugLoggingEnabled(isDebugBuild)
-        VideoDebugLogger.setDebugEnabled(isDebugBuild)
-        AudioDebugLogger.setDebugEnabled(isDebugBuild)
 
         // Apply default log preset based on build type
         // Release: SILENT (errors only) - user can override via settings
@@ -260,17 +259,6 @@ class MainActivity : ComponentActivity() {
 
         logInfo("Carlink Native starting - version $appVersion", tag = "MAIN")
         logInfo("[LOGGING] Debug logging: ${if (isDebugBuild) "ENABLED" else "DISABLED (release build)"}", tag = "MAIN")
-
-        if (isDebugBuild) {
-            logInfo(
-                "[LOGGING] Video pipeline debug tags enabled: VIDEO_USB, VIDEO_RING, VIDEO_CODEC, VIDEO_SURFACE, VIDEO_PERF",
-                tag = "MAIN",
-            )
-            logInfo(
-                "[LOGGING] Audio pipeline debug tags enabled: AUDIO_USB, AUDIO_BUFFER, AUDIO_TRACK, AUDIO_STREAM, AUDIO_PERF",
-                tag = "MAIN",
-            )
-        }
     }
 
     // TODO [CODEC_INIT_TIMING]: Test deferring codec initialization until AFTER USB permission granted.
@@ -294,19 +282,50 @@ class MainActivity : ComponentActivity() {
         val bounds = windowMetrics.bounds
         val windowInsets = windowMetrics.windowInsets
 
-        // Get system bars insets (status bar, navigation bar, display cutouts)
-        // Using getInsetsIgnoringVisibility ensures consistent calculation regardless of bar visibility
-        val insets =
-            windowInsets.getInsetsIgnoringVisibility(
-                android.view.WindowInsets.Type
-                    .systemBars() or
-                    android.view.WindowInsets.Type
-                        .displayCutout(),
-            )
+        // Separate inset sources for per-mode SafeArea computation
+        val systemBarInsets = windowInsets.getInsetsIgnoringVisibility(
+            android.view.WindowInsets.Type.systemBars()
+        )
+        val cutoutInsets = windowInsets.getInsetsIgnoringVisibility(
+            android.view.WindowInsets.Type.displayCutout()
+        )
 
-        // Calculate usable dimensions (window bounds minus system UI)
-        val usableWidth = bounds.width() - insets.left - insets.right
-        val usableHeight = bounds.height() - insets.top - insets.bottom
+        // Compute video resolution and SafeArea insets per display mode
+        val videoWidth: Int
+        val videoHeight: Int
+        val safeInsetTop: Int
+        val safeInsetBottom: Int
+        val safeInsetLeft: Int
+        val safeInsetRight: Int
+
+        when (currentDisplayMode) {
+            DisplayMode.SYSTEM_UI_VISIBLE -> {
+                // System bars + cutouts both reduce video area. No SafeArea needed.
+                videoWidth = bounds.width() - systemBarInsets.left - systemBarInsets.right -
+                    cutoutInsets.left - cutoutInsets.right
+                videoHeight = bounds.height() - systemBarInsets.top - systemBarInsets.bottom -
+                    cutoutInsets.top - cutoutInsets.bottom
+                safeInsetTop = 0; safeInsetBottom = 0; safeInsetLeft = 0; safeInsetRight = 0
+            }
+            DisplayMode.STATUS_BAR_HIDDEN -> {
+                // Nav bar visible (subtract from video), status bar hidden (cutout exposed top/sides)
+                videoWidth = bounds.width() - systemBarInsets.left - systemBarInsets.right
+                videoHeight = bounds.height() - systemBarInsets.bottom
+                safeInsetTop = cutoutInsets.top
+                safeInsetBottom = 0 // nav bar covers bottom
+                safeInsetLeft = cutoutInsets.left
+                safeInsetRight = cutoutInsets.right
+            }
+            DisplayMode.FULLSCREEN_IMMERSIVE -> {
+                // Full screen, all cutout areas exposed
+                videoWidth = bounds.width()
+                videoHeight = bounds.height()
+                safeInsetTop = cutoutInsets.top
+                safeInsetBottom = cutoutInsets.bottom
+                safeInsetLeft = cutoutInsets.left
+                safeInsetRight = cutoutInsets.right
+            }
+        }
 
         // Get DPI and refresh rate from display metrics
         val displayMetrics = resources.displayMetrics
@@ -314,8 +333,15 @@ class MainActivity : ComponentActivity() {
         val refreshRate = display?.refreshRate?.toInt() ?: 60
 
         // Round to even numbers for H.264 compatibility
-        val evenWidth = usableWidth and 1.inv()
-        val evenHeight = usableHeight and 1.inv()
+        val evenWidth = videoWidth and 1.inv()
+        val evenHeight = videoHeight and 1.inv()
+
+        // Build binary ViewArea/SafeArea data for CarPlay display insets
+        val viewAreaData = buildViewAreaData(evenWidth, evenHeight)
+        val safeAreaData = buildSafeAreaData(
+            evenWidth, evenHeight,
+            safeInsetTop, safeInsetBottom, safeInsetLeft, safeInsetRight,
+        )
 
         // Load icons from assets for adapter initialization
         val (icon120, icon180, icon256) = IconAssets.loadIcons(this)
@@ -368,12 +394,15 @@ class MainActivity : ComponentActivity() {
                 wifiType = wifiType,
                 callQuality = userConfig.callQuality.value,
                 mediaDelay = userConfig.mediaDelay.delayMs,
+                viewAreaData = viewAreaData,
+                safeAreaData = safeAreaData,
             )
 
         logInfo(
             "[WINDOW] Bounds: ${bounds.width()}x${bounds.height()}, " +
-                "Usable: ${usableWidth}x$usableHeight, " +
-                "Insets: T:${insets.top} B:${insets.bottom} L:${insets.left} R:${insets.right}, " +
+                "Video: ${evenWidth}x$evenHeight, " +
+                "Cutout: T:${cutoutInsets.top} B:${cutoutInsets.bottom} " +
+                "L:${cutoutInsets.left} R:${cutoutInsets.right}, " +
                 "DisplayMode: ${currentDisplayMode.name}",
             tag = "MAIN",
         )
@@ -391,6 +420,28 @@ class MainActivity : ComponentActivity() {
         )
 
         carlinkManager = CarlinkManager(this, config)
+    }
+
+    /** Build HU_VIEWAREA_INFO (24 bytes): [screen_w, screen_h, view_w, view_h, originX, originY] */
+    private fun buildViewAreaData(width: Int, height: Int): ByteArray =
+        ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(width).putInt(height)   // screen dims
+            .putInt(width).putInt(height)   // viewarea dims (same)
+            .putInt(0).putInt(0)            // origin
+            .array()
+
+    /** Build HU_SAFEAREA_INFO (20 bytes): [safe_w, safe_h, originX, originY, drawOutside] */
+    private fun buildSafeAreaData(
+        videoW: Int, videoH: Int,
+        insetTop: Int, insetBottom: Int, insetLeft: Int, insetRight: Int,
+    ): ByteArray {
+        val safeW = videoW - insetLeft - insetRight
+        val safeH = videoH - insetTop - insetBottom
+        return ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(safeW).putInt(safeH)
+            .putInt(insetLeft).putInt(insetTop)
+            .putInt(1) // drawUIOutsideSafeArea = true
+            .array()
     }
 
     private fun requestMicrophonePermission() {

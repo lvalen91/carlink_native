@@ -609,6 +609,7 @@ private fun LogLevelSelectorDialog(
             LogPreset.SILENT,
             LogPreset.MINIMAL,
             LogPreset.NORMAL,
+            LogPreset.DEBUG,
             LogPreset.PERFORMANCE,
         )
     val rightColumn =
@@ -616,7 +617,7 @@ private fun LogLevelSelectorDialog(
             LogPreset.RX_MESSAGES,
             LogPreset.VIDEO_ONLY,
             LogPreset.AUDIO_ONLY,
-            LogPreset.DEBUG,
+            LogPreset.PIPELINE_DEBUG,
         )
 
     Dialog(onDismissRequest = onDismiss) {

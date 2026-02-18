@@ -2,7 +2,7 @@
 
 **Purpose:** Reference for firmware binary analysis
 **Consolidated from:** GM_research, pi-carplay firmware extraction
-**Last Updated:** 2026-02-18 (deep r2 analysis: LocationEngine object layout, GNSS gating, VirtualBoxGPS NMEA parser, DashboardInfo correction, dvgps encryption)
+**Last Updated:** 2026-02-18 (deep r2 analysis: 9 iAP2 engine field catalogs, 60+ message dispatch table, shared library architecture, 13 link types, ARMAndroidAuto LZMA packing, D-Bus signals, LocationEngine/GNSS gating)
 
 ---
 
@@ -41,9 +41,16 @@
 | bluetoothDaemon | ✅ | ✅ | Not yet |
 | riddleBoxCfg | ✅ | ✅ | Partial |
 | ARMimg_maker | ✅ | ✅ | ✅ Key extracted |
-| ARMAndroidAuto | ❌ UPX error | - | Blocked |
+| ARMAndroidAuto | ❌ Custom packer | - | Blocked (packed) |
 
-**Note:** `ARMAndroidAuto` fails to unpack with "compressed data violation" error even with modified UPX.
+**Note:** `ARMAndroidAuto` uses a **custom LZMA-based packer** (NOT standard UPX):
+- Magic: `0x55225522` (`U"U"`) at file offset where compressed data begins
+- Packed size: 489,800 bytes → decompressed size: 1,488,932 bytes (3:1 ratio)
+- Entropy: 8.00 bits/byte (maximum — effectively encrypted/maximally compressed)
+- Decompressor stub: 5,844 bytes at offset 0x76274
+- Stub uses direct Linux syscalls: `readlink("/proc/self/exe")` → `mmap2()` → LZMA decompress (lc=2, lp=0, pb=3) → `open("/dev/hwas", O_RDWR)` → `ioctl(fd, 0xC00C6206, ...)` → `mprotect()` → jump to decompressed code
+- **Cannot decompress with standard Python lzma** — requires ARM Linux with `/dev/hwas` or custom LZMA implementation matching the stub
+- The same packer is used for `ARMadb-driver`, `ARMiPhoneIAP2`, and `AppleCarPlay` (but those also have UPX layer)
 
 ### ARMAndroidAuto Runtime Analysis (TTY Logs - Jan 2026)
 
@@ -84,6 +91,15 @@ GenericNotificationService // System notifications
 - IPC via Unix socket `/var/run/adb-driver`
 - MiddleManInterface type 5 = AndroidAuto
 - Commands forwarded via `_SendPhoneCommandToCar()`
+- Bridge via `libboxtrans.so`: `sendTransferData()`, `MiddleManClient_SendData()`
+
+**DMSDP Integration:**
+- Uses Huawei DMSDP stack (libdmsdp.so) for RTP media transport
+- H.264/AVC via `DMSDPRtpSendQueueAVC`, FU-A fragmentation
+- PCM audio via `DMSDPRtpSendQueuePCM`
+- AAC audio via `DMSDPRtpSendQueueAAC`
+- I-frame requests via `DMSDPServiceOpsTriggerIFrame`
+- Data session FSM: INIT → NEG → SETUP → PLAY → ESTABLISHED
 
 **Video Output:**
 - SPS/PPS parsing: `spsWidth: 1920, spsHeight: 1088` (8-line alignment)
@@ -92,42 +108,64 @@ GenericNotificationService // System notifications
 
 ---
 
-## Key Libraries
+## Key Libraries — Deep r2 Analysis Feb 2026
 
-### DMSDP Framework
+The adapter firmware is built on **Huawei's DMSDP (Distributed Multimedia Service Discovery Protocol)** framework, part of HarmonyOS/OpenHarmony distributed capability stack.
+
+### Core Stack (7 libraries, layered architecture)
+
+| Library | Size | Role |
+|---------|------|------|
+| **libdmsdpplatform.so** | 242KB | Platform layer — FillP reliable UDP, crypto (AES-128/256-GCM), epoll sockets, threading |
+| **libdmsdp.so** | 185KB | Core DMSDP — Service/session mgmt, RTP/RTCP, AVC/AAC/PCM packetization, FSM, ability negotiation |
+| **libauthagent.so** | 42KB | Authentication — BT pairing, trust mgmt (HKS keystore), PIN auth, PBKDF2, device identity |
+| **libhicar.so** | 37KB | HiCar SDK facade — Projection start/stop/pause, device connect/disconnect, QR code, BLE advertising |
+| **libmanagement.so** | 33KB | Management channel — Encrypted data channel (AES-128-GCM), metadata callbacks, feature info |
+| **libARMtool.so** | 27KB | Utility — Threading (CMutex, CAutoThread, CThreadsafe), ring buffers, Win32-compat API |
+| **libboxtrans.so** | 5KB | Transport bridge — CarPlay MiddleManClient, data/phase/riddle transfer, CPoll event loop |
+
+### Additional DMSDP Libraries
 
 | Library | Size | Purpose |
 |---------|------|---------|
-| libdmsdp.so | 184KB | Core DMSDP protocol |
 | libdmsdpcrypto.so | 80KB | Crypto (X25519, AES-GCM) |
 | libdmsdpaudiohandler.so | 48KB | Audio dispatch |
 | libdmsdpdvaudio.so | 48KB | Digital audio streaming |
 | libdmsdpdvdevice.so | - | Device protocol constants |
-| libdmsdpplatform.so | 242KB | FILLP, crypto, socket mgmt |
 
-### Third-Party Libraries
+### Third-Party / Support Libraries
 
 | Library | Purpose |
 |---------|---------|
 | libfdk-aac.so.1.0.0 | AAC decoder (336KB) |
 | libtinyalsa.so | Hardware abstraction (17KB) |
-| libcrypto.so.1.1 | OpenSSL crypto |
-| libssl.so.1.1 | OpenSSL SSL/TLS |
-
-### Huawei HiCar
-
-| Library | Size | Purpose |
-|---------|------|---------|
-| libHwKeystoreSDK.so | 168KB | Key Store API |
-| libHisightSink.so | 147KB | Video sink |
-| libhicar.so | - | HiCar protocol |
-
-### Other
-
-| Library | Purpose |
-|---------|---------|
-| libauthagent.so | Authentication/trust (44KB) |
+| libcrypto.so.1.1 / libssl.so.1.1 | OpenSSL crypto/TLS |
+| libHwKeystoreSDK.so | Huawei Key Store API (168KB) |
+| libHisightSink.so | Huawei HiSight video sink (147KB) |
 | libnearby.so | Google Nearby protocol (91KB) |
+
+### libboxtrans.so Key Exports (CarPlay Bridge)
+
+| Export | Purpose |
+|---|---|
+| `initTransfer` / `closeTransfer` | Initialize/tear down data transfer bridge |
+| `runTransferLoop` / `quitTransferLoop` | Main event loop for data forwarding |
+| `sendTransferData` | Forward data from phone protocol to USB host |
+| `sendTransferData_RiddleData` | Forward encoded data |
+| `sendHiCarPhase` | Send HiCar connection phase info |
+| `NeedLikeCarPlay` | Check if `/usr/sbin/fakeiOSDevice` exists |
+| `NeedLikeHiCar` | Check if `/usr/sbin/fakeHiCarDevice` exists |
+| `MiddleManClient_EnsureConnect` / `_SendData` / `_SendPhase` / `_SendRiddleData` | Middle-man proxy |
+
+### libmanagement.so Key Exports (Metadata Channel)
+
+| Export | Purpose |
+|---|---|
+| `InitDataChannel` / `ReleaseDataChannel` | Data channel to USB host |
+| `SetFeatureInfo` | Set feature capabilities |
+| `RegisterMetaDataCallback` / `UnRegisterMetaDataCallback` | Metadata callback registration |
+| `ReleaseMetaDataSocket` | Release metadata socket |
+| `AuthorizeUploadLog` | Authorize log upload |
 
 ---
 
@@ -301,16 +339,253 @@ DMSDPLoadGpsService()
 
 ---
 
-## iAP2 Engines (ARMiPhoneIAP2)
+## iAP2 Engines (ARMiPhoneIAP2) — Deep r2 Analysis Feb 2026
 
-```cpp
-iAP2CallStateEngine
-iAP2CommunicationEngine
-iAP2LocationEngine
-iAP2MediaPlayerEngine
-iAP2RouteGuidanceEngine
-iAP2WiFiConfigEngine
-```
+**Developer**: Hewei (HiCarPackage), source paths: `Sources/ARMiPhoneIAP2/`, `Sources/iAP2*.cpp`
+**Engine datastore**: `/etc/RiddleBoxData/AIEIPIEREngines.datastore`
+
+### Complete Engine Class Hierarchy
+
+All engines inherit from `CiAP2Engine` (mangled: `11CiAP2Engine`) with a `BaseEngine` base.
+
+| # | Engine Class | Mangled Name | Purpose |
+|---|---|---|---|
+| 1 | `CiAP2IdentifyEngine` | `19CiAP2IdentifyEngine` | Device identification, component registration |
+| 2 | `CiAP2MediaPlayerEngine` | `22CiAP2MediaPlayerEngine` | NowPlaying: title, artist, album, artwork, playback, queue, lyrics, Like/Ban |
+| 3 | `CiAP2CommunicationEngine` | `24CiAP2CommunicationEngine` | Cellular: signal strength, carrier, mute, call count, voicemail |
+| 4 | `CiAP2CallStateEngine` | `20CiAP2CallStateEngine` | Call: name, number, direction, status, UUID, availability flags |
+| 5 | `CiAP2PowerEngine` | `16CiAP2PowerEngine` | Battery: charge level, charging state, external charger |
+| 6 | `CiAP2WiFiConfigEngine` | `21CiAP2WiFiConfigEngine` | WiFi: SSID, password, channel, P2P mode |
+| 7 | `CiAP2LocationEngine` | `19CiAP2LocationEngine` | GNSS: NMEA passthrough (used by CarLink) |
+| 8 | `CiAP2RouteGuidanceEngine` | `24CiAP2RouteGuidanceEngine` | Navigation: NaviJSON (used by CarLink) |
+| 9 | `CiAP2VehicelStatEngine` | `22CiAP2VehicelStatEngine` | Vehicle: outside temperature, range warning |
+
+**Infrastructure classes:**
+- `CiAP2Session` / `CiAP2Session_CarPlay` — session handlers
+- `CCarPlay_MiddleManInterface` / `CNoAirPlay_MiddleManInterface` — HUD-to-adapter bridge
+- `CMiddleManClient` / `CMiddleManClient_iAPBroadCast` — data relay to host app
+- `CiAP2Session_FileTransfer` — artwork and file transfer sessions
+
+### Complete iAP2 Message Dispatch Table (60+ messages)
+
+From `HudiAP2Session_CarPlay.cpp`, logged as `"Message from iPhone: 0x%04X %s"`:
+
+| Message | Direction | Category |
+|---|---|---|
+| `CarPlayAvailability` | iPhone→HU | Session |
+| `CarPlayStartSession` | iPhone→HU | Session |
+| `DeviceTimeUpdateMsgID` | iPhone→HU | Device |
+| `StopUSBDeviceModeAudio` | iPhone→HU | Audio |
+| `USBDeviceAudioInformation` | iPhone→HU | Audio |
+| `StartUSBDeviceModeAudio` | HU→iPhone | Audio |
+| `WirelessCarPlayUpdateMsg` | Both | Transport |
+| `AccessoryHIDMsg` | HU→iPhone | HID |
+| `DeviceHIDReport` | iPhone→HU | HID |
+| `AcceptCall` | HU→iPhone | Call Control |
+| `EndCall` | HU→iPhone | Call Control |
+| `DeviceUUIDUpdateMsg` | iPhone→HU | Device |
+| `TransportNotify` | Both | Transport |
+| `ReqAuthCert` / `ReqChallenge` / `ChallengeRsp` / `AuthSuccess` / `AuthSerNum` | Both | Auth |
+| `StartIdentify` / `IdentifyInfo` / `IdentifyAccept` / `RejectIdentify` | Both | Identify |
+| `WifiConfigInfo` / `ReqWifiConfig` | Both | WiFi |
+| `StartNowPlayingUpdate` / `NowPlaying` / `StopNowPlayingUpdate` | Both | Media |
+| `SetNowPlayingInformation` | HU→iPhone | Media |
+| `StartPowerUpdate` / `StopPowerUpdate` / `HUDPowersourceUpdate` | Both | Power |
+| `StartExernalAccessoryProtocol` / `StopExernalAccessoryProtocol` / `StatusExernalAccessoryProtocol` | Both | EAP |
+| `RequestAppLaunch` | HU→iPhone | App |
+| `StartCallStateUpdate` / `StopCallStateUpdate` | HU→iPhone | Call |
+| `MediaLibraryAccess` / `MediaLibraryUpdate` / `StartMediaLibraryUpdates` / `StopMediaLibraryUpdates` / `StopMediaLibraryInformation` | Both | Media Library |
+| `PlayMediaLibraryItems` / `PlayMediaLibraryCollection` / `PlayMediaLibraryCurrentSelection` / `PlayMediaLibrarySpecial` | HU→iPhone | Media Library |
+| `StartCommunicationUpdate` / `StopCommunicationUpdate` | HU→iPhone | Communication |
+| `BluetoothComponentInformation` / `StartBluetoothConnectionUpdates` / `BluetoothConnectionUpdate` / `StopBluetoothConnectionUpdates` | Both | Bluetooth |
+| `StartVehiceStateUpdate` / `StopVehiceStateUpdate` | HU→iPhone | Vehicle |
+| `DeviceLanguageUpdate` / `DeviceInformationUpdate` | iPhone→HU | Device |
+| `StartLocationInformation` / `StopLocationInformation` | HU→iPhone | Location |
+| `StartHID` / `StopHID` | HU→iPhone | HID |
+| `StartRouteGuidanceUpdate` / `RouteGuidanceManeuverUpdate` / `StopRouteGuidanceUpdate` | Both | Route Guidance |
+
+### CiAP2CallStateEngine — Complete Fields
+
+**Inner types**: `CallStateItems`, `CallStateItems_Usablility`
+**Debug**: `CiAP2CallStateEngine_Send_CallStatus: %@`
+
+| Field | Type | Description |
+|---|---|---|
+| `CallStatus` | enum | Call state (ringing, connected, disconnected, etc.) |
+| `CallDirection` | enum | Incoming / Outgoing |
+| `CallID` | int | Internal call identifier |
+| `CallName` | string | Caller display name (from iPhone) |
+| `CallNumber` | string | Phone number |
+| `RemoteID` | string | Remote party identifier |
+| `DisplayName` | string | Display name for UI |
+| `CallUUID` | string/UUID | Unique call identifier |
+| `AddressBookID` | string | Address book entry reference |
+| `Service` | string | Service type (e.g., "Mobile") |
+| `IsConferenced` | bool | Part of conference call |
+| `ConferenceGroup` | string | Conference group identifier |
+| `DisconnectReson` | enum | Reason for call disconnect (firmware typo) |
+
+**Usability fields** (what the HU can do):
+
+| Field | Type |
+|---|---|
+| `InitiateCallAvailable` | bool |
+| `EndAndAcceptAvailable` | bool |
+| `HoldAndAcceptAvailable` | bool |
+| `SwapAvailable` | bool |
+| `MergeAvailable` | bool |
+| `HoldAvailable` | bool |
+
+### CiAP2CommunicationEngine — Complete Fields
+
+**Inner types**: `CommunicationItems`, `CommunicationItems_Usablility`
+
+| Field | Type | Description |
+|---|---|---|
+| `SignalStrength` | int | Cellular signal strength |
+| `RegistrationStatus` | enum | Network registration state |
+| `AirplaneModeStatus` | bool | Airplane mode on/off |
+| `CariierName` | string | Carrier name (firmware typo: CarrierName) |
+| `CellularSupported` | bool | Device has cellular |
+| `TelephonyEnabled` | bool | Phone calls available |
+| `FaceTimeAudioEnabled` | bool | FaceTime Audio available |
+| `FaceTimeVideoEnabled` | bool | FaceTime Video available |
+| `MuteStatus` | bool | Current mute state |
+| `CurrentCallCount` | int | Number of active calls |
+| `NewVoicemailCount` | int | Pending voicemails |
+
+### CiAP2MediaPlayerEngine — Complete Fields
+
+**Inner types**: `NowPlayingMediaItems`, `NowPlayingPlaybacks`, `NowPlayingInfo` (each with `_Usablility` variant)
+**Source**: `iAP2MediaPlayerEngine.cpp`
+**Send functions**: `_Send_NowPlayingMeidaArtwork`, `_Send_NowPlayingLyrics`, `_Send_NowPlayingMeidaItemTitle`, `_Send_NowPlayingElapsedTime`, `_Send_NowPlayingStatus`
+
+**HUD broadcast aliases** (sent via MiddleMan):
+
+| Alias | Maps to |
+|---|---|
+| `MediaSongName` | mediaItemTitle |
+| `MediaAlbumName` | mediaItemAlbumTitle |
+| `MediaArtistName` | mediaItemArtist |
+| `MediaLyrics` | lyrics data |
+| `MediaAPPName` | playbackAppname |
+| `MediaSongDuration` | mediaItemPlaybackdurationInMilliseconds |
+| `MediaSongPlayTime` | playbackElapsedTimeInMilliseconds |
+| `MediaPlayStatus` | playbackStatus |
+
+**mediaItem group** (27 fields):
+
+| Field | Description |
+|---|---|
+| `mediaItemPersistendIdentifier` | Unique media ID (firmware typo: Persistent) |
+| `mediaItemTitle` | Song/track title |
+| `mediaItemMediaType` | Audio/video/podcast etc. |
+| `mediaItemRating` | User rating |
+| `mediaItemPlaybackdurationInMilliseconds` | Total duration |
+| `mediaItemAlbumPersistentIdentifier` | Album ID |
+| `mediaItemAlbumTitle` | Album name |
+| `mediaItemAlbumTrackNumber` / `TrackCount` | Track # and total |
+| `mediaItemAlbumDiskNumber` / `DiskCount` | Disk # and total |
+| `mediaItemArtistPersistentIdentifier` | Artist ID |
+| `mediaItemArtist` | Artist name |
+| `mediaItemAlbumArtistPersistentIdentifier` | Album artist ID |
+| `mediaItemAlbumArtist` | Album artist name |
+| `mediaItemGenre` / `GenrePersistentIdentifier` | Genre string and ID |
+| `mediaItemComposer` / `ComposerPersistentIdentifier` | Composer and ID |
+| `mediaItemPartofcompilation` | Is compilation flag |
+| `mediaItemIsLikeSupported` / `mediaItemIsLiked` | Like support and state |
+| `mediaItemIsBanSupported` / `mediaItemIsBaned` | Ban support and state |
+| `mediaItemIsRisidentOnDevice` | Downloaded locally (firmware typo: Resident) |
+| `mediaItemArtworkFileTransferIdentifier` | File transfer ID for artwork |
+| `mediaItemChaptercount` | Number of chapters |
+
+**playback group** (17 fields):
+
+| Field | Description |
+|---|---|
+| `playbackStatus` | Playing/Paused/Stopped/etc. |
+| `playbackElapsedTimeInMilliseconds` | Current position |
+| `playbackQueueIndex` / `QueueCount` | Queue position and total |
+| `playbackQueueChapterIndex` | Current chapter |
+| `playbackShuffleMode` | Shuffle on/off/albums |
+| `playbackRepeatMode` | Repeat off/one/all |
+| `playbackAppname` / `AppbundleID` | Source app name and bundle ID |
+| `playbackMediaLibraryUniqueIdentifier` | Library ID |
+| `playbackAppleMusicRadioAd` | Is radio ad |
+| `playbackAppleMusicRadioStationName` | Radio station name |
+| `playbackAppleMusicRadioStationMediaPlaylistPersistendIdentifier` | Radio playlist ID |
+| `playbackSpeed` | Playback speed multiplier |
+| `playbackSetElapsedTimeAvailable` | Can seek |
+| `playbackQueueListAvail` / `QueueListTransferID` | Queue list availability and transfer ID |
+
+### CiAP2RouteGuidanceEngine — Complete Fields
+
+**Inner types**: `StartGuidanceItems`, `StopGuidanceItems`, `RouteGuidanceItems`, `RouteGuidanceManeuverItems`
+**JSON output**: `_SendNaviJSON` (sends to HUD as JSON string)
+
+**RouteGuidanceState** (top-level):
+
+| Field | Description |
+|---|---|
+| `RouteGuidanceState` | Active/Inactive |
+| `ManeuverState` | Current maneuver state |
+| `CurrentRoadName` | Name of current road |
+| `EstimatedTimeOfArrival` | ETA timestamp |
+| `TimeRemainingToDestination` | Time remaining (seconds) |
+| `DistanceRemaining` / `DistanceRemainingDisplayStr` / `DistanceRemainingDisplayUnits` | Distance to destination |
+| `DistanceToNextManeuver` / `DistanceToNextManeuverDisplayStr` / `DistanceToNextManeuverDisplayUnits` | Distance to next turn |
+| `RouteGuidanceManeuverCurrentList` / `ManeuverCount` | Maneuver list |
+| `RouteGuidanceVisibleInApp` | Is guidance visible |
+
+**RouteGuidanceManeuverItems** (per-maneuver):
+
+| Field | Description |
+|---|---|
+| `ManeuverDescription` | Text description |
+| `AfterManeuverRoadName` | Road name after turn |
+| `DistanceBetweenManeuver` / `DisplayStr` / `DisplayUnits` | Distance between maneuvers |
+| `DrivingSide` | Left/Right driving side |
+| `JunctionType` / `JunctionElementAngle` / `JunctionElementExitAngle` | Junction details |
+
+**NaviJSON broadcast fields** (sent to HUD/MiddleMan):
+`NaviStatus`, `NaviRoadName`, `NaviOrderType`, `NaviTurnAngle`, `NaviTurnSide`, `NaviRoundaboutExit`, `NaviManeuverType`, `NaviTimeToDestination`, `NaviDestinationName`, `NaviDistanceToDestination`, `NaviAPPName`, `NaviRemainDistance`
+
+### CiAP2PowerEngine — Complete Fields
+
+| Field | Description |
+|---|---|
+| `MaxCurrentDrawnFromAccessory` | Max current the accessory draws |
+| `DeviceBatteryWillChargeIfPowerIsPresent` | Will charge when connected |
+| `AccessoryPowerMode` | Power mode enum |
+| `IsExternalChargerConnected` | External charger state |
+| `BatteryChargingState` | Charging/NotCharging/Full |
+| `BatteryCharegLevel` | Battery percentage (firmware typo: ChargeLevel) |
+| `powerProvidingCapability` | What power the HU can provide |
+| `maximumCurrentDrawnFromDevice` | Max current from iPhone |
+
+### CiAP2VehicelStatEngine — Complete Fields
+
+| Field | Description |
+|---|---|
+| `OutsideTempratrue` | Outside temperature (firmware typo: Temperature) |
+| `RangeWarning` | Low fuel/battery range warning |
+| `VehicelStateAsk` | State request |
+
+### CiAP2WiFiConfigEngine — Complete Fields
+
+| Field | Description |
+|---|---|
+| `WIFISSID` | WiFi network name |
+| `WifiPassword` | WiFi password |
+| `WiFiP2PMode` | P2P/Direct mode |
+| `WiFiChannel` | WiFi channel |
+
+### Data Relay Architecture
+
+All iAP2 engine data is broadcast via `BroadCastCFValueIfNeedSend_ToAccessoryDaemon`, keyed by `friendlyName_`. The adapter can enable/disable capabilities dynamically: `"Enable iAP2 %s Capability"` / `"Disable iAP2 %s Capability"` with `Send_changes:%s(0x%04X)`.
+
+**Data confirmed flowing to host app**: NaviJSON (route guidance), GNSS (location)
+**Data relay status unknown**: Call state, communication, media/NowPlaying — these are parsed by the iAP2 layer but may or may not be forwarded as USB message types. Requires USB traffic sniffing to confirm.
 
 ### GPS Pipeline — Per-Binary Roles (Deep r2 Analysis Feb 2026)
 
@@ -539,9 +814,19 @@ CMD_APP_INFO
 
 ---
 
-## D-Bus Interfaces
+## D-Bus Interfaces (Deep r2 Analysis Feb 2026)
 
-### org.riddle
+### org.riddle Bus
+
+| Component | Value |
+|---|---|
+| Bus name | `org.riddle` |
+| BT Service path | `/RiddleBluetoothService` |
+| BT Control interface | `org.riddle.BluetoothControl` |
+| BT Daemon path | `/BluetoothDaemonControler` |
+| Signal match | `type='signal',interface='%s',sender='org.riddle',path='%s'` |
+
+### HUD Commands
 
 ```cpp
 HUDComand_A_HeartBeat
@@ -549,19 +834,71 @@ HUDComand_A_ResetUSB
 HUDComand_A_UploadFile
 HUDComand_B_BoxSoftwareVersion
 HUDComand_D_BluetoothName
+HUDComand_D_Ready
 kRiddleHUDComand_A_Reboot
 kRiddleHUDComand_CommissionSetting
+kRiddleHUDComand_D_Bluetooth_BondList
 ```
 
-### Audio Signals
+### D-Bus Signals (Complete)
 
 ```cpp
+// Audio
 kRiddleAudioSignal_MEDIA_START
 kRiddleAudioSignal_MEDIA_STOP
 kRiddleAudioSignal_ALERT_START
 kRiddleAudioSignal_ALERT_STOP
 kRiddleAudioSignal_PHONECALL_Incoming
+AudioSignal_OUTPUT_START / AudioSignal_OUTPUT_STOP
+AudioSignal_INPUT_CONFIG
+AudioSignal_PHONECALL_START / AudioSignal_PHONECALL_STOP
+AudioSignal_NAVI_START / AudioSignal_NAVI_STOP
+AudioSignal_SIRI_START / AudioSignal_SIRI_STOP
+
+// Bluetooth
+Bluetooth_ConnectStart / Bluetooth_DisConnect / Bluetooth_Listen
+Bluetooth_Search / Bluetooth_Found / Bluetooth_SearchStart / Bluetooth_SearchEnd
+Bluetooth_Connected
+BTAudioDevice_Signal
+AudioDeviceSignal
+SDPToolSearchEnd / InquerySearchEnd
+
+// BLE / HiCar
+BLERiddleFragrancesNotifyJsonType    // BLE fragrance diffuser notifications
+BLE_RiddleFragrancesCommand_JsonType // BLE fragrance commands
+EnableHiCarBLEAdvertising / DisableHiCarBLEAdvertising
+CancelAutoConnect
 ```
+
+### Unix Socket IPC
+
+| Socket | Purpose |
+|---|---|
+| `/var/run/adb-driver` | Main IPC socket (CMiddleManServer) |
+| `/var/run/phonemirror` | Phone mirror IPC |
+
+---
+
+## Supported Link Types (13 protocols)
+
+| Session Class | Link Type | Transport |
+|---|---|---|
+| `Accessory_ActionSession_Link_iPhone_CarPlay_Wire` | CarPlay | Wired USB |
+| `Accessory_ActionSession_Link_iPhone_CarPlay_WireLess` | CarPlay | Wireless |
+| `Accessory_ActionSession_Link_AndroidAuto_Wire` | Android Auto | Wired USB |
+| `Accessory_ActionSession_Link_AndroidAuto_WireLess` | Android Auto | Wireless |
+| `Accessory_ActionSession_Link_Hicar_Wire` | HiCar | Wired USB |
+| `Accessory_ActionSession_Link_Hicar_WireLess` | HiCar | Wireless |
+| `Accessory_ActionSession_Link_AndroidCarLife_Wire` | CarLife | Wired USB |
+| `Accessory_ActionSession_Link_AndroidCarLife_Wireless` | CarLife | Wireless |
+| `Accessory_ActionSession_Link_ICCOA_Wire` | ICCOA | Wired USB |
+| `Accessory_ActionSession_Link_ICCOA_WireLess` | ICCOA | Wireless |
+| `Accessory_ActionSession_Link_iPhone_Mirror_Wire` | iOS Mirror | Wired USB |
+| `Accessory_ActionSession_Link_AnroidAdbMirror_Wire` | Android ADB Mirror | Wired USB |
+| `Accessory_ActionSession_WholeLife` | Whole lifecycle | N/A |
+
+**iPhone Work Modes**: `AirPlay`, `OnlyCharge`, `iOSMirror`, `iPhoneWorkMode_UNKOWN?`
+**Android Work Modes**: `AndroidMirror`, `ICCOA`, `AndroidWorkMode_UNKOWN?`
 
 ---
 

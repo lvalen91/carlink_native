@@ -9,12 +9,8 @@ import android.media.MediaRecorder
 import android.os.Process
 import android.util.Log
 import androidx.core.content.ContextCompat
-import com.carlink.BuildConfig
-import com.carlink.util.AudioDebugLogger
 import com.carlink.util.LogCallback
 import java.util.concurrent.atomic.AtomicBoolean
-
-private const val TAG = "CARLINK_MIC"
 
 /**
  * Microphone format configuration matching CPC200-CCPA protocol voice formats.
@@ -192,7 +188,6 @@ class MicrophoneCaptureManager(
                     "[MIC] Capture started: ${format.sampleRate}Hz ${format.channelCount}ch " +
                         "buffer=${recordBufferSize}B",
                 )
-                AudioDebugLogger.logMicStart(format.sampleRate, format.channelCount, bufferCapacityMs)
                 return true
             } catch (e: SecurityException) {
                 log("[MIC] ERROR: Permission denied: ${e.message}")
@@ -260,9 +255,8 @@ class MicrophoneCaptureManager(
             micBuffer = null
 
             val durationMs = if (startTime > 0) System.currentTimeMillis() - startTime else 0
-            AudioDebugLogger.logMicStop(durationMs, totalBytesCapture, overrunCount)
             currentFormat = null
-            log("[MIC] Capture stopped")
+            log("[MIC] Capture stopped: duration=${durationMs}ms bytes=$totalBytesCapture overruns=$overrunCount")
         }
     }
 
@@ -284,7 +278,6 @@ class MicrophoneCaptureManager(
 
         if (bytesRead <= 0) return null
 
-        AudioDebugLogger.logMicSend(bytesRead, buffer.fillLevelMs())
         // Common case: bytesRead == readBuffer.size → return pre-allocated buffer directly (zero alloc)
         // Rare case: partial read → copyOf to avoid sending stale bytes (caller uses array.size)
         return if (bytesRead == readBuffer.size) readBuffer else readBuffer.copyOf(bytesRead)
@@ -334,10 +327,7 @@ class MicrophoneCaptureManager(
     }
 
     private fun log(message: String) {
-        if (BuildConfig.DEBUG) {
-            Log.d(TAG, message)
-        }
-        logCallback.log(message)
+        logCallback.log("MIC", message)
     }
 
     /**
@@ -353,7 +343,7 @@ class MicrophoneCaptureManager(
         try {
             audioRecord?.release()
         } catch (e: Exception) {
-            Log.w(TAG, "[MIC] Release during error cleanup: ${e.message}")
+            Log.w("CARLINK", "[MIC] Release during error cleanup: ${e.message}")
         }
         audioRecord = null
     }
@@ -381,39 +371,33 @@ class MicrophoneCaptureManager(
                         bytesRead > 0 -> {
                             val bytesWritten = buffer.write(tempBuffer, 0, bytesRead)
                             totalBytesCapture += bytesWritten
-                            AudioDebugLogger.logMicCapture(bytesRead, buffer.fillLevelMs())
 
                             if (bytesWritten < bytesRead) {
                                 overrunCount++
-                                AudioDebugLogger.logMicOverrun(bytesRead - bytesWritten, buffer.fillLevelMs())
-                                Log.w(TAG, "[MIC] Buffer overrun: wrote $bytesWritten of $bytesRead bytes")
+                                log("[MIC] Buffer overrun: wrote $bytesWritten of $bytesRead bytes")
                             }
                         }
 
                         bytesRead == AudioRecord.ERROR_INVALID_OPERATION -> {
-                            AudioDebugLogger.logMicError("INVALID_OPERATION", "AudioRecord returned ERROR_INVALID_OPERATION")
-                            Log.e(TAG, "[MIC] ERROR: Invalid operation")
+                            log("[MIC] ERROR: Invalid operation")
                             fatalError = true
                             break
                         }
 
                         bytesRead == AudioRecord.ERROR_BAD_VALUE -> {
-                            AudioDebugLogger.logMicError("BAD_VALUE", "AudioRecord returned ERROR_BAD_VALUE")
-                            Log.e(TAG, "[MIC] ERROR: Bad value")
+                            log("[MIC] ERROR: Bad value")
                             fatalError = true
                             break
                         }
 
                         bytesRead == AudioRecord.ERROR_DEAD_OBJECT -> {
-                            AudioDebugLogger.logMicError("DEAD_OBJECT", "AudioRecord returned ERROR_DEAD_OBJECT")
-                            Log.e(TAG, "[MIC] ERROR: AudioRecord dead")
+                            log("[MIC] ERROR: AudioRecord dead")
                             fatalError = true
                             break
                         }
 
                         bytesRead == AudioRecord.ERROR -> {
-                            AudioDebugLogger.logMicError("GENERIC", "AudioRecord returned ERROR")
-                            Log.e(TAG, "[MIC] ERROR: Generic error")
+                            log("[MIC] ERROR: Generic error")
                             fatalError = true
                             break
                         }
@@ -421,7 +405,7 @@ class MicrophoneCaptureManager(
                 } catch (e: InterruptedException) {
                     break
                 } catch (e: Exception) {
-                    Log.e(TAG, "[MIC] Capture thread error: ${e.message}")
+                    log("[MIC] Capture thread error: ${e.message}")
                 }
             }
 

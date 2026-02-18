@@ -228,8 +228,21 @@ class CarlinkManager(
     // Executors
     private val executors = AppExecutors()
 
-    // LogCallback for Java components
-    private val logCallback = LogCallback { message -> log(message) }
+    // LogCallback for Java components — routes to Logger with proper tags
+    private val logCallback = object : LogCallback {
+        override fun log(message: String) {
+            this@CarlinkManager.log(message)
+        }
+        override fun log(tag: String, message: String) {
+            Logger.d(message, tag)
+            callback?.onLogMessage("[$tag] $message")
+        }
+        override fun logPerf(tag: String, message: String) {
+            if (Logger.isDebugLoggingEnabled() && Logger.isTagEnabled(tag)) {
+                Logger.d(message, tag)
+            }
+        }
+    }
 
     /**
      * Initialize the manager with a Surface and actual surface dimensions.

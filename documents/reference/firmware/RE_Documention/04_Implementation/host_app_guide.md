@@ -513,7 +513,7 @@ fun sendBoxSettings() {
         put("btName", "carlink")      // ⚠️ CMD INJECTION RISK
         put("boxName", "carlink")
 
-        // For iOS 13+ navigation video (requires AdvancedFeatures=1 in riddle.conf)
+        // For iOS 13+ navigation video (requires AdvancedFeatures=3 in riddle.conf, or bypassed by naviScreenInfo)
         put("naviScreenInfo", JSONObject().apply {
             put("width", 480)
             put("height", 272)
@@ -643,9 +643,10 @@ To enable CarPlay Dashboard/navigation video:
 
 1. **One-time setup** (via SSH or first connection):
    ```bash
-   riddleBoxCfg -s AdvancedFeatures 1
+   riddleBoxCfg -s AdvancedFeatures 1    # Bitmask: bit 0=naviScreen, bit 1=viewArea
    riddleBoxCfg --upConfig
    ```
+   **Note:** Only enable when your host app handles NaviVideoData (Type 0x2C). This causes a second H.264 video stream that increases USB bandwidth and processing load.
 
 2. **Include naviScreenInfo in BoxSettings** (see BoxSettings JSON above)
 

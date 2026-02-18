@@ -328,6 +328,8 @@ enum class FileAddress(
     ICON_120("/etc/icon_120x120.png"),
     ICON_180("/etc/icon_180x180.png"),
     ICON_256("/etc/icon_256x256.png"),
+    HU_VIEWAREA_INFO("/etc/RiddleBoxData/HU_VIEWAREA_INFO"),
+    HU_SAFEAREA_INFO("/etc/RiddleBoxData/HU_SAFEAREA_INFO"),
     UNKNOWN(""),
     ;
 
@@ -460,6 +462,10 @@ data class AdapterConfig(
     val icon120Data: ByteArray? = null,
     val icon180Data: ByteArray? = null,
     val icon256Data: ByteArray? = null,
+    /** ViewArea binary data (24B) for adapter — always sent */
+    val viewAreaData: ByteArray? = null,
+    /** SafeArea binary data (20B) for adapter — always sent */
+    val safeAreaData: ByteArray? = null,
 ) {
     companion object {
         val DEFAULT = AdapterConfig()
@@ -477,7 +483,9 @@ data class AdapterConfig(
             boxName == other.boxName &&
             icon120Data.contentEquals(other.icon120Data) &&
             icon180Data.contentEquals(other.icon180Data) &&
-            icon256Data.contentEquals(other.icon256Data)
+            icon256Data.contentEquals(other.icon256Data) &&
+            viewAreaData.contentEquals(other.viewAreaData) &&
+            safeAreaData.contentEquals(other.safeAreaData)
     }
 
     override fun hashCode(): Int {
@@ -489,6 +497,8 @@ data class AdapterConfig(
         result = 31 * result + (icon120Data?.contentHashCode() ?: 0)
         result = 31 * result + (icon180Data?.contentHashCode() ?: 0)
         result = 31 * result + (icon256Data?.contentHashCode() ?: 0)
+        result = 31 * result + (viewAreaData?.contentHashCode() ?: 0)
+        result = 31 * result + (safeAreaData?.contentHashCode() ?: 0)
         return result
     }
 }

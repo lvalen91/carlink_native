@@ -2,7 +2,7 @@
 
 **Purpose:** Complete riddleBoxCfg configuration keys reference
 **Consolidated from:** pi-carplay firmware analysis, carlink_native research
-**Last Updated:** 2026-02-03 (added Host App vs Direct Access configuration analysis)
+**Last Updated:** 2026-02-18 (AdvancedFeatures bitmask correction, HudGPSSwitch default correction, feature gate documentation)
 
 ---
 
@@ -311,6 +311,8 @@ Controls whether GPS data from the head unit is forwarded to the phone.
 | 0 | GPS from HU disabled - phone uses own GPS |
 | 1 | GPS from HU enabled - adapter forwards NMEA to phone |
 
+**Note:** Factory default is `0`. The `--info` output may show `1` if previously changed via `riddleBoxCfg -s HudGPSSwitch 1`. Must be set to `1` for GPS forwarding to work.
+
 **Binary Evidence:** `BOX_CFG_HudGPSSwitch Closed, not use GPS from HUD`
 
 ### GNSSCapability (Live-Tested Feb 2026)
@@ -568,18 +570,32 @@ echo 1 >/sys/class/gpio/gpio7/value   # Slow mode (default)
 ## Navigation Video Parameters (iOS 13+)
 
 ### AdvancedFeatures
-**Type:** Toggle (0/1) | **Default:** 0
+**Type:** Boolean (0-1) | **Default:** 0 | **Range:** 0-1 (enforced by riddleBoxCfg)
 
-**Purpose:** Enables navigation video (CarPlay Dashboard) feature with one-time activation behavior.
+**Purpose:** Controls instrument cluster / navigation video (CarPlay Dashboard) and NaviScreen view area negotiation.
 
-| Value | Effect |
-|-------|--------|
-| 0 (default) | Navigation video disabled (unless previously activated) |
-| 1 | Navigation video enabled, feature unlocked permanently |
+| Value | Global Flag Set | Feature |
+|-------|-----------------|---------|
+| 0 (default) | none | Navigation video disabled. NaviScreen ViewArea/SafeArea disabled. |
+| 1 | `g_bSupportNaviScreen` | Navigation video stream (Type 0x2C AltVideoFrame) + NaviScreen ViewArea/SafeArea |
+
+**CORRECTION (2026-02-18, r2 + live verified):** Earlier documentation incorrectly described this as a bitmask (0-3) with bit 1 controlling `g_bSupportViewarea`. This is **wrong**:
+- `riddleBoxCfg` enforces max=1 (`AdvancedFeatures:0 ~ 1`). Values 2+ are rejected.
+- Only `tst.w sb, 1` (bit 0) exists in the firmware decode path. No `tst.w sb, 2` exists anywhere.
+- **`g_bSupportViewarea`** is set from `HU_VIEWAREA_INFO` file content, NOT from AdvancedFeatures. See [ViewArea/SafeArea section](#viewarea--safearea-configuration-r2--live-verified-feb-2026) below.
+
+**WARNING:** Enabling navigation video (value 1) causes the adapter to send an **additional H.264 video stream** (Type 0x2C) alongside the primary stream (Type 0x06). This doubles video processing load. Only enable on systems that are prepared to handle and decode a second video stream. On systems not expecting it, the additional stream may cause USB bandwidth pressure or wasted processing. Host apps that do not handle Type 0x2C should leave this at 0 and use `naviScreenInfo` in BoxSettings only when ready to consume the stream.
+
+**r2 Evidence (AppleCarPlay at 0x25958):**
+```
+HU features, g_bSupportNaviScreen: %d, g_bSupportViewarea: %d
+Phone features, featureAltScreen: %d, featureViewAreas: %d
+```
+The log format shows both globals, but they are set by **different mechanisms**: `g_bSupportNaviScreen` from AdvancedFeatures, `g_bSupportViewarea` from HU_VIEWAREA_INFO file content. When both HU and phone support alt screen (`g_bSupportNaviScreen && phone.featureAltScreen`), `_AltScreenSetup` is called. If neither supports it, logs `"Not support new fratues"` and skips.
 
 **How to Set:**
 ```bash
-/usr/sbin/riddleBoxCfg -s AdvancedFeatures 1
+/usr/sbin/riddleBoxCfg -s AdvancedFeatures 1    # enable naviScreen
 /usr/sbin/riddleBoxCfg --upConfig
 ```
 
@@ -587,6 +603,180 @@ echo 1 >/sys/class/gpio/gpio7/value   # Slow mode (default)
 1. Adapter advertises `"supportFeatures":"naviScreen"` in boxInfo JSON
 2. Adapter processes `naviScreenInfo` from incoming BoxSettings
 3. Navigation video (Type 0x2C) becomes available
+4. NaviScreen view area / safe area negotiation via `HU_NAVISCREEN_VIEWAREA_INFO` and `HU_NAVISCREEN_SAFEAREA_INFO`
+
+---
+
+### ViewArea / SafeArea Configuration (r2 + Live Verified Feb 2026)
+
+CarPlay's ViewArea/SafeArea system tells the iPhone how to position UI elements relative to the physical display. This is critical for **non-rectangular screens** (curved edges, rounded corners, status bar overlays) where full-resolution video should fill the screen but interactive elements must stay within a visible/touchable region.
+
+**Concept:**
+- **ViewArea** = the full rectangle where CarPlay renders video (typically = screen resolution)
+- **SafeArea** = a smaller inset rectangle where interactive UI must be placed
+- **drawUIOutsideSafeArea** = controls what renders outside the SafeArea boundary (see below)
+- The iPhone receives both and composites accordingly
+
+**drawUIOutsideSafeArea behavior (live tested 2026-02-18 on iOS 18):**
+
+| Value | Outside SafeArea | Inside SafeArea |
+|-------|-----------------|-----------------|
+| 0 | **Black/empty** — hard crop, nothing renders beyond SafeArea | All UI + content |
+| 1 | **Home screen wallpaper only** — wallpaper extends to full ViewArea | All UI + content |
+
+**Important:** With `drawUIOutsideSafeArea=1`, only the home screen wallpaper extends beyond the SafeArea. All other content — including Maps tiles, Now Playing artwork, app backgrounds, and all interactive controls (icons, buttons, lists, search bars) — remains constrained within the SafeArea. This is iOS-side behavior; individual CarPlay apps do not render content outside the SafeArea regardless of this flag.
+
+For **curved/non-rectangular screens**, value 1 is recommended: wallpaper fills the curved edges aesthetically while all interactive elements stay in the touchable region.
+
+**Example: GM 2400×960 display with curved corners:**
+```
+ViewArea:  {width: 2400, height: 960, originX: 0, originY: 0}    ← full screen
+SafeArea:  {width: 2200, height: 760, originX: 100, originY: 100} ← 100px inset all around
+drawUIOutsideSafeArea: 1   ← wallpaper fills to edges, everything else stays inside SafeArea
+```
+
+#### Config Keys and Data Structures
+
+**Main Screen (gated by `g_bSupportViewarea` — set from `HU_VIEWAREA_INFO` file having valid dimensions, NOT from AdvancedFeatures):**
+
+| Config Key | Size | Struct (uint32 LE) | Purpose |
+|---|---|---|---|
+| `HU_VIEWAREA_INFO` | 24B (0x18) | `[width, height, width_dup, height_dup, 0, 0]` | Main screen viewable area rectangle |
+| `HU_SAFEAREA_INFO` | 20B (0x14) | `[width, height, originX, originY, drawUIOutside]` | Main screen safe area insets + outside flag |
+
+**Navigation/Cluster Screen (gated by `g_bSupportNaviScreen` / AdvancedFeatures bit 0):**
+
+| Config Key | Size | Struct (uint32 LE) | Purpose |
+|---|---|---|---|
+| `HU_NAVISCREEN_VIEWAREA_INFO` | 24B (0x18) | `[width, height, originX, originY, 0, 0]` | NaviScreen viewable area |
+| `HU_NAVISCREEN_SAFEAREA_INFO` | 20B (0x14) | `[width, height, originX, originY, outside]` | NaviScreen safe area |
+| `HU_NAVISCREEN_INFO` | 24B (0x18) | `[width, height, fps, ?, ?, ?]` | NaviScreen resolution |
+
+All stored as flat files at `/etc/RiddleBoxData/[key_name]`.
+
+#### AppleCarPlay: _CopyDisplayDescriptions (fcn.0001c0b4, 2112B)
+
+This function builds the CarPlay display info dictionary during AirPlay session negotiation. It runs when the iPhone connects and is called from 4 sites.
+
+**Gate logic (r2 verified):**
+```
+1. Check phone.featureViewAreas (struct offset 0x2ED9)  ← iPhone reports this
+   If 0 → skip to NaviScreen section
+2. Check g_bSupportViewarea (global at 0xabbe0)          ← set at init from HU_VIEWAREA_INFO file (NOT AdvancedFeatures)
+   If 0 → skip to NaviScreen section
+3. Read HU_VIEWAREA_INFO (24 bytes) via fcn.00073d14
+   Validate width > 0 AND height > 0
+4. Build viewArea CFLDictionary:
+   - "widthPixels"       = viewarea width
+   - "heightPixels"      = viewarea height
+   - "originXPixels"     = viewarea X origin
+   - "originYPixels"     = viewarea Y origin
+   - "DuckPosition"      = dock position (float64)
+5. Read HU_SAFEAREA_INFO (20 bytes)
+   If valid (width > 0 AND height > 0):
+     Build safeArea sub-dictionary:
+     - "widthPixels"           = safe area width
+     - "heightPixels"          = safe area height
+     - "originXPixels"         = safe area X origin
+     - "originYPixels"         = safe area Y origin
+     - "drawUIOutsideSafeArea" = kCFLBooleanTrue if outside flag != 0
+   If no valid SafeArea:
+     Fallback: use ViewArea dims as SafeArea, drawUIOutsideSafeArea = false
+6. Set "viewAreaStatusBarEdge" in viewArea dict
+7. Set "viewAreaTransitionControl" = kCFLBooleanFalse (hardcoded)
+8. Add viewArea to viewAreas CFLArray
+   Log: "add viewAreasArray: %@"
+
+--- NaviScreen section (separate gate) ---
+9. Check phone.featureAltScreen (struct offset 0x2ED8)
+   If 0 → skip entirely
+10. Check g_bSupportNaviScreen (global at 0xabbe1)
+    If 0 → skip entirely
+11. Read HU_NAVISCREEN_VIEWAREA_INFO → build same dict structure
+12. Read HU_NAVISCREEN_SAFEAREA_INFO → build same sub-dict
+    Log: "add AltScreen viewAreasArray: %@"
+```
+
+#### ARMadb-driver: Auto-Update on Connection (ProceessCmdOpen)
+
+When a phone connects, `fcn.00021cb0` (ProceessCmdOpen) compares stored `HU_VIEWAREA_INFO` dimensions with the current screen dimensions from the Open message. If they differ, it auto-updates `HU_VIEWAREA_INFO` to match the new screen size (full-screen dimensions, origin 0,0). This ensures ViewArea always reflects the resolution declared in the Open message.
+
+**Key limitation:** This auto-update sets ViewArea = full screen dimensions. It does NOT update `HU_SAFEAREA_INFO`. SafeArea must be configured separately (see below).
+
+#### ARMadb-driver: BoxSettings SafeArea Path (NaviScreen Only)
+
+The BoxSettings parser (`fcn.00016c20`) processes `naviScreenInfo.safearea` JSON:
+```json
+{
+  "naviScreenInfo": {
+    "width": 480,
+    "height": 272,
+    "fps": 30,
+    "safearea": {
+      "width": 460,
+      "height": 252,
+      "x": 10,
+      "y": 10,
+      "outside": 1
+    }
+  }
+}
+```
+Logged as: `"safearea %dx%d, %d,%d, %d"` (W, H, X, Y, outside)
+Writes: `HU_NAVISCREEN_SAFEAREA_INFO` (20B) and `HU_NAVISCREEN_VIEWAREA_INFO` (24B)
+
+**No BoxSettings path exists for main screen SafeArea.** `HU_SAFEAREA_INFO` can only be configured via direct file write (SSH or SendFile).
+
+#### How to Configure Main Screen SafeArea
+
+**Option 1: SSH (one-time setup)**
+```bash
+ssh root@192.168.43.1
+# Write HU_SAFEAREA_INFO: 20 bytes = 5 × uint32 LE
+# Fields: width, height, originX, originY, drawUIOutside
+# Example for 2400×960 screen with 50px inset on left/right, 30px top/bottom:
+python3 -c "
+import struct
+data = struct.pack('<5I', 2300, 900, 50, 30, 1)
+open('/etc/RiddleBoxData/HU_SAFEAREA_INFO', 'wb').write(data)
+"
+# Also ensure AdvancedFeatures has bit 1 set:
+/usr/sbin/riddleBoxCfg -s AdvancedFeatures 3
+/usr/sbin/riddleBoxCfg --upConfig
+busybox reboot
+```
+
+**Option 2: Host App SendFile (Type 0x99)**
+```
+SendFile path="/etc/RiddleBoxData/HU_SAFEAREA_INFO"
+Payload: 20 bytes (5 × uint32 LE): [width, height, originX, originY, drawUIOutside]
+```
+This requires adding SendFile support for the config path in the host app.
+
+**Option 3: Host App BoxSettings (requires firmware support)**
+The firmware does NOT parse a main-screen `safearea` field from BoxSettings. Only the naviScreenInfo sub-object safearea path exists.
+
+#### What g_bSupportViewarea Actually Controls (Correction — Feb 2026, r2 + live verified)
+
+Previous documentation incorrectly stated `g_bSupportViewarea` is set by AdvancedFeatures bit 1. **This is wrong.**
+
+**Actual mechanism (r2 disassembly of AppleCarPlay init at ~0x16ca2, live-verified 2026-02-18):**
+- `g_bSupportViewarea` (global at 0xabbe0) is set to 1 during AppleCarPlay init **if and only if** `/etc/RiddleBoxData/HU_VIEWAREA_INFO` exists with valid dimensions (width > 0, height > 0 at offsets 0x08 and 0x0C)
+- Fallback: also checks `HU_NAVISCREEN_VIEWAREA_INFO` — if that has valid dims, g_bSupportViewarea = 1
+- `AdvancedFeatures` only has **bit 0** tested in the entire firmware (`tst.w sb, 1` — no `tst.w sb, 2` exists). Max value is 1 (range-checked by riddleBoxCfg)
+- `g_bSupportNaviScreen` (AdvancedFeatures bit 0) → gates **NaviScreen** ViewArea/SafeArea (checks at 0x1c3a0)
+
+**Live test result:** Writing `HU_VIEWAREA_INFO` (24B) + `HU_SAFEAREA_INFO` (20B) to `/etc/RiddleBoxData/` and rebooting enabled main screen SafeArea on CarPlay with `AdvancedFeatures=1`. iPhone CarPlay correctly inset all interactive UI elements while rendering wallpaper full-screen (`drawUIOutsideSafeArea=true`).
+
+Both screens have their own independent gate. The iPhone also reports its own capabilities (`featureViewAreas` for main, `featureAltScreen` for navi) which are ANDed with the HU flags.
+
+#### Absent Features
+
+These CarPlay ViewArea properties exist as strings in AppleCarPlay but are not functional:
+- `viewAreaTransitionControl`: present but hardcoded to `kCFLBooleanFalse`
+- `adjacentViewAreas`: string present but never populated with data
+- `initialViewArea`: string present but not wired to config
+- Corner clipping masks: zero strings in all binaries — **not supported**
 
 ---
 
@@ -768,7 +958,7 @@ Host applications configure navigation video via BoxSettings JSON:
 | `productType` | - | string | Product type (e.g., "A15W") |
 | `lightType` | - | int | LED indicator type |
 
-**Navigation Video (requires AdvancedFeatures=1):**
+**Navigation Video (requires AdvancedFeatures≥1 or naviScreenInfo bypass):**
 
 | JSON Field | Type | Description |
 |------------|------|-------------|
@@ -1151,7 +1341,7 @@ These require `riddleBoxCfg` CLI or are firmware-only:
 |-----|------------|-------|
 | DashboardInfo | `riddleBoxCfg -s DashboardInfo 7` | iAP2 engine bitmask |
 | GNSSCapability | `riddleBoxCfg -s GNSSCapability 1` | Required for LocationEngine |
-| AdvancedFeatures | `riddleBoxCfg -s AdvancedFeatures 1` | Hidden features toggle |
+| AdvancedFeatures | `riddleBoxCfg -s AdvancedFeatures 1` | Bitmask: bit 0=naviScreen, bit 1=viewArea. Only set when host handles 0x2C |
 | SpsPpsMode | `riddleBoxCfg -s SpsPpsMode 1` | H.264 handling mode |
 | SendHeartBeat | `riddleBoxCfg -s SendHeartBeat 1` | Heartbeat toggle |
 | LogMode | `riddleBoxCfg -s LogMode 1` | Logging toggle |
@@ -1188,7 +1378,7 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | CustomFrameRate | 0 | 0 | 60 | Protocol Init |
 | NeedAutoConnect | 1 | 0 | 1 | Web UI |
 | BackgroundMode | 0 | 0 | 1 | Web UI |
-| HudGPSSwitch | 1 | 0 | 1 | Web UI |
+| HudGPSSwitch | 0 | 0 | 1 | Web UI | **Note:** `--info` may show 1 if previously set; factory default is 0 |
 | CarDate | 0 | 0 | 65535 | Internal |
 | WiFiChannel | 36 | 1 | 165 | Web UI |
 | AutoPlauMusic | 0 | 0 | 1 | Web UI |
@@ -1630,7 +1820,7 @@ See `usb_protocol.md` → "Bluetooth PIN Message Types" for detailed flow.
 
 | Key | Why Direct Access Required |
 |-----|---------------------------|
-| **AdvancedFeatures** | **Critical: Enables nav screen (0x2C) - requires adapter restart** |
+| **AdvancedFeatures** | **Bitmask — bit 0=naviScreen (extra video stream!), bit 1=viewArea. Only enable when host handles 0x2C** |
 | AutoUpdate | Firmware update policy |
 | IgnoreUpdateVersion | Update skip |
 | BackgroundMode | Background operation |
@@ -1716,11 +1906,21 @@ There are **two independent paths** to enable navigation video (see "Navigation 
 - Required only if host does NOT send naviScreenInfo in BoxSettings
 
 **AdvancedFeatures Effects (when set to 1):**
+- Sets `g_bSupportNaviScreen=1` in AppleCarPlay
 - Adapter advertises `"supportFeatures": "naviScreen"` in boxInfo
 - Enables HU_NAVISCREEN_INFO D-Bus signal (fallback path)
 - Enables HU_NEEDNAVI_STREAM requests
 - Enables RequestNaviScreenFoucs/ReleaseNaviScreenFoucs commands
 - Enables NaviVideoData (0x2C) message handling
+- NaviScreen ViewArea/SafeArea (`HU_NAVISCREEN_VIEWAREA_INFO` / `HU_NAVISCREEN_SAFEAREA_INFO`) becomes active
+
+**Main Screen ViewArea/SafeArea (independent of AdvancedFeatures — live verified 2026-02-18):**
+- `g_bSupportViewarea` is set from `HU_VIEWAREA_INFO` file content, NOT from AdvancedFeatures
+- Write `HU_VIEWAREA_INFO` (24B) + `HU_SAFEAREA_INFO` (20B) to `/etc/RiddleBoxData/`, reboot
+- AppleCarPlay init reads `HU_VIEWAREA_INFO` → if width > 0 AND height > 0 → sets `g_bSupportViewarea=1`
+- During stream setup, `_CopyDisplayDescriptions` reads both files and sends to iPhone
+- `drawUIOutsideSafeArea` flag in `HU_SAFEAREA_INFO` offset 0x10: if 1, wallpaper/maps render full-screen, interactive UI inset to SafeArea
+- This is **essential for non-rectangular screens** — allows declaring a SafeArea inset so CarPlay keeps interactive UI elements away from curved/clipped edges
 
 **Recommended Flow (Host App - Path A):**
 1. Host sends BoxSettings with `naviScreenInfo: {width, height, fps}`
