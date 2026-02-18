@@ -10,7 +10,8 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import com.carlink.logging.Logger
 import java.io.ByteArrayOutputStream
-import java.util.concurrent.ConcurrentHashMap
+import java.util.Collections
+import java.util.LinkedHashMap
 
 /**
  * Shim ContentProvider that claims the orphaned authority
@@ -35,7 +36,17 @@ class ClusterIconShimProvider : ContentProvider() {
         private const val MAX_CACHE_SIZE = 20
     }
 
-    private val iconCache = ConcurrentHashMap<String, ByteArray>()
+    private val iconCache: MutableMap<String, ByteArray> = Collections.synchronizedMap(
+        object : LinkedHashMap<String, ByteArray>(MAX_CACHE_SIZE, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean {
+                val shouldRemove = size > MAX_CACHE_SIZE
+                if (shouldRemove && eldest != null) {
+                    Logger.d("Evicted ${eldest.key} from icon cache (LRU)", tag = TAG)
+                }
+                return shouldRemove
+            }
+        }
+    )
 
     override fun onCreate(): Boolean {
         Logger.i("ClusterIconShimProvider registered (authority=$AUTHORITY)", tag = TAG)
@@ -58,16 +69,6 @@ class ClusterIconShimProvider : ContentProvider() {
         }
 
         val cacheKey = "cluster_icon_$iconId"
-
-        // Evict oldest if at capacity
-        if (iconCache.size >= MAX_CACHE_SIZE && !iconCache.containsKey(cacheKey)) {
-            val oldest = iconCache.keys.firstOrNull()
-            if (oldest != null) {
-                iconCache.remove(oldest)
-                Logger.d("Evicted $oldest from icon cache", tag = TAG)
-            }
-        }
-
         iconCache[cacheKey] = data
         val resultUri = Uri.parse("content://$AUTHORITY/img/$cacheKey")
         Logger.d("insert() cached $cacheKey (${data.size} bytes) → $resultUri", tag = TAG)

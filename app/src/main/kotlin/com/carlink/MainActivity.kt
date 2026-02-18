@@ -201,10 +201,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        // USB_DEVICE_ATTACHED re-delivers here (singleTop). If the cluster session
-        // was destroyed by RendererServiceBinder.terminate during USB re-enumeration,
-        // re-launch CarAppActivity to re-establish the binding chain.
-        launchCarAppActivity()
+        // Only re-launch cluster binding for actual USB re-attach events.
+        // The "bring back" REORDER_TO_FRONT intent from launchCarAppActivity()
+        // also arrives here (singleTop) — must NOT re-trigger the launch cycle.
+        if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+            logInfo("[LIFECYCLE] onNewIntent: USB_DEVICE_ATTACHED — re-launching cluster binding", tag = "MAIN")
+            launchCarAppActivity()
+        }
     }
 
     override fun onDestroy() {

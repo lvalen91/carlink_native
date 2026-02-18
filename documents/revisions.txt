@@ -135,3 +135,4 @@
 [70] :: Navi Metadata testing. Hybrid CarApp Activity 'silently' opens without taking focus from MainActivity.
 
 [71] :: Testing GM Cluster Nav Metadata integration. AOSP/Vanilla AOSP works fine, but not GM AAOS.
+[72] :: Stale Nav Icons and Name fix test

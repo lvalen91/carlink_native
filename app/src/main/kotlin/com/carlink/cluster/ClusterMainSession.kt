@@ -25,7 +25,6 @@ import com.carlink.navigation.DistanceFormatter
 import com.carlink.navigation.ManeuverMapper
 import com.carlink.navigation.NavigationState
 import com.carlink.navigation.NavigationStateManager
-import androidx.car.app.model.Distance
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -182,8 +181,7 @@ class ClusterMainSession : Session() {
                 navManager.updateTrip(trip)
                 logNavi {
                     "[CLUSTER_MAIN] Trip relayed: maneuver=${state.maneuverType}, " +
-                        "dist=${state.remainDistance}m, road=${state.roadName}, " +
-                        "nextStep=${state.nextStep?.let { "maneuver=${it.maneuverType}, road=${it.roadName}" } ?: "null"}"
+                        "dist=${state.remainDistance}m, road=${state.roadName}"
                 }
             } catch (e: Exception) {
                 logError(
@@ -226,21 +224,6 @@ class ClusterMainSession : Session() {
         ).build()
 
         tripBuilder.addStep(stepBuilder.build(), stepEstimate)
-
-        // Secondary step (upcoming maneuver from second message in burst)
-        state.nextStep?.let { next ->
-            val nextManeuver = ManeuverMapper.buildManeuver(next, carContext)
-            val nextStepBuilder = Step.Builder()
-            nextStepBuilder.setManeuver(nextManeuver)
-            next.roadName?.let { nextStepBuilder.setCue(it) }
-
-            val nextEstimate = TravelEstimate.Builder(
-                Distance.create(0.0, Distance.UNIT_METERS),
-                ZonedDateTime.now(),
-            ).build()
-
-            tripBuilder.addStep(nextStepBuilder.build(), nextEstimate)
-        }
 
         if (state.destinationName != null || state.distanceToDestination > 0) {
             val destBuilder = Destination.Builder()
