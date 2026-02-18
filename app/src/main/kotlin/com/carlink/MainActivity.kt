@@ -148,9 +148,12 @@ class MainActivity : ComponentActivity() {
         registerUsbDetachReceiver()
 
         // Launch CarAppActivity to trigger Templates Host → cluster binding chain.
-        // CarAppActivity briefly takes focus (~3s) while binding completes,
-        // then we bring MainActivity back to the foreground.
-        launchCarAppActivity()
+        // Delayed to avoid interrupting USB permission dialog on first connect.
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!isDestroyed && !isFinishing) {
+                launchCarAppActivity()
+            }
+        }, 4000)
 
         // Set up Compose UI
         // carlinkManager is guaranteed non-null here since initializeCarlinkManager()
@@ -465,30 +468,35 @@ class MainActivity : ComponentActivity() {
      */
     private fun launchCarAppActivity() {
         if (ClusterBindingState.sessionAlive) {
-            logInfo("[CLUSTER] Cluster session already alive — skipping launch", tag = "MAIN")
+            logInfo("[CLUSTER] Cluster session still alive — will retry after teardown", tag = "MAIN")
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (!isDestroyed && !isFinishing && !ClusterBindingState.sessionAlive) {
+                    logInfo("[CLUSTER] Old session torn down — retrying launch", tag = "MAIN")
+                    launchCarAppActivity()
+                }
+            }, 4000)
             return
         }
 
         try {
             val intent = Intent().apply {
                 setClassName(this@MainActivity, "androidx.car.app.activity.CarAppActivity")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
             }
             startActivity(intent)
             logInfo("[CLUSTER] Launched CarAppActivity for Templates Host binding", tag = "MAIN")
 
-            // CarAppActivity takes focus briefly while the binding chain completes:
-            // handshake → session → navigationStarted() → ClusterTurnCardActivity (~2-3s).
-            // After 3s, bring MainActivity back to the foreground.
+            // Bring MainActivity back quickly — binding is IPC-based and doesn't
+            // need CarAppActivity in the foreground. 1s is enough for the handshake.
             Handler(Looper.getMainLooper()).postDelayed({
                 if (!isDestroyed && !isFinishing) {
                     val bringBack = Intent(this@MainActivity, MainActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                        flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NO_ANIMATION
                     }
                     startActivity(bringBack)
                     logInfo("[CLUSTER] Brought MainActivity back to foreground", tag = "MAIN")
                 }
-            }, 3000)
+            }, 1000)
         } catch (e: Exception) {
             logWarn("[CLUSTER] Failed to launch CarAppActivity: ${e.message}", tag = "MAIN")
         }

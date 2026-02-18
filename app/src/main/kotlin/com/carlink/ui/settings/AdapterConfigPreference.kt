@@ -136,6 +136,24 @@ enum class FpsConfig(val fps: Int) {
 }
 
 /**
+ * Hand drive mode configuration for CarPlay/Android Auto UI layout.
+ * Controls which side the UI elements are positioned for the driver.
+ * Written to /tmp/hand_drive_mode on the adapter (0=LHD, 1=RHD).
+ */
+enum class HandDriveConfig(val value: Int) {
+    /** Left Hand Drive — dock on left, for countries that drive on the right (US, Europe). */
+    LEFT(0),
+
+    /** Right Hand Drive — dock on right, for countries that drive on the left (UK, Japan, AU). */
+    RIGHT(1),
+    ;
+
+    companion object {
+        val DEFAULT = LEFT
+    }
+}
+
+/**
  * Video resolution configuration for adapter initialization.
  *
  * AUTO uses the detected display resolution (usable area after system UI).
@@ -243,6 +261,9 @@ class AdapterConfigPreference private constructor(
         // FPS: stored as int (30 or 60)
         private val KEY_FPS = intPreferencesKey("fps")
 
+        // Hand drive mode: stored as int (0=LHD, 1=RHD)
+        private val KEY_HAND_DRIVE = intPreferencesKey("hand_drive_mode")
+
         // Initialization tracking
         private val KEY_HAS_COMPLETED_FIRST_INIT = booleanPreferencesKey("has_completed_first_init")
         private val KEY_PENDING_CHANGES = stringSetPreferencesKey("pending_changes")
@@ -257,6 +278,7 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_MEDIA_DELAY = "media_delay"
         private const val SYNC_CACHE_KEY_VIDEO_RESOLUTION = "video_resolution"
         private const val SYNC_CACHE_KEY_FPS = "fps"
+        private const val SYNC_CACHE_KEY_HAND_DRIVE = "hand_drive_mode"
         private const val SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT = "has_completed_first_init"
         private const val SYNC_CACHE_KEY_PENDING_CHANGES = "pending_changes"
 
@@ -272,6 +294,7 @@ class AdapterConfigPreference private constructor(
             const val MEDIA_DELAY = "media_delay"
             const val VIDEO_RESOLUTION = "video_resolution"
             const val FPS = "fps"
+            const val HAND_DRIVE = "hand_drive_mode"
         }
     }
 
@@ -510,6 +533,37 @@ class AdapterConfigPreference private constructor(
         }
     }
 
+    val handDriveFlow: Flow<HandDriveConfig> =
+        dataStore.data.map { preferences ->
+            val value = preferences[KEY_HAND_DRIVE] ?: HandDriveConfig.DEFAULT.value
+            HandDriveConfig.entries.find { it.value == value } ?: HandDriveConfig.DEFAULT
+        }
+
+    /**
+     * Get current hand drive configuration synchronously.
+     */
+    fun getHandDriveSync(): HandDriveConfig {
+        val value = syncCache.getInt(SYNC_CACHE_KEY_HAND_DRIVE, HandDriveConfig.DEFAULT.value)
+        return HandDriveConfig.entries.find { it.value == value } ?: HandDriveConfig.DEFAULT
+    }
+
+    /**
+     * Set hand drive configuration.
+     */
+    suspend fun setHandDrive(config: HandDriveConfig) {
+        try {
+            dataStore.edit { preferences ->
+                preferences[KEY_HAND_DRIVE] = config.value
+            }
+            syncCache.edit().putInt(SYNC_CACHE_KEY_HAND_DRIVE, config.value).apply()
+            addPendingChange(ConfigKey.HAND_DRIVE)
+            logInfo("Hand drive preference saved: $config (${config.value})", tag = "AdapterConfig")
+        } catch (e: Exception) {
+            logError("Failed to save hand drive preference: $e", tag = "AdapterConfig")
+            throw e
+        }
+    }
+
     data class UserConfig(
         /** Audio transfer mode: true = bluetooth, false = adapter (default) */
         val audioTransferMode: Boolean,
@@ -525,6 +579,8 @@ class AdapterConfigPreference private constructor(
         val videoResolution: VideoResolutionConfig,
         /** Frame rate configuration */
         val fps: FpsConfig,
+        /** Hand drive mode configuration */
+        val handDrive: HandDriveConfig,
     ) {
         companion object {
             val DEFAULT =
@@ -536,6 +592,7 @@ class AdapterConfigPreference private constructor(
                     mediaDelay = MediaDelayConfig.DEFAULT,
                     videoResolution = VideoResolutionConfig.AUTO,
                     fps = FpsConfig.DEFAULT,
+                    handDrive = HandDriveConfig.DEFAULT,
                 )
         }
     }
@@ -554,6 +611,7 @@ class AdapterConfigPreference private constructor(
         val mediaDelay = getMediaDelaySync()
         val videoResolution = getVideoResolutionSync()
         val fps = getFpsSync()
+        val handDrive = getHandDriveSync()
         return UserConfig(
             audioTransferMode = audioSource == AudioSourceConfig.BLUETOOTH,
             micSource = micSource,
@@ -562,6 +620,7 @@ class AdapterConfigPreference private constructor(
             mediaDelay = mediaDelay,
             videoResolution = videoResolution,
             fps = fps,
+            handDrive = handDrive,
         )
     }
 
@@ -581,6 +640,7 @@ class AdapterConfigPreference private constructor(
                 preferences.remove(KEY_MEDIA_DELAY)
                 preferences.remove(KEY_VIDEO_RESOLUTION)
                 preferences.remove(KEY_FPS)
+                preferences.remove(KEY_HAND_DRIVE)
                 preferences.remove(KEY_HAS_COMPLETED_FIRST_INIT)
                 preferences.remove(KEY_PENDING_CHANGES)
             }
@@ -596,6 +656,7 @@ class AdapterConfigPreference private constructor(
                     remove(SYNC_CACHE_KEY_MEDIA_DELAY)
                     remove(SYNC_CACHE_KEY_VIDEO_RESOLUTION)
                     remove(SYNC_CACHE_KEY_FPS)
+                    remove(SYNC_CACHE_KEY_HAND_DRIVE)
                     remove(SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT)
                     remove(SYNC_CACHE_KEY_PENDING_CHANGES)
                 }.apply()

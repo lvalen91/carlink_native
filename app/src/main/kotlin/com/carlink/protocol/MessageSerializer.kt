@@ -242,15 +242,11 @@ object MessageSerializer {
 
     /**
      * Generate AirPlay configuration string.
-     * Matches Pi-Carplay SendIconConfig exactly:
-     * - All fields hardcoded except oemIconLabel
-     * - oemIconLabel only included if non-empty
-     * - Uses explicit \n (not raw multiline string)
+     * oemIconLabel is always "Exit" regardless of box settings.
+     * Uses explicit \n (not raw multiline string)
      */
     fun generateAirplayConfig(config: AdapterConfig): String {
-        val label = config.boxName.trim()
-        val oemIconLabelLine = if (label.isNotEmpty()) "\noemIconLabel = $label" else ""
-        return "oemIconVisible = 1\nname = AutoBox\nmodel = Magic-Car-Link-1.00\noemIconPath = /etc/oem_icon.png$oemIconLabelLine\n"
+        return "oemIconVisible = 1\nname = AutoBox\nmodel = Magic-Car-Link-1.00\noemIconPath = /etc/oem_icon.png\noemIconLabel = Exit\n"
     }
 
     // ==================== Initialization Sequence ====================
@@ -265,6 +261,7 @@ object MessageSerializer {
         const val WIFI_BAND = "wifi_band"
         const val CALL_QUALITY = "call_quality"
         const val MEDIA_DELAY = "media_delay"
+        const val HAND_DRIVE = "hand_drive_mode"
     }
 
     /**
@@ -367,6 +364,10 @@ object MessageSerializer {
                     // Media delay is part of BoxSettings, need to send full BoxSettings
                     messages.add(serializeBoxSettings(config))
                 }
+
+                ConfigKey.HAND_DRIVE -> {
+                    messages.add(serializeNumber(config.handDriveMode, FileAddress.HAND_DRIVE_MODE))
+                }
             }
         }
     }
@@ -379,7 +380,7 @@ object MessageSerializer {
         config: AdapterConfig,
     ) {
         // Hand drive mode: 0 = Left Hand Drive (LHD), 1 = Right Hand Drive (RHD)
-        messages.add(serializeNumber(0, FileAddress.HAND_DRIVE_MODE))
+        messages.add(serializeNumber(config.handDriveMode, FileAddress.HAND_DRIVE_MODE))
 
         // Box name
         messages.add(serializeString(config.boxName, FileAddress.BOX_NAME))

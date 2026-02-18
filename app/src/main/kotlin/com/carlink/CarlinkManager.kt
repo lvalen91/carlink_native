@@ -520,6 +520,7 @@ class CarlinkManager(
                     },
                 callQuality = userConfig.callQuality.value,
                 fps = userConfig.fps.fps,
+                handDriveMode = userConfig.handDrive.value,
             )
         config = refreshedConfig // Update stored config for other uses
 

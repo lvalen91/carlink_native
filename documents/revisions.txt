@@ -133,3 +133,5 @@
 [68] :: Some Code cleanup
 [69] :: Nice. More cleanup. Testing cmd inject for oemIconLabel
 [70] :: Navi Metadata testing. Hybrid CarApp Activity 'silently' opens without taking focus from MainActivity.
+
+[71] :: Testing GM Cluster Nav Metadata integration. AOSP/Vanilla AOSP works fine, but not GM AAOS.

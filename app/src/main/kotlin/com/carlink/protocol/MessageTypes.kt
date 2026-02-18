@@ -452,6 +452,8 @@ data class AdapterConfig(
     val callQuality: Int = 2,
     val oemIconVisible: Boolean = true,
     val androidWorkMode: Boolean = true,
+    /** Hand drive mode: 0 = LHD (dock left, US/EU default), 1 = RHD (dock right, UK/JP/AU) */
+    val handDriveMode: Int = 0,
     val icon120Data: ByteArray? = null,
     val icon180Data: ByteArray? = null,
     val icon256Data: ByteArray? = null,

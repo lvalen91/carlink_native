@@ -108,6 +108,9 @@ fun AdapterConfigurationDialog(
     val savedFps by adapterConfigPreference.fpsFlow.collectAsStateWithLifecycle(
         initialValue = FpsConfig.DEFAULT,
     )
+    val savedHandDrive by adapterConfigPreference.handDriveFlow.collectAsStateWithLifecycle(
+        initialValue = HandDriveConfig.DEFAULT,
+    )
 
     // Get usable display dimensions based on current display mode
     // FULLSCREEN_IMMERSIVE: Use full display bounds (bars are hidden)
@@ -161,6 +164,7 @@ fun AdapterConfigurationDialog(
     var selectedMediaDelay by remember { mutableStateOf(savedMediaDelay) }
     var selectedVideoResolution by remember { mutableStateOf(savedVideoResolution) }
     var selectedFps by remember { mutableStateOf(savedFps) }
+    var selectedHandDrive by remember { mutableStateOf(savedHandDrive) }
 
     // Sync local state when saved value loads (for initial load)
     LaunchedEffect(savedAudioSource) { selectedAudioSource = savedAudioSource }
@@ -170,6 +174,7 @@ fun AdapterConfigurationDialog(
     LaunchedEffect(savedMediaDelay) { selectedMediaDelay = savedMediaDelay }
     LaunchedEffect(savedVideoResolution) { selectedVideoResolution = savedVideoResolution }
     LaunchedEffect(savedFps) { selectedFps = savedFps }
+    LaunchedEffect(savedHandDrive) { selectedHandDrive = savedHandDrive }
 
     // Track if any changes were made
     // All adapter configuration changes require app restart
@@ -180,7 +185,8 @@ fun AdapterConfigurationDialog(
             selectedCallQuality != savedCallQuality ||
             selectedMediaDelay != savedMediaDelay ||
             selectedVideoResolution != savedVideoResolution ||
-            selectedFps != savedFps
+            selectedFps != savedFps ||
+            selectedHandDrive != savedHandDrive
 
     // Responsive dialog width - 60% of container width, clamped between 320dp and 600dp
     val windowInfo = LocalWindowInfo.current
@@ -569,6 +575,43 @@ fun AdapterConfigurationDialog(
                             color = colorScheme.primary,
                         )
                     }
+
+                    // Hand Drive Mode Configuration
+                    ConfigurationOptionCard(
+                        title = "Drive Side",
+                        description = "Sets which side the CarPlay dock appears on",
+                        icon = Icons.Default.SettingsInputComponent,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            AudioSourceButton(
+                                label = "Left (LHD)",
+                                icon = Icons.Default.SettingsInputComponent,
+                                isSelected = selectedHandDrive == HandDriveConfig.LEFT,
+                                onClick = { selectedHandDrive = HandDriveConfig.LEFT },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "Right (RHD)",
+                                icon = Icons.Default.SettingsInputComponent,
+                                isSelected = selectedHandDrive == HandDriveConfig.RIGHT,
+                                onClick = { selectedHandDrive = HandDriveConfig.RIGHT },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                when (selectedHandDrive) {
+                                    HandDriveConfig.LEFT -> "Driving on the Right Side"
+                                    HandDriveConfig.RIGHT -> "Driving on the wrong side"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -606,7 +649,7 @@ fun AdapterConfigurationDialog(
                     // Apply & Restart button - all adapter config changes require restart
                     Button(
                         onClick = {
-                            logWarn("[UI_ACTION] Adapter Config: Apply & Restart clicked - audio=$selectedAudioSource, mic=$selectedMicSource, wifi=$selectedWifiBand, callQuality=$selectedCallQuality, mediaDelay=$selectedMediaDelay, resolution=${selectedVideoResolution.toStorageString()}, fps=${selectedFps.fps}", tag = "UI")
+                            logWarn("[UI_ACTION] Adapter Config: Apply & Restart clicked - audio=$selectedAudioSource, mic=$selectedMicSource, wifi=$selectedWifiBand, callQuality=$selectedCallQuality, mediaDelay=$selectedMediaDelay, resolution=${selectedVideoResolution.toStorageString()}, fps=${selectedFps.fps}, handDrive=$selectedHandDrive", tag = "UI")
                             scope.launch {
                                 // Save all configuration
                                 adapterConfigPreference.setAudioSource(selectedAudioSource)
@@ -616,9 +659,16 @@ fun AdapterConfigurationDialog(
                                 adapterConfigPreference.setMediaDelay(selectedMediaDelay)
                                 adapterConfigPreference.setVideoResolution(selectedVideoResolution)
                                 adapterConfigPreference.setFps(selectedFps)
+                                adapterConfigPreference.setHandDrive(selectedHandDrive)
 
-                                // All adapter config changes require restart
+                                // All adapter config changes require restart.
+                                // Schedule MainActivity launch before kill so the system
+                                // restarts into it instead of the CarApp task.
                                 carlinkManager?.stop()
+                                val launchIntent = context.packageManager
+                                    .getLaunchIntentForPackage(context.packageName)
+                                    ?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                                launchIntent?.let { context.startActivity(it) }
                                 kotlinx.coroutines.delay(500)
                                 android.os.Process.killProcess(android.os.Process.myPid())
                             }

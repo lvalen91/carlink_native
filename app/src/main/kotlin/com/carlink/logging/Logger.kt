@@ -47,6 +47,7 @@ object Logger {
         const val ERROR_RECOVERY = "ERROR_RECOVERY"
         const val NAVI = "NAVI"
         const val CLUSTER = "CLUSTER"
+        const val ICON_SHIM = "ICON_SHIM"
 
         // Video Pipeline Debug Tags
         const val VIDEO_USB = "VIDEO_USB"

@@ -9,6 +9,18 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
+ * A single maneuver step extracted from a NaviJSON burst.
+ * The adapter sends two steps per burst: the immediate next action and the upcoming one.
+ */
+data class ManeuverStep(
+    val maneuverType: Int = 0,
+    val roadName: String? = null,
+    val orderType: Int = 0,
+    val turnAngle: Int = 0,
+    val turnSide: Int = 0,
+)
+
+/**
  * Accumulated navigation state from incremental NaviJSON updates.
  *
  * The adapter sends partial JSON updates (1-5 fields per message, ~100-500ms apart).
@@ -27,6 +39,7 @@ data class NavigationState(
     val turnAngle: Int = 0,            // Turn angle in degrees
     val turnSide: Int = 0,             // 0=right-hand driving, 1=left-hand driving
     val junctionType: Int = 0,         // 0=intersection, 1=roundabout
+    val nextStep: ManeuverStep? = null, // Upcoming maneuver (second step in burst)
 ) {
     val isActive: Boolean get() = status == 1
     val isIdle: Boolean get() = status == 0
@@ -68,27 +81,55 @@ object NavigationStateManager {
 
         // Incremental merge: update only fields present in this payload
         val current = _state.value
-        val merged = current.copy(
-            status = naviStatus ?: current.status,
-            maneuverType = (payload["NaviManeuverType"] as? Number)?.toInt() ?: current.maneuverType,
-            orderType = (payload["NaviOrderType"] as? Number)?.toInt() ?: current.orderType,
-            roadName = (payload["NaviRoadName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.roadName,
-            remainDistance = (payload["NaviRemainDistance"] as? Number)?.toInt() ?: current.remainDistance,
-            distanceToDestination = (payload["NaviDistanceToDestination"] as? Number)?.toInt() ?: current.distanceToDestination,
-            timeToDestination = (payload["NaviTimeToDestination"] as? Number)?.toInt() ?: current.timeToDestination,
-            destinationName = (payload["NaviDestinationName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.destinationName,
-            appName = (payload["NaviAPPName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.appName,
-            turnAngle = (payload["NaviTurnAngle"] as? Number)?.toInt() ?: current.turnAngle,
-            turnSide = (payload["NaviTurnSide"] as? Number)?.toInt() ?: current.turnSide,
-            junctionType = (payload["NaviJunctionType"] as? Number)?.toInt() ?: current.junctionType,
-        )
+        val incomingManeuver = (payload["NaviManeuverType"] as? Number)?.toInt()
+        val incomingRoad = (payload["NaviRoadName"] as? String)?.takeIf { it.isNotEmpty() }
+        val incomingOrder = (payload["NaviOrderType"] as? Number)?.toInt()
+        val incomingAngle = (payload["NaviTurnAngle"] as? Number)?.toInt()
+        val incomingSide = (payload["NaviTurnSide"] as? Number)?.toInt()
+
+        // Detect second step in burst: if this payload has a ManeuverType and the primary
+        // is already set, and it's a different maneuver or road, capture as nextStep.
+        val isSecondStep = incomingManeuver != null && current.maneuverType != 0 &&
+            (incomingManeuver != current.maneuverType || incomingRoad != current.roadName)
+
+        val merged = if (isSecondStep) {
+            // Second maneuver in burst → save as upcoming step
+            val step = ManeuverStep(
+                maneuverType = incomingManeuver!!,
+                roadName = incomingRoad ?: current.nextStep?.roadName,
+                orderType = incomingOrder ?: 0,
+                turnAngle = incomingAngle ?: 0,
+                turnSide = incomingSide ?: current.turnSide,
+            )
+            logNavi { "[NAVI] Second step detected: maneuver=${step.maneuverType}, road=${step.roadName}" }
+            current.copy(
+                status = naviStatus ?: current.status,
+                nextStep = step,
+            )
+        } else {
+            current.copy(
+                status = naviStatus ?: current.status,
+                maneuverType = incomingManeuver ?: current.maneuverType,
+                orderType = incomingOrder ?: current.orderType,
+                roadName = incomingRoad ?: current.roadName,
+                remainDistance = (payload["NaviRemainDistance"] as? Number)?.toInt() ?: current.remainDistance,
+                distanceToDestination = (payload["NaviDistanceToDestination"] as? Number)?.toInt() ?: current.distanceToDestination,
+                timeToDestination = (payload["NaviTimeToDestination"] as? Number)?.toInt() ?: current.timeToDestination,
+                destinationName = (payload["NaviDestinationName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.destinationName,
+                appName = (payload["NaviAPPName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.appName,
+                turnAngle = incomingAngle ?: current.turnAngle,
+                turnSide = incomingSide ?: current.turnSide,
+                junctionType = (payload["NaviJunctionType"] as? Number)?.toInt() ?: current.junctionType,
+            )
+        }
 
         logNavi {
             "[NAVI] State merged: status=${merged.status}, maneuver=${merged.maneuverType}, " +
                 "road=${merged.roadName}, remainDist=${merged.remainDistance}m, " +
                 "destDist=${merged.distanceToDestination}m, eta=${merged.timeToDestination}s, " +
                 "dest=${merged.destinationName}, app=${merged.appName}, " +
-                "turnSide=${merged.turnSide}, turnAngle=${merged.turnAngle}, junction=${merged.junctionType}"
+                "turnSide=${merged.turnSide}, turnAngle=${merged.turnAngle}, junction=${merged.junctionType}, " +
+                "nextStep=${merged.nextStep?.let { "maneuver=${it.maneuverType}, road=${it.roadName}" } ?: "null"}"
         }
 
         _state.value = merged

@@ -55,7 +55,7 @@ Completed fixes:
 - Single-slot video handoff (rev 67). USB thread does System.arraycopy to pre-allocated StagedFrame, dedicated H264-Feeder thread handles codec interaction. 4-slot SPSC lock-free queue, 6x512KB pre-allocated frames. Overflow drops oldest frame and requests keyframe. Audio and video pipelines fully decoupled.
 - Hot-path allocation gating. Debug logs behind BuildConfig.DEBUG flags. Pre-allocated buffers for headers, chunks, staging frames, audio ring buffers.
 - Dual-stream audio. Separate AudioTrack and ring buffer for media (500ms) and navigation (200ms). Lock-free SPSC ring buffers, WRITE_NON_BLOCKING, THREAD_PRIORITY_URGENT_AUDIO playback thread.
-- Cluster navigation via Car App Library Templates Host. CarlinkClusterService + CarlinkClusterSession for instrument cluster display. NavigationStateManager, ManeuverMapper, DistanceFormatter for turn-by-turn.
+- Cluster navigation via Car App Library Templates Host. CarlinkClusterService + CarlinkClusterSession for instrument cluster display. NavigationStateManager, ManeuverMapper, DistanceFormatter for turn-by-turn. Multi-step trip support — adapter sends two maneuvers per burst, both are captured and pushed to the cluster via Trip.addStep().
 - Media browser service. CarlinkMediaBrowserService registers as AAOS media source. MediaSessionManager for playback state.
 - CarAppActivity declared in manifest solely to trigger Templates Host binding. Not a launcher, not visible.
 - PlatformDetector for Intel/GM AAOS hardware detection, codec selection, audio config.
