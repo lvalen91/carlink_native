@@ -3,7 +3,7 @@
 **Device:** GM Info 3.7 (gminfo37)
 **Platform:** Intel Apollo Lake (Broxton)
 **Android Version:** 12 (API 32)
-**Analysis Date:** January 2026
+**Analysis Date:** December 2025 - February 2026
 
 ---
 
@@ -371,6 +371,8 @@ AudioAttributes callAttrs = new AudioAttributes.Builder()
 | USAGE_VOICE_COMMUNICATION | bus4_call_out | Phone calls |
 | USAGE_ALARM | bus5_alarm_out | Alarms |
 | USAGE_NOTIFICATION | bus6_notification_out | Notifications |
+| USAGE_ASSISTANCE_SONIFICATION | bus7_system_sound_out | System sounds |
+| USAGE_UNKNOWN (audio cue) | bus12_audio_cue_out | Audio cues |
 
 ### Optimization Tips
 
@@ -422,7 +424,7 @@ Third-party apps are sandboxed as `untrusted_app` and can only access:
 2. **Query Codec Capabilities** - Check what's supported before configuring
 3. **Prefer Hardware Codecs** - Better performance, lower power
 4. **Use NV12 Color Format** - Native format for Intel HW
-5. **Target 1080p60** - Optimal for GM AAOS display (2400x960)
+5. **Target 1080p or 2400x960 at 30fps (matches GM CarPlay behavior; 60fps supported by HW)** - Optimal for GM AAOS display (2400x960)
 
 ### Audio Applications
 

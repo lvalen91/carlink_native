@@ -2,19 +2,13 @@
 
 **Purpose:** Technical reference for firmware architecture and internal processing
 **Consolidated from:** carlink_native firmware analysis, binary reverse engineering
-**Last Updated:** 2026-02-18 (deep r2 analysis: dual data path, CarPlay mode state machine, codecs, PBAP, hfpd provenance, AirPlay features, 6 audio channels, media plist format, AdvancedFeatures bitmask mapping, MiddleMan interfaces, config file paths)
+**Last Updated:** 2026-02-19 (Deduplicated: replaced verbatim copies with cross-references to canonical sources; added context labels)
 
 ---
 
 ## Architecture Overview
 
-The CPC200-CCPA operates as an intelligent protocol bridge with severe hardware constraints:
-
-| Resource | Limit | Impact |
-|----------|-------|--------|
-| RAM | 128MB | Limits processing to basic format conversion |
-| Storage | 16MB | Compressed rootfs (~15MB) |
-| CPU | Single-core ARM32 | No complex DSP operations |
+**[Hardware]** The CPC200-CCPA operates as an intelligent protocol bridge with severe hardware constraints. See `01_Firmware_Architecture/hardware_platform.md` for complete hardware specifications and resource constraints.
 
 **Design Philosophy:** "Smart Interface, Dumb Processing" - the adapter handles protocol translation and format conversion, delegating sophisticated processing (WebRTC, noise cancellation) to the host application.
 
@@ -22,7 +16,7 @@ The CPC200-CCPA operates as an intelligent protocol bridge with severe hardware 
 
 ## Dual Data Path Architecture (r2 Analysis Feb 2026)
 
-CarPlay sessions use **two parallel paths** running simultaneously:
+**[Firmware] [CarPlay]** CarPlay sessions use **two parallel paths** running simultaneously:
 
 ```
 iPhone ──── AirPlay Session ────→ AppleCarPlay binary ──→ ARMadb-driver ──→ USB ──→ Host App
@@ -52,7 +46,7 @@ iPhone ──── AirPlay Session ────→ AppleCarPlay binary ──�
 
 ## CarPlay Mode State Machine (r2 Analysis Feb 2026)
 
-From `AirPlayReceiverSessionMakeModeStateFromDictionary`:
+**[CarPlay] [Firmware]** From `AirPlayReceiverSessionMakeModeStateFromDictionary`:
 
 **Mode channels** (from `changeModes` / `modesChanged`):
 
@@ -127,7 +121,7 @@ Log: `Modes changed: screen %s, mainAudio %s, speech %s (%s), phone %s, turns %s
 
 ### Focus Domains
 
-The adapter manages 4 independent focus domains for CarPlay resource control:
+**[CarPlay] [Firmware]** The adapter manages 4 independent focus domains for CarPlay resource control:
 
 | Domain | Purpose |
 |--------|---------|
@@ -184,7 +178,7 @@ String: `kAirPlayProperty_HIDHaptic` — supports haptic feedback relay to iPhon
 
 ## CarPlay Audio Codec Support (r2 Analysis Feb 2026)
 
-Complete codec list from `AppleCarPlay_unpacked`:
+**[CarPlay]** Complete codec list from `AppleCarPlay_unpacked`:
 
 | Format | Variants |
 |--------|----------|
@@ -202,7 +196,7 @@ Format notation: `codec/sampleRate/bitDepth/channels`
 
 > **Full pairing protocol documented in:** `02_Protocol_Reference/wireless_carplay.md`
 
-Binary strings from `AppleCarPlay_unpacked` reveal the internal key derivation labels:
+**[CarPlay]** Binary strings from `AppleCarPlay_unpacked` reveal the internal key derivation labels:
 
 | Key Label | Purpose |
 |-----------|---------|
@@ -223,61 +217,15 @@ Binary strings from `AppleCarPlay_unpacked` reveal the internal key derivation l
 
 ## DMSDP Framework
 
-The Digital Media Streaming DisplayPort (DMSDP) framework is the core protocol implementation.
+**[Firmware]** The Digital Media Streaming DisplayPort (DMSDP) framework is Huawei's distributed multimedia protocol stack (HarmonyOS/OpenHarmony). It provides the core protocol implementation for all projection protocols, handling RTP streaming, session management, crypto, and channel multiplexing.
 
-### Core Libraries
-
-| Library | Size | Purpose |
-|---------|------|---------|
-| libdmsdp.so | 184KB | Core DMSDP protocol stack |
-| libdmsdpcrypto.so | 80KB | Crypto (X25519, AES-GCM, ChaCha20) |
-| libdmsdpaudiohandler.so | 48KB | Audio routing and dispatch |
-| libdmsdpdvaudio.so | 48KB | Digital audio streaming |
-| libdmsdpdvdevice.so | - | Device protocol constants |
-| libdmsdpplatform.so | 242KB | FILLP, crypto, socket management |
-
-### Protocol Initialization (libdmsdp.so)
-
-```cpp
-// Protocol lifecycle
-DMSDPInitial();                          // Initialize DMSDP protocol stack
-DMSDPServiceStart();                     // Start DMSDP services
-DMSDPServiceStop();                      // Stop DMSDP services
-
-// Data transmission
-DMSDPConnectSendData();                  // Send structured data
-DMSDPConnectSendBinaryData();            // Send raw binary data
-DMSDPNetworkSessionSendCrypto();         // Send encrypted data (ChaCha20-Poly1305)
-
-// Session management
-DMSDPDataSessionNewSession();            // Create new data session
-DMSDPDataSessionSendCtrlMsg();           // Send control messages
-
-// RTP streaming
-DMSDPCreateRtpReceiver();                // Create RTP receiver (audio/video)
-DMSDPCreateRtpSender();                  // Create RTP sender
-DMSDPRtpSendPCMPackMaxUnpacket();        // Process PCM audio packets
-
-// Channel management
-DMSDPChannelProtocolCreate();            // Create protocol channel
-DMSDPChannelGetDeviceType();             // Query device type
-DMSDPChannelGetDeviceState();            // Query device state
-DMSDPChannelGetBusinessID();             // Get business identifier
-DMSDPChannelMakeNotifyMsg();             // Create notification message
-DMSDPChannelHandleMsg();                 // Handle incoming message
-DMSDPChannelDealGlbCommand();            // Process global commands
-DMSDPNearbyChannelSendData();            // Send data to nearby channel
-DMSDPNearbyChannelUnPackageRcvData();    // Unpack received data
-
-// Service loading
-DMSDPLoadAudioService();                 // Load audio streaming service
-DMSDPLoadCameraService();                // Load video/camera service
-DMSDPLoadGpsService();                   // Load GPS data service
-```
+See `binary_analysis/key_binaries.md` for complete DMSDP protocol function listing with addresses, core library inventory, and layered architecture details.
 
 ---
 
 ## Audio Processing Internals
+
+**[Firmware]** This section documents the adapter's internal audio processing pipeline — the C++ classes and data flow within the CPC200-CCPA firmware itself (not the host application).
 
 ### MicAudioProcessor Class
 
@@ -389,7 +337,7 @@ AudioConvertor → DMSDP RTP → CarPlay/Android Auto
 
 ## Video Processing Internals (Binary Verified Jan 2026)
 
-**CRITICAL:** Video from CarPlay/Android Auto is **forwarded passthrough** - the adapter does NOT decode, transcode, or re-encode the H.264 stream.
+**[Firmware] [Protocol]** **CRITICAL:** Video from CarPlay/Android Auto is **forwarded passthrough** - the adapter does NOT decode, transcode, or re-encode the H.264 stream.
 
 ### Video Data Flow (Phone → Host)
 
@@ -481,55 +429,13 @@ AudioConvertor → DMSDP RTP → CarPlay/Android Auto
 
 ## Hardware Codec Configuration
 
-### Supported Codecs
-
-| Codec | I2C Address | Purpose |
-|-------|-------------|---------|
-| **WM8960** (Primary) | 0x1a | Full-duplex stereo, high-quality audio |
-| **AC6966** (Alternative) | 0x15 | Bluetooth SCO optimized, voice calls |
-
-### Codec Detection
-
-```bash
-# Detect WM8960
-i2cdetect -y -a 0 0x1a 0x1a | grep "1a" && audioCodec=wm8960
-
-# Detect AC6966
-i2cdetect -y -a 0 0x15 0x15 | grep "15" && audioCodec=ac6966
-```
-
-### Kernel Module Loading
-
-```bash
-insmod /tmp/snd-soc-wm8960.ko
-insmod /tmp/snd-soc-imx-wm8960.ko
-insmod /tmp/snd-soc-bt-sco.ko
-insmod /tmp/snd-soc-imx-btsco.ko
-```
-
-### TinyALSA Mixer Configuration
-
-**WM8960 Playback:**
-```bash
-tinymix 0 60 60        # Master volume L/R (0-255)
-tinymix 2 1 0          # Channel routing
-tinymix 35 180 180     # Mic input boost
-tinymix 4 7            # Output routing
-tinymix 7 3            # Output routing
-tinymix 48 1           # Output enable
-tinymix 50 1           # Output enable
-tinymix 52 1           # Output enable
-```
-
-**Microphone Recording:**
-```bash
-tinymix 8 255 255      # Mic boost maximum
-tinymix 47 63 63       # Additional gain
-```
+**[Hardware]** See `01_Firmware_Architecture/hardware_platform.md` for audio codec hardware details (WM8960/AC6966 detection, kernel modules, TinyALSA mixer configuration).
 
 ---
 
 ## D-Bus Service Integration
+
+**[Firmware]**
 
 ### HFP Daemon Provenance
 
@@ -659,17 +565,7 @@ kRiddleAudioSignal_PHONECALL_Incoming
 
 ## USB Protocol Message Dispatch (ARMadb-driver)
 
-### Key Functions (Binary Analysis - Jan 2026)
-
-| Function | Address | Purpose |
-|----------|---------|---------|
-| `FUN_00017340` | `0x17340` | Generic message sender (21 call sites) |
-| `FUN_00018088` | `0x18088` | Message pre-processor (header validation) |
-| `FUN_00018244` | `0x18244` | Message encryption/decryption handler |
-| `FUN_00018e2c` | `0x18e2c` | Main message dispatcher (type routing) |
-| `FUN_00062e1c` | `0x62e1c` | Message buffer initialization |
-| `FUN_00062f34` | `0x62f34` | Message buffer populate |
-| `FUN_000628a4` | `0x628a4` | Message buffer/send wrapper |
+**[Protocol]** See `binary_analysis/key_binaries.md` for the complete ARMadb-driver key function table with addresses (message sender, pre-processor, dispatcher, buffer init, etc.).
 
 ### Adapter-to-Host Message Senders
 
@@ -697,45 +593,46 @@ kRiddleAudioSignal_PHONECALL_Incoming
 
 ## Service Architecture
 
-### Startup Sequence
+**[Firmware]** See `01_Firmware_Architecture/initialization.md` for complete boot sequence, startup scripts, and service registration.
 
-```bash
-/script/init_audio_codec.sh
-cp /usr/sbin/mdnsd /tmp/bin/; mdnsd
-/script/start_iap2_ncm.sh
-/script/start_ncm.sh
-boxNetworkService &
-```
+### ARMadb-driver Process Architecture (Live Verified Feb 2026)
 
-### Key Processes
+The main `ARMadb-driver` process (PID 199) acts as a supervisor, spawning 3 child processes:
 
-| Process | Purpose |
-|---------|---------|
-| **mdnsd** | CarPlay mDNS discovery (_carplay._tcp) |
-| **boxNetworkService** | Network communication (45KB) |
-| **hfpd** | Bluetooth HFP 1.6 daemon (nohands-derived, custom-encrypted binary) |
-| **ARMAndroidAuto** | Android Auto handler (489KB) |
-| **AppleCarPlay** | Main CarPlay receiver (557KB) |
-| **ARMiPhoneIAP2** | iPhone IAP2 protocol (494KB) |
-| **bluetoothDaemon** | Bluetooth management (396KB) |
+| Child | Function | Role |
+|-------|----------|------|
+| Child 1 | `_usb_monitor_main` | USB hotplug monitoring via libusb |
+| Child 2 | `CMiddleManServer` | IPC broker (Unix datagram socket `/var/run/phonemirror`) |
+| Child 3 | `_hu_link_main` | Head Unit USB accessory link |
+
+Max 30 restarts before full reset. See `key_binaries.md` for MiddleMan IPC protocol details.
+
+### Boot Timing Observations (Live Verified Feb 2026)
+
+> Full boot script listing: `01_Firmware_Architecture/initialization.md`
+
+**[Firmware]** Live-observed startup timing from `/etc/init.d/rcS` + `start_main_service.sh`:
+
+1. **t=0s** — ARMadb-driver starts (PID 199, supervisor for 3 children)
+2. **t=3s** — mdnsd + iAP2/NCM drivers start
+3. **t=7s** — boxNetworkService starts
+4. **t=13s** — Boa web server + WiFi AP start
+
+7 chipset variants supported for BT/WiFi init (RTL8822CS, etc.).
+
+### Web Server (Boa v0.94, Live Verified Feb 2026)
+
+See `01_Firmware_Architecture/web_interface.md` for web server architecture and `03_Security_Analysis/vulnerabilities.md` for unauthenticated api.cgi endpoint analysis.
 
 ### USB Gadget Configuration
 
-```bash
-echo 0 > /sys/class/android_usb/android0/enable
-echo 239 > /sys/class/android_usb/android0/bDeviceClass     # Misc device
-echo 2 > /sys/class/android_usb/android0/bDeviceSubClass
-echo 1 > /sys/class/android_usb/android0/bDeviceProtocol
-echo "Auto Box" > /sys/class/android_usb/android0/iProduct
-echo 08e4 > /sys/class/android_usb/android0/idVendor        # Magic Communication VID
-echo 01c0 > /sys/class/android_usb/android0/idProduct       # Auto Box PID
-echo "iap2,ncm" > /sys/class/android_usb/android0/functions # IAP2 + NCM
-echo 1 > /sys/class/android_usb/android0/enable
-```
+**[Hardware]** See `01_Firmware_Architecture/hardware_platform.md` for USB gadget configuration.
 
 ---
 
 ## Performance Metrics
+
+**[Firmware]**
 
 ### Audio Processing Performance
 
@@ -800,6 +697,8 @@ echo 1 > /sys/class/android_usb/android0/enable
 
 ## RTP Transport Functions
 
+**[Firmware] [Protocol]**
+
 ### DMSDP RTP API
 
 ```cpp
@@ -837,21 +736,9 @@ delete_local_auth_info();
 
 ## iAP2 Protocol Engines (ARMiPhoneIAP2)
 
-> **Complete field catalogs and message dispatch table in:** `binary_analysis/key_binaries.md`
+**[CarPlay]** 9 iAP2 engines run in parallel with AirPlay, parsing structured metadata (Identify, MediaPlayer, CallState, Communication, RouteGuidance, Location, Power, VehicelStat, WiFiConfig).
 
-9 engines run in parallel with AirPlay, parsing structured metadata:
-
-| Engine | Purpose |
-|--------|---------|
-| `CiAP2IdentifyEngine` | Device identification, component registration |
-| `CiAP2MediaPlayerEngine` | NowPlaying: title, artist, album, artwork, duration, playback status |
-| `CiAP2CallStateEngine` | Call state: caller name, number, direction, status, hold/merge flags |
-| `CiAP2CommunicationEngine` | Cellular: signal, carrier, mute, call count, voicemail |
-| `CiAP2RouteGuidanceEngine` | Navigation: NaviJSON (road, maneuver, ETA, distance) |
-| `CiAP2LocationEngine` | GNSS: NMEA passthrough (GPGGA, GPRMC) |
-| `CiAP2PowerEngine` | Battery: charge level, charging state |
-| `CiAP2VehicelStatEngine` | Vehicle: outside temp, range warning |
-| `CiAP2WiFiConfigEngine` | WiFi: SSID, password, channel, P2P mode |
+See `binary_analysis/key_binaries.md` for complete engine class hierarchy, field catalogs, message dispatch table, and data relay architecture.
 
 ---
 
@@ -942,7 +829,7 @@ AudioService::OnMediaStatusChange(MEDIA_STATE);
 
 ## Bluetooth/WiFi Hardware (RTL8822CS)
 
-*Verified via adapter TTY log capture (Jan 2026)*
+**[Hardware]** *Verified via adapter TTY log capture (Jan 2026)*
 
 ### Realtek RTL8822CS Module
 
@@ -1055,7 +942,7 @@ This enables full phonebook synchronization: contacts, call history (missed/rece
 
 ## Bluetooth Link Key Storage
 
-*Directory structure verified via adapter TTY log (Jan 2026)*
+**[Firmware]** *Directory structure verified via adapter TTY log (Jan 2026)*
 
 ### Directory Structure
 
@@ -1133,7 +1020,7 @@ The `DeletedDevList` is a JSON array tracking devices scheduled for removal from
 
 ## LED Status Daemon (colorLightDaemon)
 
-*Runtime states verified via TTY log (Jan 2026)*
+**[Firmware]** *Runtime states verified via TTY log (Jan 2026)*
 
 The CPC200-CCPA has two LEDs: **Red** and **Blue** (not RGB).
 

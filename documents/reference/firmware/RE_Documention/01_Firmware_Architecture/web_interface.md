@@ -290,24 +290,7 @@ When a device is connected, the `infos` response includes real-time session data
 - `DevList` contains both CarPlay and Android Auto paired devices
 - Android Auto entries lack `time` and `rfcomm` fields (no BT profile data)
 
-### Settings Fields (Web UI Configurable)
-
-| Field | Range | Default | Description |
-|-------|-------|---------|-------------|
-| `startDelay` | 0-120 | 0 | Startup delay in seconds |
-| `mediaDelay` | 300-2000 | 1000 | Audio buffer latency (ms) |
-| `autoConn` | 0-1 | 1 | Auto-connect to last device |
-| `wifi5GSwitch` | 0-1 | 1 | Enable 5GHz WiFi |
-| `wifiChannel` | 1-165 | 36 | WiFi channel |
-| `mediaSound` | 0-1 | 1 | Audio quality mode |
-| `CallQuality` | 0-2 | 1 | 0=Normal, 1=Clear, 2=HD |
-| `bitRate` | 0-20 | 0 | Video bitrate hint |
-| `autoPlay` | 0-1 | 0 | Auto-play music on HiCar connect |
-| `backRecording` | 0-1 | 0 | Allow background recording |
-| `naviVolume` | 0-100 | 0 | Navigation volume |
-| `displaySize` | 0-3 | 0 | Icon size mode |
-| `ScreenDPI` | 0-480 | 0 | Screen DPI (0=auto) |
-| `Udisk` | 0-1 | 0 | USB storage mode |
+For complete settings field documentation with firmware hooks, see `web_settings_reference.md`.
 
 ---
 

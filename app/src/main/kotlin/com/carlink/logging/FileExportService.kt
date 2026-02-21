@@ -131,7 +131,10 @@ object FileExportService {
                 logError("[FILE_EXPORT] Stream copy failed for ${file.name}: ${e.message}", tag = TAG, throwable = e)
                 Result.failure(e)
             } catch (e: SecurityException) {
-                logError("[FILE_EXPORT] Permission denied streaming ${file.name}: ${e.message}", tag = TAG, throwable = e)
+                logError(
+                    "[FILE_EXPORT] Permission denied streaming ${file.name}: ${e.message}",
+                    tag = TAG, throwable = e,
+                )
                 Result.failure(e)
             }
         }

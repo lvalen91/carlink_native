@@ -2,7 +2,7 @@
 
 **Purpose:** Security findings from reverse engineering
 **Classification:** Research documentation (authorized security analysis)
-**Last Updated:** 2026-01-19 (Live testing verification added)
+**Last Updated:** 2026-02-19 (Added: api.cgi unauthenticated endpoints, SSH/telnet no-auth, WiFi default passphrase, OTA no-signature, CGI 777 perms, weak entropy)
 
 ---
 
@@ -17,6 +17,13 @@
 | Binary Upload | HIGH | Executables can be uploaded and installed via SendFile + injection - **VERIFIED** |
 | Init Script Modification | HIGH | /etc/init.d/rcS writable, enables persistent backdoors - **VERIFIED** |
 | Shell Execution | HIGH | popen() used with user-controlled parameters |
+| **Unauthenticated Web CGI** | **HIGH** | api.cgi shell script: reboot, factory reset, config dump without auth |
+| **SSH Root No Password** | **CRITICAL** | dropbear SSH with root login, no password required |
+| **Telnet No Auth** | **CRITICAL** | telnetd on port 23 with no authentication |
+| **WiFi Default Passphrase** | **HIGH** | WPA2-PSK default passphrase `12345678` |
+| **OTA No Signature** | **HIGH** | Firmware OTA uses MD5 integrity only, no signature verification |
+| **CGI World-Writable** | **HIGH** | CGI files at `/etc/boa/cgi-bin/` have 777 permissions |
+| **Weak Entropy** | **MEDIUM** | `/dev/random` symlinked to `/dev/urandom` at boot |
 | Debug Commands | MEDIUM | Debug mode exposes log files |
 | Connection Timeout | LOW | Predictable timeout values enable DoS |
 | Expired Certificates | LOW | MFi certificate expired but functional |
@@ -240,15 +247,18 @@ Verify available applets: `busybox --list`
 
 ## 1. Hardcoded Encryption Keys
 
-### USB Encryption Key
+### USB Encryption Keys
 
 | Item | Value |
 |------|-------|
-| **Key** | `W2EC1X1NbZ58TXtn` |
-| **Algorithm** | AES-128-CTR |
-| **Impact** | All adapters share the same key |
+| **Key (SessionToken)** | `W2EC1X1NbZ58TXtn` |
+| **Key (Protocol Payload)** | `SkBRDy3gmrw1ieH0` |
+| **Algorithm** | AES-128-CBC |
+| **Impact** | All adapters share the same keys |
 
-**Location:** Embedded in ARMadb-driver binary
+**Location:** Embedded in ARMadb-driver binary (visible after UPX unpacking)
+
+**Note:** Multiple encryption keys have been identified across firmware versions. Both `W2EC1X1NbZ58TXtn` and `SkBRDy3gmrw1ieH0` may be valid depending on firmware version and context. See `crypto_stack.md` for the complete encryption system analysis.
 
 **Risk:** USB traffic can be decrypted by any party with the key.
 
@@ -498,40 +508,130 @@ dbus-send --system --dest=org.riddle /RiddleBluetoothService \
 
 ---
 
-## 8. Weak WiFi Configuration
+## 8. Weak WiFi Configuration (Live Verified Feb 2026)
 
 ### Default Settings
 
 | Parameter | Value |
 |-----------|-------|
-| **Password** | 8-character default |
+| **Default Passphrase** | `12345678` |
 | **WPA Mode** | WPA2-PSK |
+| **Default SSID** | `carlink` (configurable via BoxSettings) |
 
 ### Risk
 
-Short default passwords may be brute-forced if not changed.
+The default WiFi passphrase `12345678` is trivially guessable. Combined with the unauthenticated api.cgi (see below), anyone within WiFi range can gain administrative control of the adapter.
+
+---
+
+## 8b. SSH/Telnet Root Access — No Authentication (Live Verified Feb 2026)
+
+### Finding
+
+The adapter runs both SSH (dropbear) and telnet daemons at boot with **no password** required for root login:
+
+```bash
+# From /etc/init.d/rcS boot script:
+dropbear                           # SSH on port 22
+/bin/busybox telnetd -l /bin/sh -p 23 &  # Telnet on port 23
+```
+
+### Impact
+
+| Service | Port | Authentication | Access Level |
+|---------|------|---------------|--------------|
+| SSH (dropbear) | 22 | **None** — root login with empty password | Full root shell |
+| Telnet | 23 | **None** — direct `/bin/sh` | Full root shell |
+
+### Risk
+
+Anyone connected to the adapter's WiFi hotspot (default passphrase `12345678`) can immediately obtain a root shell. Combined with the default WiFi passphrase, this provides complete unauthenticated access to the device.
+
+---
+
+## 8c. Unauthenticated Web CGI (api.cgi) — Live Verified Feb 2026
+
+### Finding
+
+The adapter runs Boa web server (v0.94) on port 80 with an **unauthenticated shell script CGI** at `/etc/boa/cgi-bin/api.cgi` (3,421 bytes):
+
+| Endpoint | Action | Auth Required |
+|----------|--------|:---:|
+| `?sysinfo` | JSON: memory, load, uptime, disk, CPU temp/freq, WiFi clients | **No** |
+| `?ttylog` | Download `/tmp/ttyLog` (serial debug log) | **No** |
+| `?dmesg` | Download kernel ring buffer | **No** |
+| `?config` | Download `/etc/riddle.conf` (full device config) | **No** |
+| `?governor_set=X` | Write CPU governor (performance/ondemand) | **No** |
+| `?overcommit_set=X` | Write VM overcommit policy | **No** |
+| `?restore` | **Factory reset** via `riddleBoxCfg --restoreOld` | **No** |
+| `?reboot` | **Reboot device** | **No** |
+
+### Binary CGIs
+
+The `server.cgi` (48,744B) and `upload.cgi` (35,916B) are UPX-packed binaries requiring MD5-HMAC authentication:
+- HMAC key 1: `HweL*@M@JEYUnvPw9G36MVB9X6u@2qxK`
+- HMAC key 2: `Y4HH7BRvY*7!NSGaoMF@sIZ9bz#yNkBT`
+
+### Risk
+
+The api.cgi endpoints provide full administrative control without authentication. An attacker on the WiFi network can factory reset, reboot, or dump the complete device configuration remotely.
+
+---
+
+## 8d. OTA Firmware — No Signature Verification (Binary Verified Feb 2026)
+
+### Finding
+
+From `/script/update_box_ota.sh`:
+
+1. OTA image path: `ARMimg_maker` decodes `.img` → tar.gz → extract to rootfs
+2. HWFS path: `hwfsTools` decodes `.hwfs` files
+3. **No signature verification** at any step — MD5 integrity check only
+4. Final step: `cp -r /tmp/update/* /` — direct rootfs overwrite
+
+### Impact
+
+Anyone who can deliver a firmware file (via USB drive, SendFile 0x99, or WiFi) can deploy arbitrary firmware. Combined with the known encryption key (`AutoPlay9uPT4n17` for A15W), this allows creation and deployment of fully custom firmware.
+
+---
+
+## 8e. CGI Files World-Writable (Live Verified Feb 2026)
+
+### Finding
+
+CGI files at `/etc/boa/cgi-bin/` have permissions `777` (world-readable, -writable, -executable).
+
+### Risk
+
+If an attacker gains any write access (via SendFile, injection, or SSH), they can replace CGI scripts with malicious versions that persist across reboots.
+
+---
+
+## 8f. Weak Entropy Source (Live Verified Feb 2026)
+
+### Finding
+
+Boot script replaces `/dev/random` with a symlink to `/dev/urandom`:
+
+```bash
+# From boot script
+rm -f /dev/random
+ln -s /dev/urandom /dev/random
+```
+
+### Risk
+
+All cryptographic operations using `/dev/random` (e.g., key generation, nonces) receive non-blocking pseudo-random data instead of hardware entropy. On an embedded device with limited entropy sources, this weakens cryptographic security.
 
 ---
 
 ## 9. Connection Timeout Mechanism (DoS Vector)
 
-### Timeout Constants (from binary at 0x21112)
-
-| Timeout | Value | Hex | Effect |
-|---------|-------|-----|--------|
-| **Host No Response** | 15,000 ms | `0x3a98` | Connection reset |
-| **Send to Host** | 4,500 ms | `0x1194` | Connection reset |
-
-### Firmware Behavior
-
-The firmware implements a connection supervision watchdog:
-- If no heartbeat (0xAA) received within **15 seconds**, logs: `"Host No Response, we will reset connection!!!"`
-- If USB send fails for **4.5 seconds**, logs: `"Send to Host timeout, we will reset connection!!!"`
-- Connection is forcibly reset in both cases
+See `01_Firmware_Architecture/heartbeat_analysis.md` for complete heartbeat timing analysis including timeout constants and firmware behavior.
 
 ### DoS Risk
 
-An attacker with USB access could:
+The 15,000ms firmware heartbeat timeout creates a DoS vector. An attacker with USB access could:
 1. Send initial connection messages to establish session
 2. Stop sending heartbeats
 3. Firmware resets connection after 15 seconds

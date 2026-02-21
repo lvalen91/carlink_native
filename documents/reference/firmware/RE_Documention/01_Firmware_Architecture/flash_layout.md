@@ -59,30 +59,13 @@ norboot=echo Booting from nor flash ...;run norargs;sf probe 0;sf read 0x8080000
 
 ## Kernel Analysis (mtd1.bin)
 
-### Encryption Status
-
-**The kernel is encrypted with a different key than firmware images.**
-
 | Property | Value |
 |----------|-------|
+| Location | mtd1 (/dev/mtd1) |
 | Size | 3,407,872 bytes (3.3MB) |
-| Encryption | Unknown (NOT AES-128-CBC with `AutoPlay9uPT4n17`) |
-| Compression | Unknown (possibly gzip after decryption) |
+| Flash Offset | 0x40000 (256KB from start) |
 
-### Decryption Attempts
-
-| Key Tried | Result |
-|-----------|--------|
-| `AutoPlay9uPT4n17` (firmware key) | Failed - invalid output |
-| `W2EC1X1NbZ58TXtn` (USB key) | Not tested |
-
-### U-Boot Decryption Flow
-
-From U-Boot strings, the `do_decrypt_decompress` function:
-1. Receives encrypted kernel image
-2. Uses key from `UPGkey` parameter
-3. Decrypts and decompresses to RAM
-4. Validates result
+The kernel is encrypted with a different key than firmware images. For kernel encryption analysis, see `03_Security_Analysis/kernel_encryption.md`.
 
 ### Running Kernel Info
 

@@ -138,3 +138,6 @@
 [72] :: Stale Nav Icons and Name fix test
 [73] :: Duplicate trip code. Location access and forwarding to CPC200-CCPA adapter. Set needed firmware settings via command injection
 [74] :: Log code cleanup. Curved Display in Widescreen SafeArea Code Testing. OS Sets cutout bounds, app calculates padding for SafeArea if user selects a non-default DisplayMode in App Settings (hide status or immersive).
+[75] :: Attempt Pre-stage of MediaCodec with cached decoder values from previous session. Split first [SPS+PPS]+IDR Keyframe to prevent first corrupted appearance. Bundled KeyFrame caused corrupted IDR rendering. Audio underun fix testing.
+[76] :: Extra logging for inbound messages (cataloging). UI reorganization (I tried) and new Adapter Reboot button. (Actual reboot. Different from connection Reset)
+[77] :: Phase 0 state-gate fix, code cleanup. Phase 13 stop = iPhone Rejected CarPlay Config. Graceful Session closure on User changes to Adapter Config and App restart. Closure = Save new adapter values > Send Disconnect Phone CMD > Send Reboot Command > Close App. Rebooting the adapter not just reset/refresh.

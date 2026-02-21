@@ -220,7 +220,10 @@ class UsbDeviceWrapper(
         connection = null
         _isOpened.set(false)
 
-        log("Device closed (sent: ${sendCount.get()}/${bytesSent.get()} bytes, received: ${receiveCount.get()}/${bytesReceived.get()} bytes)")
+        log(
+            "Device closed (sent: ${sendCount.get()}/${bytesSent.get()} bytes, " +
+                "received: ${receiveCount.get()}/${bytesReceived.get()} bytes)"
+        )
     }
 
     /**
@@ -388,6 +391,13 @@ class UsbDeviceWrapper(
             // Pre-allocate chunk buffer for non-video message reads (audio, commands, etc.)
             val chunkBuffer = ByteArray(16384)
 
+            // Consecutive-timeout detection: if we were receiving data and then get
+            // MAX_CONSECUTIVE_TIMEOUTS in a row, the adapter has gone silent (disconnected
+            // or stalled). Report as error so auto-reconnect can kick in.
+            var hasReceivedData = false
+            var consecutiveTimeouts = 0
+            val maxConsecutiveTimeouts = 2 // 2 × 30s timeout = 60s of silence
+
             try {
                 while (_isReadingLoopActive.get() && _isOpened.get()) {
                     // Read header
@@ -395,13 +405,26 @@ class UsbDeviceWrapper(
                     if (headerResult != 16) {
                         if (_isReadingLoopActive.get()) {
                             if (headerResult == -1) {
-                                // Timeout - continue loop
+                                // Timeout — check if adapter has gone silent
+                                if (hasReceivedData) {
+                                    consecutiveTimeouts++
+                                    if (consecutiveTimeouts >= maxConsecutiveTimeouts) {
+                                        log("Adapter silent: $consecutiveTimeouts consecutive timeouts " +
+                                            "(${consecutiveTimeouts * timeout / 1000}s) after data was flowing")
+                                        callback.onError("USB read timeout — adapter not responding")
+                                        break
+                                    }
+                                }
                                 continue
                             }
                             log("Incomplete header read: $headerResult bytes")
                         }
                         continue
                     }
+
+                    // Successful header read — reset timeout counter
+                    consecutiveTimeouts = 0
+                    hasReceivedData = true
 
                     // Parse header
                     val header =
@@ -419,8 +442,9 @@ class UsbDeviceWrapper(
                         continue
                     }
 
-                    // Handle VIDEO_DATA with direct handoff to codec
-                    if (header.type == com.carlink.protocol.MessageType.VIDEO_DATA &&
+                    // Handle VIDEO_DATA and NAVI_VIDEO_DATA with direct handoff to codec
+                    if ((header.type == com.carlink.protocol.MessageType.VIDEO_DATA ||
+                            header.type == com.carlink.protocol.MessageType.NAVI_VIDEO_DATA) &&
                         header.length > 0 && videoProcessor != null
                     ) {
                         val conn = connection
@@ -453,7 +477,8 @@ class UsbDeviceWrapper(
                                         receiveCount.incrementAndGet()
                                     } else if (chunkRead <= 0) {
                                         logDebug(
-                                            "[VIDEO_READ] Read failed: attempts=$readAttempts, got=$totalRead/${header.length}, lastResult=$chunkRead",
+                                            "[VIDEO_READ] Read failed: attempts=$readAttempts, " +
+                                                "got=$totalRead/${header.length}, lastResult=$chunkRead",
                                             tag = Logger.Tags.VIDEO_USB
                                         )
                                         break
@@ -471,12 +496,12 @@ class UsbDeviceWrapper(
                                     0
                                 }
 
-                                // Process video if we got data (don't skip even on partial read)
-                                if (totalRead > 0) {
+                                if (totalRead == header.length) {
                                     videoProcessor.processVideoDirect(videoBuffer, totalRead, sourcePts)
                                 } else {
                                     logDebug(
-                                        "[VIDEO_READ] No data read - frame skipped: attempts=$readAttempts, lastResult=$lastChunkResult",
+                                        "[VIDEO_READ] Partial frame dropped: got=$totalRead/${header.length} " +
+                                            "attempts=$readAttempts, lastResult=$lastChunkResult",
                                         tag = Logger.Tags.VIDEO_USB
                                     )
                                 }
@@ -563,19 +588,6 @@ class UsbDeviceWrapper(
         }
         readLoopThread = null
     }
-
-    /**
-     * Get performance statistics.
-     */
-    fun getPerformanceStats(): Map<String, Any> =
-        mapOf(
-            "bytesSent" to bytesSent.get(),
-            "bytesReceived" to bytesReceived.get(),
-            "sendCount" to sendCount.get(),
-            "receiveCount" to receiveCount.get(),
-            "sendErrors" to sendErrors.get(),
-            "receiveErrors" to receiveErrors.get(),
-        )
 
     // ==================== Private Methods ====================
 

@@ -66,7 +66,7 @@ enum class CommandMapping(
 
     // === Basic Commands (1-31) ===
 
-    // Microphone Recording (H→A→P)
+    // Microphone Recording (H→A→P, adapter echoes back A→H during Siri/call — same semantics)
     START_RECORD_AUDIO(1),  // StartRecordMic - Begin mic recording
     STOP_RECORD_AUDIO(2),   // StopRecordMic - Stop mic recording
 
@@ -81,7 +81,7 @@ enum class CommandMapping(
     SIRI(5),                // SiriButtonDown - Siri button pressed (initiates Siri)
     SIRI_BUTTON_UP(6),      // SiriButtonUp - Siri button released
 
-    // Microphone Source Selection (H→A)
+    // Microphone Source Selection (H→A, adapter echoes back A→H as confirmation)
     MIC(7),                 // UseCarMic - Use car's microphone
     USE_BOX_MIC(8),         // UseBoxMic - Use adapter's built-in microphone
     BOX_MIC(15),            // UseBoxI2SMic - Use adapter's I2S microphone
@@ -165,11 +165,17 @@ enum class CommandMapping(
     REQUEST_NAVI_FOCUS(506),        // RequestNaviFocus (A→H) - Request navigation audio focus
     RELEASE_NAVI_FOCUS(507),        // ReleaseNaviFocus (A→H) - Release navigation focus
 
+    // === Navigation Video Handshake (508-509) - Asymmetric: adapter requests, host MUST echo back ===
+    REQUEST_NAVI_SCREEN_FOCUS(508), // RequestNaviScreenFocus (A→H, host echoes H→A) - Triggers HU_NEEDNAVI_STREAM, enables nav video (0x2C)
+    RELEASE_NAVI_SCREEN_FOCUS(509), // ReleaseNaviScreenFocus (A→H, host echoes H→A) - Stops nav video streaming
+
     // === Connection Status Commands (1000-1013) ===
 
+    // Bidirectional — host sends to configure, adapter echoes back as status (A→H)
+    WIFI_ENABLE(1000),          // SupportWifi (A→H) - Adapter confirms WiFi mode supported
+    AUTO_CONNECT_ENABLE(1001),  // SupportAutoConnect (A→H) - Adapter confirms auto-connect enabled
+
     // Host → Adapter
-    WIFI_ENABLE(1000),          // SupportWifi - Enable WiFi mode
-    AUTO_CONNECT_ENABLE(1001),  // SupportAutoConnect - Enable auto-connect
     WIFI_CONNECT(1002),         // StartAutoConnect - Start auto-connect scan
     WIFI_PAIR(1012),            // WiFiPair - Enter WiFi pairing mode
     GET_BT_ONLINE_LIST(1013),   // GetBluetoothOnlineList - Request BT device list
@@ -235,12 +241,12 @@ enum class MessageType(
     BOX_SETTINGS(0x19),
     SEND_FILE(0x99),
 
-    // Peer Device Info
+    // Peer Device / Bluetooth State (A→H)
     HI_CAR_LINK(0x18),
-    PEER_BLUETOOTH_ADDRESS(0x23),
-    PEER_BLUETOOTH_ADDRESS_ALT(0x24),
-    UI_HIDE_PEER_INFO(0x25),
-    UI_BRING_TO_FOREGROUND(0x26),
+    PEER_BLUETOOTH_ADDRESS(0x23),       // Binary: Bluetooth_ConnectStart — BT connection started, carries peer MAC
+    PEER_BLUETOOTH_ADDRESS_ALT(0x24),   // Binary: Bluetooth_Connected — BT connected, carries peer MAC
+    UI_HIDE_PEER_INFO(0x25),            // Binary: Bluetooth_DisConnect — BT disconnected / hide peer info
+    UI_BRING_TO_FOREGROUND(0x26),       // Binary: Bluetooth_Listen — BT listening/advertising / bring to foreground
 
     // GPS/GNSS
     GNSS_DATA(0x29),            // NMEA GPS data to adapter (H→A)
@@ -255,10 +261,21 @@ enum class MessageType(
     NAVI_FOCUS_REQUEST(0x6E), // Nav requesting focus (IN)
     NAVI_FOCUS_RELEASE(0x6F), // Nav released focus (IN)
 
-    // Newly Identified (Firmware Binary Analysis - Jan 2026)
-    REMOTE_CX_CY(0x1E), // Display resolution broadcast from adapter
-    EXTENDED_MFG_INFO(0xA1), // Extended OEM/manufacturer data
-    REMOTE_DISPLAY(0xF0), // Remote display parameters
+    // Additional Adapter→Host Messages (Firmware Binary Analysis)
+    CARPLAY_CONTROL(0x0B),       // CMD_ACK / CarPlay control acknowledgment
+    DASHBOARD_DATA(0x10),        // Dashboard/instrument cluster data (DashBoard_DATA)
+    WIFI_STATUS_DATA(0x11),      // WiFi status information
+    DISK_INFO(0x13),             // Adapter disk/storage information
+    DEVICE_EXTENDED_INFO(0x1B),  // Extended device information
+    REMOTE_CX_CY(0x1E),         // Display resolution broadcast from adapter
+    EXTENDED_MFG_INFO(0xA1),     // Extended OEM/manufacturer data
+    FACTORY_SETTING(0x77),       // Factory setting idle notification (A→H: empty) / factory reset (H→A: 4B)
+    ADAPTER_IDLE(0x88),          // Adapter idle state notification
+    HEARTBEAT_ECHO(0xCD),       // Heartbeat acknowledgment from adapter (every 2s)
+    ERROR_REPORT(0xCE),          // Error report from adapter
+    REMOTE_DISPLAY(0xF0),        // Remote display parameters / CMD_ENABLE_CRYPT
+    UPDATE_PROGRESS(0xFD),       // Firmware update progress
+    DEBUG_TRACE(0xFF),           // Debug/trace data from adapter
 
     UNKNOWN(-1),
     ;
@@ -459,6 +476,8 @@ data class AdapterConfig(
     val androidWorkMode: Boolean = true,
     /** Hand drive mode: 0 = LHD (dock left, US/EU default), 1 = RHD (dock right, UK/JP/AU) */
     val handDriveMode: Int = 0,
+    /** GPS forwarding: true = forward vehicle GPS to CarPlay (GNSSCapability=3), false = disabled (GNSSCapability=0) */
+    val gpsForwarding: Boolean = false,
     val icon120Data: ByteArray? = null,
     val icon180Data: ByteArray? = null,
     val icon256Data: ByteArray? = null,
@@ -509,6 +528,8 @@ data class AdapterConfig(
 data class MessageHeader(
     val length: Int,
     val type: MessageType,
+    /** Raw type integer from the USB header — preserved even when type maps to UNKNOWN */
+    val rawType: Int = type.id,
 ) {
     override fun toString(): String = "MessageHeader(length=$length, type=${type.name})"
 }

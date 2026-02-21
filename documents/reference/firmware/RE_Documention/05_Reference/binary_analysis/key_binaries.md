@@ -2,7 +2,7 @@
 
 **Purpose:** Reference for firmware binary analysis
 **Consolidated from:** GM_research, pi-carplay firmware extraction
-**Last Updated:** 2026-02-18 (deep r2 analysis: 9 iAP2 engine field catalogs, 60+ message dispatch table, shared library architecture, 13 link types, ARMAndroidAuto LZMA packing, D-Bus signals, LocationEngine/GNSS gating)
+**Last Updated:** 2026-02-19 (Added: process architecture, MiddleMan IPC protocol, outbound send pipeline, 7 MiddleMan interfaces)
 
 ---
 
@@ -183,6 +183,63 @@ All main binaries are UPX-packed with a custom variant. To unpack:
 
 ---
 
+## ARMadb-driver Process Architecture (Live Verified Feb 2026)
+
+**Supervisor model**: `main()` spawns 3 child processes in a supervisor loop. Max 30 restarts before full reset.
+
+| PID (example) | Process/Thread | Stack Size | Role |
+|---------------|----------------|------------|------|
+| 199 | ARMadb-driver (parent) | 43KB | USB host protocol + MiddleMan IPC server |
+| 199 child 1 | `_usb_monitor_main` | — | USB hotplug monitoring via libusb |
+| 199 child 2 | `CMiddleManServer` | 16KB | IPC broker (Unix socket `/var/run/phonemirror`) |
+| 199 child 3 | `_hu_link_main` | 8KB | Head Unit USB accessory link |
+
+### MiddleMan IPC Protocol (Binary Verified Feb 2026)
+
+**Uses the same 16-byte header format as the USB protocol!**
+
+| Property | Value |
+|----------|-------|
+| Socket paths | `/var/run/phonemirror`, `/var/run/adb-driver` |
+| Runtime sockets | `/tmp/unix_udp_pid_{PID}_tid_{TID}` (Unix datagram) |
+| Header format | `[magic 0x55AA55AA][length][type][check=~type]` — identical to USB |
+| Registration | Type `0xF1` for IPC registration/keepalive (proved at `0x64326`: `movs r1, 0xF1`) |
+| Live count | ~649 unix_udp sockets accumulated during active session |
+
+### MiddleMan Interfaces
+
+| Interface Class | Binary | Link Type |
+|----------------|--------|-----------|
+| `CCarPlay_MiddleManInterface` | AppleCarPlay | CarPlay |
+| `CiOS_MiddleManInterface` | AppleCarPlay / ARMiPhoneIAP2 | iOS |
+| `CAndroidAuto_MiddleManInterface` | ARMAndroidAuto | Android Auto |
+| `CHiCar_MiddleManInterface` | ARMHiCar | HiCar |
+| `CAndroidMirror_MiddleManInterface` | ARMandroid_Mirror | Mirroring |
+| `CDVR_MiddleManInterface` | (no hardware) | DVR |
+| `CICCOA_MiddleManInterface` | iccoa | ICCOA |
+
+### Outbound Message Send Pipeline (Binary Verified Feb 2026)
+
+Full send pipeline traced from ARMadb-driver function addresses:
+
+```
+initHeader(0x64650) → prepareMessage(0x64670) → buildPayload(0x64768)
+→ sendMessage(0x18598) → normalizeHeader(0x64630) → writeToFd(0x64C70)
+```
+
+| Function | Address | Role |
+|----------|---------|------|
+| `fcn.00064650` | 0x64650 | Init 36-byte msg struct with 0x55AA55AA magic |
+| `fcn.00064670` | 0x64670 | Set type, malloc payload buffer (+0xC0 pad, 0x60 header offset) |
+| `fcn.000646fa` | 0x646FA | Finalize wrapper (trampoline to 0x64670) |
+| `fcn.00064768` | 0x64768 | Build payload: set type, data ptr, length |
+| `fcn.00018598` | 0x18598 | Main send: log, encrypt check, write to USB fd |
+| `fcn.00064630` | 0x64630 | Normalize header: BB→AA magic, recompute check=~type |
+| `fcn.00064c70` | 0x64C70 | Write to fd: header + payload via write() loop |
+| `fcn.00064808` | 0x64808 | Encryption layer (memcpy through AES encrypt) |
+
+---
+
 ## Key Functions (ARMadb-driver)
 
 | Function | Address | Purpose |
@@ -194,6 +251,7 @@ All main binaries are UPX-packed with a custom variant. To unpack:
 | FUN_00062f34 | 0x62f34 | Message buffer populate |
 | FUN_00017340 | 0x17340 | Message sender |
 | FUN_00018088 | 0x18088 | Message pre-processor |
+| FUN_000628a4 | 0x628a4 | Message buffer/send wrapper |
 | FUN_00065178 | 0x65178 | JSON field extractor |
 
 ### Video-Related Strings (ARMadb-driver)
@@ -259,11 +317,7 @@ The firmware uses `popen()` with `/bin/sh` to execute shell commands. Many accep
 | `sed -i "s/^.*oemIconLabel = .*/oemIconLabel = %s/" %s` | oemIconLabel config | **CRITICAL** |
 | `echo -n %s > /etc/box_product_type` | BoxSettings | MEDIUM |
 
-**Exploitation:** Shell metacharacters (`"`, `;`, `$()`) in wifiName/btName break out of the sed command and execute arbitrary commands as root. Example:
-```
-wifiName = "a\"; /usr/sbin/riddleBoxCfg -s AdvancedFeatures 1; echo \""
-```
-This executes `riddleBoxCfg` immediately. See `03_Security_Analysis/vulnerabilities.md` for full details.
+For complete vulnerability analysis and exploitation details, see `03_Security_Analysis/vulnerabilities.md`.
 
 ### Hardcoded Shell Commands (50+ found)
 
@@ -326,6 +380,8 @@ DMSDPRtpSendPCMPackMaxUnpacket()
 DMSDPChannelProtocolCreate()
 DMSDPChannelGetDeviceType()
 DMSDPChannelGetDeviceState()
+DMSDPChannelGetBusinessID()             // Get business identifier
+DMSDPChannelMakeNotifyMsg()             // Create notification message
 DMSDPChannelHandleMsg()
 DMSDPChannelDealGlbCommand()
 DMSDPNearbyChannelSendData()

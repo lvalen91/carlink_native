@@ -148,28 +148,7 @@ BoxSettings is bidirectional and contains the richest device information.
 }
 ```
 
-### Field Reference
-
-| Field | Description | Source |
-|-------|-------------|--------|
-| `uuid` | Adapter unique identifier (32 hex chars) | Adapter |
-| `MFD` | Manufacturing date (YYYYMMDD) | Adapter |
-| `boxType` | Box type code | Adapter |
-| `OemName` | OEM/brand name | Adapter config |
-| `productType` | Product model (A15W, U2W, etc.) | Adapter |
-| `HiCar` | HiCar support flag (0/1) | Adapter |
-| `supportLinkType` | Comma-separated supported link types | Adapter |
-| `supportFeatures` | Comma-separated feature flags | Adapter |
-| `hwVersion` | Hardware revision string | Adapter |
-| `WiFiChannel` | Current WiFi channel | Adapter |
-| `DevList` | Array of previously paired devices | Adapter |
-| `ChannelList` | Available WiFi channels | Adapter |
-| `MDLinkType` | Active link type (CarPlay/AndroidAuto/HiCar) | Phone |
-| `MDModel` | Phone model identifier | Phone |
-| `MDOSVersion` | Phone OS build version | Phone |
-| `MDLinkVersion` | CarPlay/AA protocol version | Phone |
-| `btName` | Phone Bluetooth name | Phone |
-| `cpuTemp` | **Adapter** CPU temperature (°C) | Adapter |
+For complete BoxSettings field documentation, see `01_Firmware_Architecture/configuration.md` > BoxSettings JSON Mapping.
 
 ### cpuTemp Source (Binary Verified)
 

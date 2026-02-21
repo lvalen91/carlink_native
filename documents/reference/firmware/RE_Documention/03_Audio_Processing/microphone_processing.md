@@ -1,8 +1,10 @@
 # CPC200-CCPA Microphone Processing
 
+> **[Firmware Pipeline]** This document covers the internal microphone processing pipeline within the CPC200-CCPA adapter firmware (WebRTC, I2S, format conversion). For the USB wire format and audio command protocol, see `../02_Protocol_Reference/audio_protocol.md`. For binary-level audio format analysis, see `audio_formats.md`. Microphone capture specs apply to both CarPlay and Android Auto.
+
 **Status:** VERIFIED via binary analysis
 **Consolidated from:** carlink_native firmware research
-**Last Updated:** 2026-01-19
+**Last Updated:** 2026-02-19
 
 ---
 
@@ -130,7 +132,7 @@ enum MicrophoneAudioTypes {
 ```json
 {
     "micGain": 0,           // External mic gain (app-controlled)
-    "micType": 0,           // External/USB microphone
+    "micType": 0,           // External/USB microphone (see audio_formats.md for full MicType command IDs)
     "VrPacketLen": 200,     // Voice recognition packet length
     "VrVolumGain": 0,       // Voice volume gain
     "backRecording": 0,     // Background recording capability
@@ -243,15 +245,9 @@ AudioService::OnMediaStatusChange(MEDIA_STATE);
 
 ## WebRTC AECM Requirements
 
-**CRITICAL (Binary Verified at 0x2dfa2):** The firmware WebRTC AECM module **only accepts 8kHz or 16kHz** for microphone input.
+**CRITICAL:** Microphone audio must be 8kHz or 16kHz -- the firmware's WebRTC AECM module at `0x2dfa2` rejects other sample rates, causing initialization failure (silent mic or session termination). This requirement applies to both CarPlay and Android Auto.
 
-| Sample Rate | Support |
-|-------------|---------|
-| 8000 Hz | Supported (narrowband voice) |
-| 16000 Hz | Supported (wideband voice) |
-| Other | **REJECTED** - WebRTC initialization fails |
-
-**FAILURE MODE:** Using any sample rate other than 8kHz or 16kHz for microphone input will cause WebRTC AECM initialization to fail. This is a **HARD REQUIREMENT** - the firmware will reject the audio and may cause session termination or silent mic failure. Host applications MUST capture microphone audio at 8kHz or 16kHz only.
+See `audio_formats.md` (WebRTC Audio Processing > Supported Sample Rates) for the complete binary analysis with ARM assembly evidence.
 
 ---
 

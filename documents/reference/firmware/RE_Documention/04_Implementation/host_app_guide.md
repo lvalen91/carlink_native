@@ -467,19 +467,7 @@ fun sendInitWithInjection() {
 }
 ```
 
-#### Supported Fields
-
-| Category | Fields |
-|----------|--------|
-| **Core** | `mediaDelay`, `syncTime`, `autoConn`, `autoPlay`, `autoDisplay`, `bgMode`, `startDelay`, `syncMode`, `lang` |
-| **Display** | `androidAutoSizeW`, `androidAutoSizeH`, `screenPhysicalW`, `screenPhysicalH`, `drivePosition` |
-| **Audio** | `mediaSound`, `mediaVol`, `navVol`, `callVol`, `ringVol`, `speechVol`, `otherVol`, `echoDelay`, `callQuality` |
-| **Network** | `wifiName`⚠️, `wifiFormat`, `WiFiChannel`, `btName`⚠️, `btFormat`, `boxName`, `iAP2TransMode` |
-| **Branding** | `oemName`, `productType`, `lightType` |
-| **Navigation** | `naviScreenInfo` (nested: `width`, `height`, `fps`) |
-| **Android Auto** | `androidWorkMode` |
-
-See `02_Protocol_Reference/usb_protocol.md` for complete field documentation.
+See `02_Protocol_Reference/usb_protocol.md` for complete BoxSettings field documentation.
 
 ```kotlin
 fun sendBoxSettings() {
@@ -513,7 +501,8 @@ fun sendBoxSettings() {
         put("btName", "carlink")      // ⚠️ CMD INJECTION RISK
         put("boxName", "carlink")
 
-        // For iOS 13+ navigation video (requires AdvancedFeatures=3 in riddle.conf, or bypassed by naviScreenInfo)
+        // For iOS 13+ navigation video — sending naviScreenInfo is all that's needed
+        // (AdvancedFeatures=1 is NOT required when naviScreenInfo is provided)
         put("naviScreenInfo", JSONObject().apply {
             put("width", 480)
             put("height", 272)
@@ -639,27 +628,21 @@ See `03_Security_Analysis/vulnerabilities.md` for complete security implications
 
 ### Navigation Video Setup (iOS 13+)
 
-To enable CarPlay Dashboard/navigation video:
+Include `naviScreenInfo` in BoxSettings to activate navigation video (type 0x2C). `AdvancedFeatures=1` is NOT required when `naviScreenInfo` is provided. See `02_Protocol_Reference/video_protocol.md` for complete firmware analysis of the navigation video activation path.
 
-1. **One-time setup** (via SSH or first connection):
-   ```bash
-   riddleBoxCfg -s AdvancedFeatures 1    # Bitmask: bit 0=naviScreen, bit 1=viewArea
-   riddleBoxCfg --upConfig
-   ```
-   **Note:** Only enable when your host app handles NaviVideoData (Type 0x2C). This causes a second H.264 video stream that increases USB bandwidth and processing load.
+**Note:** Only include `naviScreenInfo` when your host app handles NaviVideoData (Type 0x2C). This causes a second H.264 video stream that increases USB bandwidth and processing load.
 
-2. **Include naviScreenInfo in BoxSettings** (see BoxSettings JSON above)
-
-3. **Handle Command 508 handshake**:
+1. **Optionally handle Command 508**:
    ```kotlin
-   // When receiving Command 508 from adapter
+   // When receiving Command 508 from adapter — echo it back (recommended precaution)
+   // Testing was INCONCLUSIVE on whether this is strictly required.
+   // The pi-carplay reference implementation does echo 508 back.
    if (commandId == 508) {
-       // MUST respond with 508 back to enable navigation video
        send(Command: 0x08, payload = 508)
    }
    ```
 
-4. **Handle NaviVideoData (Type 0x2C)**:
+2. **Handle NaviVideoData (Type 0x2C)**:
    ```kotlin
    // Navigation video uses SAME header structure as main video (20-byte header)
    if (msg_type == 0x2C) {
@@ -889,74 +872,9 @@ fun sendVehicleHeading(degrees: Float) {
 }
 ```
 
-### GPS Data Flow (End-to-End, Live Verified Feb 2026)
+### GPS Data Flow and iPhone Fusion Behavior
 
-```
-Host App                        Adapter                           iPhone
-────────                        ───────                           ──────
-LocationManager                 ARMadb-driver                     accessoryd
-  → NMEA format                   → type 0x29 handler               → iAP2 LocationInformation
-  → USB type 0x29  ──────────▶    → strstr("$GPGGA")                → sends NMEA to locationd
-     (1 Hz)                       → write HU_GPS_DATA             locationd
-                                  → forward as 0x22  ──▶            → ExternalAccessory notification
-                                ARMiPhoneIAP2                       → "Realtime" subHarvester
-                                  → CiAP2LocationEngine             → accessory-meta (NOT position)
-                                  → NMEA → iAP2 convert             → CL-fusion engine
-                                  → LocationInformation  ──▶          → best-accuracy-wins
-                                     (msg_id=0xFFFB)                  → numHypothesis evaluation
-                                                                      → final position output
-```
-
-**Pull-based model:** The iPhone initiates GPS by sending `StartLocationInformation` (0xFFFA) during iAP2 session setup. The adapter only sends `LocationInformation` after receiving this request. If `GNSSCapability=0`, the adapter never advertises location capability, so the iPhone never requests it.
-
-### iPhone GPS Fusion Behavior (Live Tested Feb 2026)
-
-**Critical finding:** The iPhone does NOT blindly use vehicle GPS. It applies a **best-accuracy-wins fusion model** via CoreLocation's `CL-fusion` engine. Understanding this is essential for setting expectations about GPS forwarding effectiveness.
-
-#### How It Works
-
-1. **`accessoryd`** receives iAP2 `LocationInformation` packets and forwards NMEA to `locationd`
-2. **`locationd`** processes NMEA via `EAAccessoryDidReceiveNMEASentenceNotification`
-3. NMEA data enters the **"Realtime" subHarvester** as **accessory metadata** — NOT as a competing position source
-4. The **`CL-fusion`** engine evaluates all available position hypotheses and picks the best one
-
-#### Observed Behavior (iPhone syslog via idevicesyslog)
-
-```
-accessoryd: [#Location] sending nmea sentence to location client com.apple.locationd
-locationd:  [#Location] send EAAccessoryDidReceiveNMEASentenceNotification
-locationd:  A,NMEA:<private>
-locationd:  #fusion inputLoc,...,GPS,...,Accuracy 4.7,...,in vehicle frozen
-locationd:  CL-fusion,...,Accuracy,7.276,Type,1,GPS,...,isPassthrough,1,numHypothesis,1
-```
-
-**Key observations:**
-- `numHypothesis,1` — Only one position hypothesis active (iPhone's own GPS)
-- `isPassthrough,1` — Fusion is just passing through the phone's GPS, not blending
-- `Type,1,GPS` — Position source is iPhone's GPS chipset
-- `in vehicle frozen` — iPhone detected vehicle dynamics mode
-- Vehicle NMEA treated as metadata, not a competing hypothesis
-
-#### When Vehicle GPS Wins
-
-Vehicle GPS is most likely to be used when the iPhone's own GPS is **degraded or unavailable**:
-
-| Scenario | iPhone GPS | Vehicle GPS Wins? |
-|----------|-----------|-------------------|
-| Phone in open dash mount | Good (3-5m) | **No** — phone GPS wins |
-| Phone in pocket/bag | Degraded (10-50m+) | **Likely** — vehicle GPS may have better accuracy |
-| Phone in metal console | Very degraded | **Yes** — vehicle GPS likely wins |
-| Wireless CarPlay (phone anywhere) | Varies | **Most common use case** for vehicle GPS |
-| Tunnel/parking garage | No signal | **Yes** — vehicle GPS is only source |
-| Phone GPS cold start | Acquiring | **Yes** — vehicle GPS available immediately |
-
-#### Practical Implications
-
-1. **Don't expect immediate override** — If the iPhone has good GPS signal, it will prefer its own position
-2. **Wireless CarPlay is the primary use case** — Phone in pocket/bag means degraded GPS, making vehicle GPS valuable
-3. **Accuracy matters** — Format NMEA with realistic HDOP/satellite counts; unrealistic values may be filtered
-4. **1 Hz is sufficient** — iPhone fusion engine handles interpolation; higher rates add no benefit
-5. **GPS forwarding is still valuable** — Even when not the primary position source, vehicle GPS improves fusion confidence and provides faster initial fix
+The iPhone does NOT blindly use vehicle GPS -- it applies a **best-accuracy-wins fusion model** via CoreLocation's `CL-fusion` engine. Vehicle GPS is most valuable when the iPhone's own GPS is degraded (phone in pocket/bag, metal console, tunnels) or during cold start. See `02_Protocol_Reference/usb_protocol.md` > GnssData (0x29) for the complete iPhone GPS fusion analysis, including the end-to-end data flow, observed iPhone syslog behavior, and when vehicle GPS wins.
 
 #### Debugging iPhone GPS Usage
 
@@ -1004,12 +922,7 @@ fun enableSlowCharge() {
 }
 ```
 
-### GPIO Behavior
-
-| `/tmp/charge_mode` | GPIO6 | GPIO7 | Effect |
-|--------------------|-------|-------|--------|
-| 0 (or missing) | 1 | 1 | **SLOW** charge (default) |
-| 1 | 1 | 0 | **FAST** charge |
+See `02_Protocol_Reference/usb_protocol.md` > SendFile for GPIO charge mode behavior table.
 
 ---
 

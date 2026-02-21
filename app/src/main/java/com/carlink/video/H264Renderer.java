@@ -33,6 +33,11 @@ public class H264Renderer {
         void onKeyframeNeeded();
     }
 
+    /** Callback when SPS/PPS are extracted from stream for persistent caching. */
+    public interface CsdExtractedCallback {
+        void onCsdExtracted(byte[] sps, int spsLength, byte[] pps, int ppsLength);
+    }
+
     /** Pre-allocated frame buffer for staging between USB and feeder threads.
      *  Ownership transfer via SPSC ring buffer with volatile indices provides happens-before guarantee. */
     private static final class StagedFrame {
@@ -55,6 +60,14 @@ public class H264Renderer {
     private volatile java.util.Timer retryTimer;  // Stored for cancellation in stop()
     private final LogCallback logCallback;
     private KeyframeRequestCallback keyframeCallback;
+    private CsdExtractedCallback csdCallback;
+
+    // Cached CSD for codec reconfigure (persists across stop/start cycles)
+    private byte[] cachedSps;
+    private int cachedSpsLength;
+    private byte[] cachedPps;
+    private int cachedPpsLength;
+    private volatile boolean firstSpsAfterPrewarmFed;
 
     private final AppExecutors executors;
     private final String preferredDecoderName;
@@ -86,60 +99,25 @@ public class H264Renderer {
     // Accumulative IDR drop counter (not reset by logStats — for total session tracking)
     private final AtomicLong sessionIdrDrops = new AtomicLong(0);
 
-    // TODO [SELF_HEALING]: Auto-reset for frozen video pipeline.
-    //
-    // PROBLEM: Codec enters zombie state — alive by all observable metrics, internally dead.
-    //   mCodec != null, running == true, surface.isValid() == true, but:
-    //   - onInputBufferAvailable stops firing, OR
-    //   - getInputBuffer() returns null for recycled indices, OR
-    //   - onError callback never triggers (silent failure)
-    //   Evidence: H264_PIPELINE logged Rx:1330 Dec:0 for 65+ seconds without error callback.
-    //
-    // DETECTION — ScheduledExecutorService, 1-second tick, 2 consecutive failures = 2s window.
-    //   Reset when ALL true:
-    //   1. running && surface != null && surface.isValid()
-    //   2. framesReceived delta > 0 in window (USB delivering — rules out phone sleep/Siri)
-    //   3. totalFramesDecoded delta == 0 in window (codec producing nothing)
-    //   4. Cooldown elapsed (prevent reset loops)
-    //   5. Grace period (3s) elapsed since last start()/reset()/resume()
-    //
-    //   Use snapshot-based deltas: currentCounter - previousSnapshot per tick. O(1), no buffer.
-    //   Two consecutive ticks with received>0 && decoded==0 required to trigger.
-    //   Dispatch reset on executors.mediaCodec1() (not timer thread) — same as onError handler.
-    //
-    // ACTION: reset() — full codec recreation (stop+release+create+configure+start+requestKeyframe).
-    //   NOT flush(). Intel VPU (OMX.Intel.hw_vd.h264) does not reliably clear poisoned
-    //   reference surfaces on flush — documented in 15_REV57_DECODER_POISONING_ANALYSIS.md.
-    //   flush() requires start() afterward anyway in async mode, with CSD re-submission complexity.
-    //   reset() is proven (2 successful recoveries in field test, ~250ms total blackout).
-    //
-    // COOLDOWN — stepped, never give up:
-    //   Reset #1: 3s, #2: 5s, #3: 10s, #4+: 15s cap.
-    //   Reset watchdogConsecutiveResets to 0 after 30s of healthy output (decoded > 0).
-    //   No exponential backoff — frozen screen in a car is unacceptable at 32s+ intervals.
-    //   Log severe warning if >5 resets in 60s (persistent hardware fault indicator).
-    //
-    // FALSE POSITIVE MITIGATION:
-    //   - Siri/sleep: receivedInWindow == 0 → gate prevents trigger
-    //   - Surface recreation: running becomes false during restart → condition #1 prevents
-    //   - Post-start/reset: 3s grace period covers codec startup latency
-    //   - USB burst patterns: 2s window smooths jitter (documented P99: 7ms, max: 30ms)
-    //   - SPS/PPS changes: always bundled with IDR → decoded > 0
-    //
-    // THREAD SAFETY: Existing codecLock serializes lifecycle ops. feedDirect() try/catch
-    //   handles races with concurrent reset (stale buffer index → IllegalStateException → caught).
-    //   codecAvailableBufferIndexes.clear() in stop() handles stale indices from old codec instance.
-    //
-    // PRIOR ART: No commercial CarPlay app (AutoKit, Zlink, scrcpy, ExoPlayer) implements
-    //   this specific received>0/decoded==0 watchdog. All rely on onError callbacks (which
-    //   don't fire in silent zombie states) or manual user restart. This is novel but sound.
-    //
-    // PHASE 2 (NOT THIS TODO): Corrupted-but-outputting codec (decoded>0 but visually frozen/
-    //   pixelated). Requires frame content analysis or decode-time anomaly detection. Separate concern.
-    //
-    // GM AAOS comparison: GM avoids this entirely by using CINEMO software decoder (not MediaCodec).
-    //   Direct function-call chain with full internal state control. We use MediaCodec as a black box —
-    //   the watchdog is the correct compensating mechanism for opaque hardware decoder state.
+    // Watchdog: non-resettable session counters (avoid logStats reset interference)
+    private final AtomicLong sessionFramesReceived = new AtomicLong(0);
+    private final AtomicLong sessionFramesDecoded = new AtomicLong(0);
+
+    // Watchdog executor and state
+    private java.util.concurrent.ScheduledExecutorService watchdogExecutor;
+    private long watchdogLastReceivedSnapshot;
+    private long watchdogLastDecodedSnapshot;
+    private int watchdogConsecutiveFailures;
+    private int watchdogConsecutiveResets;
+    private long watchdogLastResetTimeMs;
+    private volatile long lastLifecycleEventTime;
+
+    // Watchdog constants
+    private static final long WATCHDOG_INTERVAL_MS = 1000;
+    private static final long WATCHDOG_GRACE_PERIOD_MS = 3000;
+    private static final long WATCHDOG_HEALTHY_RESET_MS = 30000;
+    private static final int WATCHDOG_CONSECUTIVE_FAILURES_THRESHOLD = 2;
+    private static final long[] WATCHDOG_COOLDOWN_STEPS_MS = {3000, 5000, 10000, 15000};
 
     // First-frame flag — survives logStats() counter resets
     private volatile boolean firstFrameLogged = false;
@@ -193,6 +171,10 @@ public class H264Renderer {
         this.keyframeCallback = callback;
     }
 
+    public void setCsdExtractedCallback(CsdExtractedCallback callback) {
+        this.csdCallback = callback;
+    }
+
     private void log(String message) {
         logCallback.log("H264_RENDERER", message);
     }
@@ -206,9 +188,13 @@ public class H264Renderer {
 
         running = true;
         totalFramesDecoded.set(0);
+        sessionFramesReceived.set(0);
+        sessionFramesDecoded.set(0);
         frameCounter.set(0);
+        lastLifecycleEventTime = System.currentTimeMillis();
         firstFrameLogged = false;
         syncAcquired = false;
+        firstSpsAfterPrewarmFed = false;
 
         log("start - " + width + "x" + height);
 
@@ -216,6 +202,7 @@ public class H264Renderer {
             initCodec(width, height, surface);
             mCodec.start();
             initStaging();
+            startWatchdog();
             log("Codec started");
         } catch (Exception e) {
             log("start error: " + e);
@@ -255,6 +242,7 @@ public class H264Renderer {
         if (!running) return;
 
         running = false;
+        stopWatchdog();
         stopStaging();  // Join feeder BEFORE stopping codec
 
         synchronized (codecLock) {
@@ -285,6 +273,7 @@ public class H264Renderer {
         synchronized (codecLock) {
             long resetCount = codecResetCount.incrementAndGet();
             log("Reset #" + resetCount);
+            lastLifecycleEventTime = System.currentTimeMillis();
 
             Surface savedSurface = this.surface;
             stop();
@@ -304,6 +293,7 @@ public class H264Renderer {
     /** Resume with new surface after returning from background. */
     public void resume(Surface newSurface) {
         log("[LIFECYCLE] resume()");
+        lastLifecycleEventTime = System.currentTimeMillis();
 
         if (newSurface == null || !newSurface.isValid()) {
             log("[LIFECYCLE] Invalid surface");
@@ -338,6 +328,137 @@ public class H264Renderer {
         }
     }
 
+    // ==================== Codec Watchdog ====================
+
+    /** Start the codec zombie watchdog. Schedules periodic health checks. */
+    private void startWatchdog() {
+        stopWatchdog();
+        watchdogLastReceivedSnapshot = sessionFramesReceived.get();
+        watchdogLastDecodedSnapshot = sessionFramesDecoded.get();
+        watchdogConsecutiveFailures = 0;
+        watchdogLastResetTimeMs = 0;
+
+        java.util.concurrent.ScheduledExecutorService exec =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                    Thread t = new Thread(r, "CodecWatchdog");
+                    t.setDaemon(true);
+                    return t;
+                });
+        watchdogExecutor = exec;
+        exec.scheduleAtFixedRate(this::watchdogTick, WATCHDOG_INTERVAL_MS, WATCHDOG_INTERVAL_MS,
+                java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    /** Stop the codec zombie watchdog. */
+    private void stopWatchdog() {
+        java.util.concurrent.ScheduledExecutorService exec = watchdogExecutor;
+        watchdogExecutor = null;
+        if (exec != null) {
+            exec.shutdownNow();
+        }
+    }
+
+    /** Periodic watchdog tick — detects zombie codec (receiving frames but not decoding). */
+    private void watchdogTick() {
+        try {
+            if (!running || surface == null || !surface.isValid()) return;
+
+            long now = System.currentTimeMillis();
+            if (now - lastLifecycleEventTime < WATCHDOG_GRACE_PERIOD_MS) return;
+
+            long currentReceived = sessionFramesReceived.get();
+            long currentDecoded = sessionFramesDecoded.get();
+            long receivedDelta = currentReceived - watchdogLastReceivedSnapshot;
+            long decodedDelta = currentDecoded - watchdogLastDecodedSnapshot;
+            watchdogLastReceivedSnapshot = currentReceived;
+            watchdogLastDecodedSnapshot = currentDecoded;
+
+            // Healthy: decoded > 0 — reset consecutive resets counter after sustained health
+            if (decodedDelta > 0) {
+                watchdogConsecutiveFailures = 0;
+                if (watchdogLastResetTimeMs > 0 && now - watchdogLastResetTimeMs >= WATCHDOG_HEALTHY_RESET_MS) {
+                    watchdogConsecutiveResets = 0;
+                }
+                return;
+            }
+
+            // Receiving but not decoding — potential zombie
+            if (receivedDelta > 0 && decodedDelta == 0) {
+                watchdogConsecutiveFailures++;
+            } else {
+                watchdogConsecutiveFailures = 0;
+                return;
+            }
+
+            if (watchdogConsecutiveFailures < WATCHDOG_CONSECUTIVE_FAILURES_THRESHOLD) return;
+
+            // Check cooldown
+            int cooldownIndex = Math.min(watchdogConsecutiveResets, WATCHDOG_COOLDOWN_STEPS_MS.length - 1);
+            long cooldownMs = WATCHDOG_COOLDOWN_STEPS_MS[cooldownIndex];
+            if (watchdogLastResetTimeMs > 0 && now - watchdogLastResetTimeMs < cooldownMs) return;
+
+            // Trigger reset
+            watchdogConsecutiveResets++;
+            watchdogConsecutiveFailures = 0;
+            watchdogLastResetTimeMs = now;
+
+            log("[WATCHDOG] Zombie codec detected — Rx:" + receivedDelta + " Dec:0 for " +
+                    WATCHDOG_CONSECUTIVE_FAILURES_THRESHOLD + "s. Reset #" + watchdogConsecutiveResets);
+
+            if (watchdogConsecutiveResets > 5) {
+                log("[WATCHDOG] WARNING: >5 resets — possible persistent hardware fault");
+            }
+
+            executors.mediaCodec1().execute(() -> reset());
+        } catch (Exception e) {
+            log("[WATCHDOG] Tick error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Reconfigure the codec with cached SPS/PPS (csd-0/csd-1).
+     * Call BEFORE first video frame arrives to pre-warm the decoder.
+     * Safe to call from any thread (acquires codecLock).
+     */
+    public void configureWithCsd(byte[] sps, byte[] pps) {
+        synchronized (codecLock) {
+            // Guard: skip if already pre-warmed with same CSD
+            if (cachedSps != null && cachedSpsLength == sps.length) {
+                boolean same = true;
+                for (int i = 0; i < cachedSpsLength; i++) {
+                    if (cachedSps[i] != sps[i]) { same = false; break; }
+                }
+                if (same) {
+                    log("[VIDEO] configureWithCsd: already pre-warmed, skipping");
+                    return;
+                }
+            }
+
+            if (!running || mCodec == null || surface == null) {
+                log("[VIDEO] configureWithCsd: codec not running, caching for later");
+                cachedSps = sps;
+                cachedSpsLength = sps.length;
+                cachedPps = pps;
+                cachedPpsLength = pps != null ? pps.length : 0;
+                return;
+            }
+
+            log("[VIDEO] Reconfiguring codec with cached CSD: SPS=" + sps.length +
+                    "B, PPS=" + (pps != null ? pps.length : 0) + "B");
+
+            Surface savedSurface = this.surface;
+            stop();
+            this.surface = savedSurface;
+
+            cachedSps = sps;
+            cachedSpsLength = sps.length;
+            cachedPps = pps;
+            cachedPpsLength = pps != null ? pps.length : 0;
+
+            start();
+        }
+    }
+
     private void initCodec(int width, int height, Surface surface) throws IOException {
         log("init codec: " + width + "x" + height);
 
@@ -369,6 +490,23 @@ public class H264Renderer {
         codecInfo = selectedCodecInfo;
 
         MediaFormat mediaformat = MediaFormat.createVideoFormat("video/avc", width, height);
+
+        // Pre-configure with cached CSD if available (pre-warms decoder)
+        if (cachedSps != null && cachedSpsLength > 0) {
+            mediaformat.setByteBuffer("csd-0",
+                    ByteBuffer.wrap(cachedSps, 0, cachedSpsLength));
+            log("CSD-0 (SPS) pre-configured: " + cachedSpsLength + "B");
+
+            if (cachedPps != null && cachedPpsLength > 0) {
+                mediaformat.setByteBuffer("csd-1",
+                        ByteBuffer.wrap(cachedPps, 0, cachedPpsLength));
+                log("CSD-1 (PPS) pre-configured: " + cachedPpsLength + "B");
+            }
+
+            // Codec is pre-warmed — set sync acquired so first IDR feeds directly
+            syncAcquired = true;
+            firstSpsAfterPrewarmFed = false;
+        }
 
         // Low latency mode if supported
         if (codecInfo != null) {
@@ -542,9 +680,32 @@ public class H264Renderer {
             if (nalType == NAL_SPS || nalType == NAL_IDR) {
                 syncAcquired = true;
                 log("[VIDEO] Sync acquired (" + nalTypeToString(nalType) + "), feeding to codec");
+
+                // Split-feed: separate CSD from IDR for clean first frame
+                if (nalType == NAL_SPS) {
+                    int idrOffset = findNalOffset(frame.data, 4, frame.length - 4, NAL_IDR);
+                    if (idrOffset > 0) {
+                        boolean fed = feedSplitCsd(frame, idrOffset);
+                        if (fed) return;
+                        // Fall through to normal single-buffer feed if split failed
+                    }
+                }
             } else {
                 logPerf("Pre-sync drop: " + nalTypeToString(nalType) + " " + frame.length + "B");
                 return;
+            }
+        } else if (!firstSpsAfterPrewarmFed) {
+            // Pre-warmed path: still split-feed first SPS+PPS+IDR bundle
+            // to ensure CSD is delivered with BUFFER_FLAG_CODEC_CONFIG
+            int nalType = getNalType(frame.data, 0, frame.length);
+            if (nalType == NAL_SPS) {
+                firstSpsAfterPrewarmFed = true;
+                int idrOffset = findNalOffset(frame.data, 4, frame.length - 4, NAL_IDR);
+                if (idrOffset > 0) {
+                    log("[VIDEO] Pre-warmed split-feed: first SPS bundle");
+                    boolean fed = feedSplitCsd(frame, idrOffset);
+                    if (fed) return;
+                }
             }
         }
 
@@ -587,12 +748,121 @@ public class H264Renderer {
         }
     }
 
+    /**
+     * Split-feed SPS+PPS as CODEC_CONFIG, then IDR as regular frame.
+     * Extracts and caches SPS/PPS for future codec reconfigures.
+     * @return true if both buffers were fed successfully
+     */
+    private boolean feedSplitCsd(StagedFrame frame, int idrOffset) {
+        Integer csdIndex = codecAvailableBufferIndexes.poll();
+        Integer idrIndex = codecAvailableBufferIndexes.poll();
+
+        if (csdIndex == null || idrIndex == null) {
+            if (csdIndex != null) codecAvailableBufferIndexes.offer(csdIndex);
+            if (idrIndex != null) codecAvailableBufferIndexes.offer(idrIndex);
+            log("[VIDEO] Split-feed: not enough input buffers, falling back to single feed");
+            return false;
+        }
+
+        int csdLen = idrOffset;
+        int idrLen = frame.length - idrOffset;
+        boolean csdQueued = false;
+        boolean idrQueued = false;
+
+        try {
+            // Feed 1: SPS+PPS with BUFFER_FLAG_CODEC_CONFIG
+            ByteBuffer csdBuf = mCodec.getInputBuffer(csdIndex);
+            if (csdBuf == null) {
+                codecAvailableBufferIndexes.offer(csdIndex);
+                codecAvailableBufferIndexes.offer(idrIndex);
+                return false;
+            }
+            csdBuf.clear();
+            csdBuf.put(frame.data, 0, csdLen);
+            mCodec.queueInputBuffer(csdIndex, 0, csdLen, frame.timestamp,
+                    MediaCodec.BUFFER_FLAG_CODEC_CONFIG);
+            csdQueued = true;
+
+            // Feed 2: IDR as regular frame
+            ByteBuffer idrBuf = mCodec.getInputBuffer(idrIndex);
+            if (idrBuf == null) {
+                codecAvailableBufferIndexes.offer(idrIndex);
+                feedSuccesses.incrementAndGet();
+                return true; // CSD was fed, IDR lost — next keyframe will be clean
+            }
+            idrBuf.clear();
+            idrBuf.put(frame.data, idrOffset, idrLen);
+            mCodec.queueInputBuffer(idrIndex, 0, idrLen, frame.timestamp, 0);
+            idrQueued = true;
+
+            feedSuccesses.addAndGet(2);
+            log("[VIDEO] Split-feed: CSD=" + csdLen + "B + IDR=" + idrLen + "B");
+
+            // Cache SPS and PPS for future reconfigures
+            cacheCsdFromBundle(frame.data, csdLen);
+
+            return true;
+        } catch (Exception e) {
+            log("[VIDEO] Split-feed error: " + e.getMessage());
+            // Only return indices that were NOT already queued to the codec
+            if (!csdQueued) codecAvailableBufferIndexes.offer(csdIndex);
+            if (!idrQueued) codecAvailableBufferIndexes.offer(idrIndex);
+            if (csdQueued) feedSuccesses.incrementAndGet();
+            return csdQueued; // true if CSD was fed (partial success)
+        }
+    }
+
+    /**
+     * Extract individual SPS and PPS NAL units from a CSD bundle and cache them.
+     * Notifies CsdExtractedCallback for persistent storage.
+     */
+    private void cacheCsdFromBundle(byte[] data, int csdLength) {
+        int ppsOffset = findNalOffset(data, 4, csdLength - 4, NAL_PPS);
+        if (ppsOffset < 0) {
+            cachedSps = java.util.Arrays.copyOf(data, csdLength);
+            cachedSpsLength = csdLength;
+            cachedPps = null;
+            cachedPpsLength = 0;
+        } else {
+            cachedSps = java.util.Arrays.copyOf(data, ppsOffset);
+            cachedSpsLength = ppsOffset;
+            cachedPps = java.util.Arrays.copyOfRange(data, ppsOffset, csdLength);
+            cachedPpsLength = csdLength - ppsOffset;
+        }
+
+        log("[VIDEO] Cached CSD: SPS=" + cachedSpsLength + "B, PPS=" + cachedPpsLength + "B");
+
+        CsdExtractedCallback cb = csdCallback;
+        if (cb != null) {
+            cb.onCsdExtracted(cachedSps, cachedSpsLength, cachedPps, cachedPpsLength);
+        }
+    }
+
     // H.264 NAL unit types (ITU-T H.264 Table 7-1)
     private static final int NAL_SLICE = 1;       // Non-IDR slice (P/B frame)
     private static final int NAL_IDR = 5;         // IDR slice (keyframe)
     private static final int NAL_SEI = 6;         // Supplemental enhancement info
     private static final int NAL_SPS = 7;         // Sequence parameter set
     private static final int NAL_PPS = 8;         // Picture parameter set
+
+    /**
+     * Find the byte offset of a NAL unit with the given type in an Annex B bytestream.
+     * Scans for 00 00 00 01 or 00 00 01 start codes.
+     * @return offset of the start code, or -1 if not found
+     */
+    private static int findNalOffset(byte[] data, int offset, int length, int targetNalType) {
+        int end = offset + length - 4;
+        for (int i = offset; i <= end; i++) {
+            if (data[i] == 0 && data[i + 1] == 0) {
+                if (data[i + 2] == 0 && data[i + 3] == 1 && i + 4 < offset + length) {
+                    if ((data[i + 4] & 0x1F) == targetNalType) return i;
+                } else if (data[i + 2] == 1 && i + 3 < offset + length) {
+                    if ((data[i + 3] & 0x1F) == targetNalType) return i;
+                }
+            }
+        }
+        return -1;
+    }
 
     /**
      * Extract NAL unit type from H.264 Annex B bitstream.
@@ -641,6 +911,7 @@ public class H264Renderer {
     public boolean feedDirect(byte[] data, int offset, int length) {
         if (!running) return false;
         framesReceived.incrementAndGet();
+        sessionFramesReceived.incrementAndGet();
         logStats();
 
         // Guard: reject frames exceeding staging capacity (corrupted USB data)
@@ -686,7 +957,7 @@ public class H264Renderer {
         long currentTime = System.currentTimeMillis();
         if (currentTime - lastPerfLogTime >= PERF_LOG_INTERVAL_MS) {
             // Session stats (always logged via H264_RENDERER tag)
-            log("Decoded:" + totalFramesDecoded.get() + " Resets:" + codecResetCount.get() +
+            log("Decoded:" + sessionFramesDecoded.get() + " Resets:" + codecResetCount.get() +
                     " IDR drops:" + sessionIdrDrops.get());
 
             // Pipeline diagnostic stats (gated by VIDEO_PERF tag)
@@ -757,6 +1028,7 @@ public class H264Renderer {
 
                 if (info.size > 0) {
                     totalFramesDecoded.incrementAndGet();
+                    sessionFramesDecoded.incrementAndGet();
                     if (!firstFrameLogged) {
                         firstFrameLogged = true;
                         log("[VIDEO] First frame decoded");

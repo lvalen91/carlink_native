@@ -3,32 +3,32 @@
 **Device:** GM Info 3.7 (gminfo37)
 **Platform:** Intel Apollo Lake (Broxton)
 **Android Version:** 12 (API 32)
-**Analysis Date:** January 2026
-**Source:** Binary analysis and extracted partitions from GM AAOS
+**Research Date:** December 2025 - February 2026
 
 ---
 
 ## Executive Summary
 
-GM AAOS implements **fundamentally different architectures** for CarPlay and Android Auto:
+GM AAOS implements **fundamentally different architectures** for CarPlay and Android Auto. Additionally, the CPC200-CCPA wireless adapter introduces a third path that bypasses the CINEMO framework entirely.
 
-| Aspect | Apple CarPlay | Android Auto |
-|--------|---------------|--------------|
-| **Framework** | CINEMO/NME (Harman) | Native Android MediaCodec |
-| **Video Decoder** | Software (NVDEC) | Hardware (Intel OMX) |
-| **Protocol** | AirPlay 320.17.8 | Android Auto Protocol (AAP) |
-| **Libraries** | libNme*.so (~17.5 MB) | Standard AOSP |
-| **Authentication** | Apple MFi (iAP2) | Google certificates |
+| Aspect | Apple CarPlay (Native) | CarPlay via CPC200 | Android Auto |
+|--------|----------------------|---------------------|--------------|
+| **Framework** | CINEMO/NME (Harman) | Standard MediaCodec | Native Android MediaCodec |
+| **Video Decoder** | Software (NVDEC) | Hardware (Intel OMX) | Hardware (Intel OMX) |
+| **Resolution** | 1416x842 @ 30fps | 2400x960 @ 30fps | Negotiated |
+| **Protocol** | AirPlay 320.17.8 | USB bulk (CPC200 protocol) | Android Auto Protocol (AAP) |
+| **Libraries** | libNme*.so (~17.5 MB) | Standard AOSP | Standard AOSP |
+| **Authentication** | Apple MFi (iAP2) | CPC200 handles MFi | Google certificates |
 
 ---
 
 ## Video Pipeline Comparison
 
-### CarPlay Video
+### CarPlay Video (Native)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    CARPLAY VIDEO PIPELINE                           │
+│                    CARPLAY VIDEO PIPELINE (NATIVE)                   │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  iPhone ──► USB NCM/WiFi ──► AirPlay Protocol ──► libNmeCarPlay.so │
@@ -46,6 +46,7 @@ GM AAOS implements **fundamentally different architectures** for CarPlay and And
 │                                       │                             │
 │                                       ▼                             │
 │                              SurfaceFlinger ──► Display             │
+│                              (1416x842 @ 30fps, windowed)          │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -53,6 +54,7 @@ GM AAOS implements **fundamentally different architectures** for CarPlay and And
 **Decoder:** CINEMO NVDEC Software Decoder
 - Library: `libNmeVideoSW.so` (646 KB)
 - Type: CPU-based software decode
+- Resolution: 1416x842 @ 30fps (HU reports fps=60 but CarPlay uses 30)
 - Reason: AirPlay timing sync, custom SEI handling, ForceKeyframe() integration
 
 **H.264 Processing:**
@@ -65,6 +67,66 @@ GM AAOS implements **fundamentally different architectures** for CarPlay and And
 - `AirPlayReceiverSessionForceKeyFrame()` - Request IDR on corruption
 - Quality control with adaptive frame dropping
 - Reference-only mode when late
+
+### CarPlay Video (via CPC200-CCPA Adapter)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│              CARPLAY VIDEO PIPELINE (VIA CPC200 ADAPTER)            │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  iPhone ──► WiFi/AirPlay ──► CPC200-CCPA Adapter                   │
+│                                       │                             │
+│                              (AirPlay terminated on adapter)        │
+│                              (AAC→PCM decode on adapter)            │
+│                              (H.264 passthrough + 36B header)       │
+│                                       │                             │
+│                                       ▼                             │
+│                              USB Bulk Transfer                      │
+│                              (VID 0x1314, PID 0x1521)              │
+│                                       │                             │
+│                                       ▼                             │
+│                              MediaCodec API                         │
+│                              (Standard Android)                     │
+│                                       │                             │
+│                                       ▼                             │
+│                              OMX.Intel.hw_vd.h264                   │
+│                              (Hardware Decoder)                     │
+│                              color=256 (ARGB)                       │
+│                                       │                             │
+│                                       ▼                             │
+│                              SurfaceTexture                         │
+│                                       │                             │
+│                                       ▼                             │
+│                              SurfaceFlinger ──► Display             │
+│                              (2400x960 @ 30fps, fullscreen)        │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Decoder:** Intel Hardware Decoder
+- Codec: `OMX.Intel.hw_vd.h264`, color format 256 (ARGB)
+- Type: Hardware-accelerated (Intel VPU)
+- Resolution: 2400x960 @ 30fps (fullscreen, native display resolution)
+
+**H.264 Stream Characteristics:**
+- Profile: High (100), Level 5.0
+- Bitrate: 1.2-5.3 Mbps adaptive
+- CSD caching per device+resolution: SPS = 25 bytes, PPS = 8 bytes
+- Source PTS from adapter header offset 12 (ms, little-endian), converted to microseconds for MediaCodec
+
+**Performance (Measured):**
+- First packet to first decoded frame: ~248ms
+- Steady state: 30fps, zero frame drops
+- Decode latency: ~30ms per frame
+- CPC200 adds 36-byte header to H.264 NAL units (20B video header + protocol framing)
+
+**Key Difference from Native CarPlay:**
+The CPC200 adapter terminates the AirPlay protocol entirely on the adapter itself. The head unit never sees AirPlay -- it receives raw H.264 via USB bulk transfers with a proprietary header. This means:
+1. No CINEMO/NME framework involvement
+2. Hardware decode instead of software decode
+3. Full 2400x960 resolution instead of 1416x842 windowed
+4. Standard MediaCodec path instead of proprietary NVDEC
 
 ### Android Auto Video
 
@@ -109,7 +171,7 @@ GM AAOS implements **fundamentally different architectures** for CarPlay and And
 
 ## Video Codec Specifications
 
-### Hardware Decoders (Used by Android Auto)
+### Hardware Decoders (Used by Android Auto and CPC200 CarPlay)
 
 | Codec | OMX Component | Max Resolution | Max FPS | Profiles |
 |-------|---------------|----------------|---------|----------|
@@ -118,21 +180,30 @@ GM AAOS implements **fundamentally different architectures** for CarPlay and And
 | VP8 | OMX.Intel.hw_vd.vp8 | 3840x2160 | 60 | - |
 | VP9 | OMX.Intel.hw_vd.vp9 | 3840x2160 | 60 | Profile 0-2, HDR (5.2) |
 
-### Software Decoder (Used by CarPlay)
+### Software Decoder (Used by Native CarPlay)
 
 | Codec | Library | Type | Notes |
 |-------|---------|------|-------|
 | H.264 | libNmeVideoSW.so | NVDEC Software | AirPlay-specific timing |
 
-### Why CarPlay Uses Software Decode
+### Why Native CarPlay Uses Software Decode
 
-Despite Intel hardware decoder availability, CarPlay uses software decode for:
+Despite Intel hardware decoder availability, native CarPlay uses software decode for:
 
 1. **AirPlay Protocol Integration** - Custom timing synchronization
 2. **SEI Message Handling** - Freeze/snapshot/stereo support
 3. **ForceKeyframe()** - Immediate IDR request on errors
 4. **Quality Control** - Adaptive frame dropping
 5. **Clock Sync** - AirPlay-specific timestamp handling
+
+### Why CPC200 CarPlay Uses Hardware Decode
+
+The CPC200 adapter bypasses these constraints because:
+
+1. **AirPlay Terminated on Adapter** - The head unit never sees AirPlay protocol
+2. **No SEI Forwarding** - Adapter strips AirPlay-specific SEI messages
+3. **Standard H.264 Stream** - Clean NAL units with simple header, compatible with MediaCodec
+4. **No Clock Sync Needed** - PTS provided directly in adapter header (offset 12, ms LE)
 
 ---
 
@@ -292,6 +363,46 @@ WiFi Wireless:
   SSE_HF_GM_INFO3_WiFi_CarPlayTelSWB.scd
 ```
 
+### CPC200 CarPlay Audio
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│               CARPLAY AUDIO PIPELINE (VIA CPC200 ADAPTER)           │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  DOWNLINK (iPhone → Vehicle):                                       │
+│  ────────────────────────────                                       │
+│  iPhone ──► AirPlay ──► CPC200 Adapter                              │
+│                              │                                      │
+│                              ▼                                      │
+│                    AAC-LC → PCM Decode (on adapter)                 │
+│                    48kHz stereo (media)                              │
+│                    16kHz mono (Siri, AAC-ELD)                       │
+│                              │                                      │
+│                              ▼                                      │
+│                    USB Bulk Transfer → Host                         │
+│                              │                                      │
+│                              ▼                                      │
+│                    AudioFlinger bus0_media_out (direct)              │
+│                              │                                      │
+│                              ▼                                      │
+│                    PulseAudio + AVB ──► Amplifier                   │
+│                                                                     │
+│  UPLINK (Vehicle → iPhone):                                         │
+│  ──────────────────────────                                         │
+│  Microphone ──► Host AudioRecord ──► USB ──► CPC200 Adapter        │
+│                              │                                      │
+│                              ▼                                      │
+│                    WebRTC (AEC/NS/AGC on adapter)                   │
+│                              │                                      │
+│                              ▼                                      │
+│                    AirPlay ──► iPhone                                │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Difference:** The CPC200 adapter decodes AAC to PCM on-device, so the head unit receives raw PCM and routes it directly through AudioFlinger without needing CINEMO's audio decode libraries.
+
 ### Android Auto Audio
 
 ```
@@ -342,7 +453,7 @@ Uses standard Bluetooth HFP SCD files (no Android Auto specific tuning)
 
 ## Protocol Comparison
 
-### CarPlay Protocol
+### CarPlay Protocol (Native)
 
 | Aspect | Specification |
 |--------|---------------|
@@ -357,6 +468,19 @@ Uses standard Bluetooth HFP SCD files (no Android Auto specific tuning)
 - `libNmeCarPlay.so` (1.0 MB) - AirPlay protocol
 - `libNmeIAP.so` (2.9 MB) - iAP2 protocol
 - `libNmeAppleAuth.so` (80 KB) - MFi authentication
+
+### CarPlay via CPC200 Protocol
+
+| Aspect | Specification |
+|--------|---------------|
+| **Protocol** | CPC200 proprietary USB bulk |
+| **Transport** | USB (VID 0x1314, PID 0x1521) |
+| **Authentication** | CPC200 handles Apple MFi on-device |
+| **Video** | H.264 with 36B header (20B video header + framing) |
+| **Audio** | PCM (adapter decodes AAC to PCM) |
+| **Service Discovery** | USB device enumeration |
+
+**Key Difference:** The CPC200 adapter is an intelligent protocol bridge -- it terminates AirPlay/iAP2 entirely and presents a simple USB device to the head unit. The head unit never speaks AirPlay.
 
 ### Android Auto Protocol
 
@@ -426,28 +550,36 @@ Uses standard Bluetooth HFP SCD files (no Android Auto specific tuning)
 
 | Protocol | Decoder | Latency | CPU Usage |
 |----------|---------|---------|-----------|
-| CarPlay | NVDEC SW | 10-15 ms | Medium |
+| CarPlay (Native) | NVDEC SW | 10-15 ms | Medium |
+| CarPlay (CPC200) | Intel HW | ~30 ms (incl. adapter overhead) | Low |
 | Android Auto | Intel HW | ~5 ms | Low |
+
+**CPC200 Startup Performance:**
+- First packet to first decoded frame: ~248ms
+- Steady state: 30fps, zero frame drops
+- Includes USB transfer + MediaCodec configure + first decode
 
 ### Audio Latency
 
 | Protocol | Path | Latency |
 |----------|------|---------|
-| CarPlay | AirPlay → NME → AudioFlinger | ~50-80 ms |
+| CarPlay (Native) | AirPlay → NME → AudioFlinger | ~50-90 ms |
+| CarPlay (CPC200) | Adapter PCM → AudioFlinger | ~50-90 ms |
 | Android Auto | AAP → CarAudio → AudioFlinger | ~40-60 ms |
 
 ### Memory Usage
 
 | Protocol | Video Buffers | Audio Buffers | Total |
 |----------|---------------|---------------|-------|
-| CarPlay | ~75-90 MB | ~10 MB | ~85-100 MB |
+| CarPlay (Native) | ~75-90 MB | ~10 MB | ~85-100 MB |
+| CarPlay (CPC200) | ~40-50 MB | ~10 MB | ~50-60 MB |
 | Android Auto | ~40-50 MB | ~10 MB | ~50-60 MB |
 
 ---
 
 ## Error Recovery Comparison
 
-### CarPlay
+### CarPlay (Native)
 
 ```cpp
 // AirPlay-specific recovery
@@ -466,6 +598,25 @@ NvdecDeliverHeaders() {
             // Reconfigure or skip
     }
 }
+```
+
+### CarPlay (via CPC200)
+
+```java
+// Standard MediaCodec recovery (same as Android Auto)
+// CPC200 adapter handles AirPlay-level error recovery internally
+// Host only sees clean H.264 stream via USB bulk
+
+mediaCodec.setCallback(new MediaCodec.Callback() {
+    @Override
+    public void onError(MediaCodec codec, CodecException e) {
+        if (e.isRecoverable()) {
+            codec.stop();
+            codec.configure(...);  // Re-use cached CSD (SPS 25B + PPS 8B)
+            codec.start();
+        }
+    }
+});
 ```
 
 ### Android Auto
@@ -488,7 +639,7 @@ mediaCodec.setCallback(new MediaCodec.Callback() {
 
 ## Architecture Summary
 
-### CarPlay Stack
+### CarPlay Stack (Native)
 
 ```
 ┌─────────────────────────────────────────┐
@@ -503,6 +654,25 @@ mediaCodec.setCallback(new MediaCodec.Callback() {
 │       libNmeBaseClasses.so (4.8 MB)     │
 ├─────────────────────────────────────────┤
 │    ANativeWindow │ AudioFlinger │ EGL   │
+└─────────────────────────────────────────┘
+```
+
+### CarPlay Stack (via CPC200)
+
+```
+┌─────────────────────────────────────────┐
+│     CPC200-CCPA Adapter (ARM SoC)       │
+│  AirPlay + iAP2 termination, AAC→PCM   │
+│  H.264 passthrough + 36B header         │
+├─────────────────────────────────────────┤
+│           USB Bulk Transfer             │
+│  VID 0x1314, PID 0x1521                │
+├─────────────────────────────────────────┤
+│     Host App (Standard MediaCodec)      │
+├─────────────────────────────────────────┤
+│  OMX.Intel.hw_vd.h264 │ AudioFlinger   │
+├─────────────────────────────────────────┤
+│      Standard Android Framework         │
 └─────────────────────────────────────────┘
 ```
 
@@ -526,21 +696,23 @@ mediaCodec.setCallback(new MediaCodec.Callback() {
 
 ## Key Takeaways
 
-1. **Different Decoders**: CarPlay uses software decode (NVDEC), Android Auto uses hardware decode (Intel OMX)
+1. **Three Distinct Paths**: Native CarPlay (CINEMO/SW decode), CPC200 CarPlay (MediaCodec/HW decode), and Android Auto (MediaCodec/HW decode)
 
-2. **Different Frameworks**: CarPlay uses CINEMO/NME (Harman proprietary), Android Auto uses standard AOSP
+2. **Native CarPlay is the Outlier**: Only path that uses software decode and proprietary CINEMO/NME framework
 
-3. **Same Audio Routing**: Both share AudioFlinger and bus architecture
+3. **CPC200 Matches Android Auto Architecture**: Both use standard Android MediaCodec with Intel hardware acceleration
 
-4. **CarPlay Has More Libraries**: ~17.5 MB of NME libraries vs standard AOSP for Android Auto
+4. **CPC200 Gets Better Resolution**: Full 2400x960 native resolution vs native CarPlay's 1416x842 windowed
 
-5. **CarPlay Has Dedicated Audio Tuning**: SCD files for USB and WiFi telephony variants
+5. **Same Audio Routing**: All three paths share AudioFlinger and the bus architecture
 
-6. **Android Auto Lower Latency**: Hardware decode provides faster video path
+6. **CarPlay Has More Libraries**: ~17.5 MB of NME libraries for native path vs standard AOSP for CPC200 and Android Auto
 
-7. **CarPlay More Custom**: Proprietary AirPlay protocol with custom error recovery
+7. **CarPlay Has Dedicated Audio Tuning**: SCD files for USB and WiFi telephony variants
 
-8. **Android Auto Resolution Gap**: No explicit video/UI resolution configuration found for Android Auto in extracted partitions - may cause aspect ratio or touch mapping issues with the non-standard 2400x960 (2.5:1) display
+8. **CPC200 Trades Latency for Resolution**: ~248ms startup vs near-instant native, but gains fullscreen HW-decoded video
+
+9. **Android Auto Resolution Gap**: No explicit video/UI resolution configuration found for Android Auto in extracted partitions - may cause aspect ratio or touch mapping issues with the non-standard 2400x960 (2.5:1) display
 
 ---
 
@@ -558,5 +730,10 @@ mediaCodec.setCallback(new MediaCodec.Callback() {
 
 **Binary Analysis:**
 - `strings`, `readelf`, `nm` on NME libraries
+
+**CPC200 Adapter Testing (February 2026):**
+- USB protocol analysis (VID 0x1314, PID 0x1521)
+- MediaCodec decoder profiling on GM Info 3.7
+- Logcat-verified decode latency and frame rate measurements
 
 **Source:** `/Users/zeno/Downloads/misc/GM_research/gm_aaos/`

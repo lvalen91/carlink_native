@@ -56,8 +56,8 @@
 
 | Property | Value |
 |----------|-------|
-| HAL Version | 2.1 |
-| Implementation | `hwcomposer.broxton` |
+| HAL Version | 2.1 / 2.2 / 2.3 (`composer.intel@2.3-service`) |
+| Implementation | `iahwcomposer` (Intel Automotive HWC) |
 | Display ID | 4615537251352926243 |
 | HWC Display ID | 0 |
 

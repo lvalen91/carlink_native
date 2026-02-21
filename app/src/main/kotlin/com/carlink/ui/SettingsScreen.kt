@@ -37,7 +37,6 @@ import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PhoneDisabled
 import androidx.compose.material.icons.filled.PowerOff
-import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsInputComponent
 import androidx.compose.material.icons.filled.Usb
@@ -79,10 +78,10 @@ import com.carlink.logging.logWarn
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.settings.AdapterConfigPreference
 import com.carlink.ui.settings.AdapterConfigurationDialog
-import com.carlink.ui.settings.DisplayModeDialog
-import com.carlink.ui.settings.LogsTabContent
 import com.carlink.ui.settings.DisplayMode
+import com.carlink.ui.settings.DisplayModeDialog
 import com.carlink.ui.settings.DisplayModePreference
+import com.carlink.ui.settings.LogsTabContent
 import com.carlink.ui.settings.SettingsTab
 import com.carlink.ui.theme.AutomotiveDimens
 import kotlinx.coroutines.launch
@@ -100,7 +99,11 @@ fun SettingsScreen(
 
     // Log settings screen entry and tab changes
     LaunchedEffect(Unit) {
-        logInfo("[UI_STATE] SettingsScreen opened - user is in app settings (NOT viewing CarPlay projection)", tag = "UI")
+        logInfo(
+            "[UI_STATE] SettingsScreen opened" +
+                " - user is in app settings (NOT viewing CarPlay projection)",
+            tag = "UI",
+        )
     }
 
     LaunchedEffect(selectedTab) {
@@ -263,119 +266,7 @@ private fun ControlTabContent(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                ControlCard(
-                    modifier = Modifier.weight(1f),
-                    title = "Device Control",
-                    icon = Icons.Default.Devices,
-                ) {
-                    ControlButton(
-                        label = "Disconnect Phone",
-                        icon = Icons.Default.PhoneDisabled,
-                        severity = ButtonSeverity.WARNING,
-                        enabled = isDeviceConnected && !isProcessing,
-                        isProcessing = isProcessing,
-                        onClick = {
-                            logWarn("[UI_ACTION] Disconnect Phone button clicked", tag = "UI")
-                            carlinkManager.stop()
-                        },
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    ControlButton(
-                        label = "Close Adapter",
-                        icon = Icons.Default.PowerOff,
-                        severity = ButtonSeverity.DESTRUCTIVE,
-                        enabled = isDeviceConnected && !isProcessing,
-                        isProcessing = isProcessing,
-                        onClick = {
-                            logWarn("[UI_ACTION] Close Adapter button clicked", tag = "UI")
-                            carlinkManager.stop()
-                        },
-                    )
-                }
-
-                ControlCard(
-                    modifier = Modifier.weight(1f),
-                    title = "System Reset",
-                    icon = Icons.Default.RestartAlt,
-                ) {
-                    ControlButton(
-                        label = "Reset Video Decoder",
-                        icon = Icons.Default.VideoSettings,
-                        severity = ButtonSeverity.NORMAL,
-                        enabled = !isProcessing,
-                        isProcessing = isProcessing,
-                        onClick = {
-                            logWarn("[UI_ACTION] Reset Video Decoder button clicked", tag = "UI")
-                            carlinkManager.resetVideoDecoder()
-                        },
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    ControlButton(
-                        label = "Reset USB Device",
-                        icon = Icons.Default.Usb,
-                        severity = ButtonSeverity.DESTRUCTIVE,
-                        enabled = isDeviceConnected && !isProcessing,
-                        isProcessing = isProcessing,
-                        onClick = {
-                            logWarn("[UI_ACTION] Reset USB Device button clicked", tag = "UI")
-                            isProcessing = true
-                            scope.launch {
-                                try {
-                                    carlinkManager.restart()
-                                } finally {
-                                    isProcessing = false
-                                }
-                            }
-                        },
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                ControlCard(
-                    modifier = Modifier.weight(1f),
-                    title = "Display Mode",
-                    icon = Icons.Default.DisplaySettings,
-                ) {
-                    // Configure button showing current mode
-                    FilledTonalButton(
-                        onClick = { showDisplayModeDialog = true },
-                        modifier = Modifier.fillMaxWidth().height(AutomotiveDimens.ButtonMinHeight),
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                    ) {
-                        Icon(
-                            imageVector =
-                                when (currentDisplayMode) {
-                                    DisplayMode.SYSTEM_UI_VISIBLE -> Icons.Default.FullscreenExit
-                                    DisplayMode.STATUS_BAR_HIDDEN -> Icons.Default.Layers
-                                    DisplayMode.FULLSCREEN_IMMERSIVE -> Icons.Default.Fullscreen
-                                },
-                            contentDescription = "Configure display mode",
-                            modifier = Modifier.size(AutomotiveDimens.IconSize),
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text =
-                                when (currentDisplayMode) {
-                                    DisplayMode.SYSTEM_UI_VISIBLE -> "System UI"
-                                    DisplayMode.STATUS_BAR_HIDDEN -> "Hide Status"
-                                    DisplayMode.FULLSCREEN_IMMERSIVE -> "Fullscreen"
-                                },
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                        )
-                    }
-                }
-
-                // Adapter Configuration Card
+                // Adapter Configuration Card (includes device control actions)
                 ControlCard(
                     modifier = Modifier.weight(1f),
                     title = "Adapter Configuration",
@@ -400,6 +291,101 @@ private fun ControlTabContent(
                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                         )
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    ControlButton(
+                        label = "Disconnect Phone",
+                        icon = Icons.Default.PhoneDisabled,
+                        severity = ButtonSeverity.WARNING,
+                        enabled = isDeviceConnected && !isProcessing,
+                        isProcessing = isProcessing,
+                        onClick = {
+                            logWarn("[UI_ACTION] Disconnect Phone button clicked", tag = "UI")
+                            carlinkManager.stop()
+                        },
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    ControlButton(
+                        label = "Disconnect Adapter",
+                        icon = Icons.Default.PowerOff,
+                        severity = ButtonSeverity.DESTRUCTIVE,
+                        enabled = isDeviceConnected && !isProcessing,
+                        isProcessing = isProcessing,
+                        onClick = {
+                            logWarn("[UI_ACTION] Disconnect Adapter button clicked", tag = "UI")
+                            carlinkManager.stop()
+                        },
+                    )
+
+                }
+
+                // App Control Card
+                ControlCard(
+                    modifier = Modifier.weight(1f),
+                    title = "App Control",
+                    icon = Icons.Default.DisplaySettings,
+                ) {
+                    FilledTonalButton(
+                        onClick = { showDisplayModeDialog = true },
+                        modifier = Modifier.fillMaxWidth().height(AutomotiveDimens.ButtonMinHeight),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                    ) {
+                        Icon(
+                            imageVector =
+                                when (currentDisplayMode) {
+                                    DisplayMode.SYSTEM_UI_VISIBLE -> Icons.Default.FullscreenExit
+                                    DisplayMode.STATUS_BAR_HIDDEN -> Icons.Default.Layers
+                                    DisplayMode.FULLSCREEN_IMMERSIVE -> Icons.Default.Fullscreen
+                                },
+                            contentDescription = "Configure display mode",
+                            modifier = Modifier.size(AutomotiveDimens.IconSize),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Display Mode",
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    ControlButton(
+                        label = "Reset Video Decoder",
+                        icon = Icons.Default.VideoSettings,
+                        severity = ButtonSeverity.WARNING,
+                        enabled = !isProcessing,
+                        isProcessing = isProcessing,
+                        onClick = {
+                            logWarn("[UI_ACTION] Reset Video Decoder button clicked", tag = "UI")
+                            carlinkManager.resetVideoDecoder()
+                        },
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    ControlButton(
+                        label = "Reset Connection",
+                        icon = Icons.Default.Usb,
+                        severity = ButtonSeverity.DESTRUCTIVE,
+                        enabled = isDeviceConnected && !isProcessing,
+                        isProcessing = isProcessing,
+                        onClick = {
+                            logWarn("[UI_ACTION] Reset Connection button clicked", tag = "UI")
+                            isProcessing = true
+                            scope.launch {
+                                try {
+                                    carlinkManager.restart()
+                                } finally {
+                                    isProcessing = false
+                                }
+                            }
+                        },
+                    )
                 }
             }
 
@@ -426,14 +412,15 @@ private fun ControlTabContent(
                 scope.launch {
                     // Save the new display mode
                     displayModePreference.setDisplayMode(newMode)
-                    // Stop adapter and exit
-                    carlinkManager.stop()
+                    // Stop adapter and exit — reboot so adapter picks up fresh Open message
+                    carlinkManager.stop(reboot = true)
                     kotlinx.coroutines.delay(500)
                     android.os.Process.killProcess(android.os.Process.myPid())
                 }
             },
         )
     }
+
 }
 
 /**

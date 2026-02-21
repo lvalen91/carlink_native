@@ -7,6 +7,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
+import android.os.HandlerThread
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import java.util.Calendar
@@ -32,6 +33,7 @@ class GnssForwarder(
     private val locationManager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private var locationListener: LocationListener? = null
+    private var handlerThread: HandlerThread? = null
 
     @Volatile
     private var isRunning = false
@@ -74,18 +76,25 @@ class GnssForwarder(
             }
 
         try {
+            // Use a dedicated background thread for location callbacks.
+            // sendGnssData() does a blocking USB bulkTransfer — must never run on main thread.
+            val thread = HandlerThread("GNSS-Forwarder").apply { start() }
+            handlerThread = thread
+
             locationManager.requestLocationUpdates(
                 LocationManager.GPS_PROVIDER,
                 1000L,
                 0f,
                 listener,
-                Looper.getMainLooper(),
+                thread.looper,
             )
             locationListener = listener
             isRunning = true
-            log("[GNSS] Started GPS forwarding (1Hz, GPS_PROVIDER)")
+            log("[GNSS] Started GPS forwarding (1Hz, GPS_PROVIDER, background thread)")
         } catch (e: Exception) {
             log("[GNSS] Failed to start location updates: ${e.message}")
+            handlerThread?.quitSafely()
+            handlerThread = null
         }
     }
 
@@ -100,6 +109,8 @@ class GnssForwarder(
             }
         }
         locationListener = null
+        handlerThread?.quitSafely()
+        handlerThread = null
         isRunning = false
         log("[GNSS] Stopped GPS forwarding")
     }

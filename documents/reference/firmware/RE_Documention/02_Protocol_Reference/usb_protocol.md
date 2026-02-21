@@ -3,7 +3,7 @@
 **Status:** VERIFIED against 25+ capture sessions + firmware binary analysis
 **Consolidated from:** All research projects (GM_research, carlink_native, pi-carplay)
 **Firmware Version:** 2025.10.15.1127 (binary analysis reference version)
-**Last Updated:** 2026-02-18 (Corrected DashboardInfo gating, GNSSCapability bitmask, ARMadb-driver forwarding path, file write path, 7 location sub-types)
+**Last Updated:** 2026-02-19 (Added: Inbound Message Handling Reference with firmware-verified classifications, Phase 0 session teardown proof, cmd 1000-1013 all confirmed pure status notifications, AudioCmd 14 PHONECALL_Incoming, FactorySetting 0x77 corrected to BOTH direction, app handling gap audit, Messages-That-MUST-NEVER-Trigger-Disconnect table. Prior: dual magic, CMD_ENABLE_CRYPT lifecycle, all undocumented types, corrected RemoteDisplay→BroadCastRemoteCxCy)
 
 ---
 
@@ -21,17 +21,33 @@ All USB messages use a common 16-byte header:
 
 | Field | Offset | Size | Description |
 |-------|--------|------|-------------|
-| **magic** | 0 | 4 | `0x55AA55AA` (little-endian) |
+| **magic** | 0 | 4 | `0x55AA55AA` (cleartext) or `0x55BB55BB` (AES-encrypted payload) — see Dual Magic below |
 | **length** | 4 | 4 | Payload size in bytes (LE) |
 | **type** | 8 | 4 | Message type ID (LE) |
 | **type_check** | 12 | 4 | `type XOR 0xFFFFFFFF` (validation) |
 | **payload** | 16 | N | Message-specific data |
 
 **Validation Rules:**
-- Magic must equal `0x55AA55AA`
+- Magic must equal `0x55AA55AA` or `0x55BB55BB`
 - Type check must equal `type ^ 0xFFFFFFFF`
 - Length must be ≤ 1048576 bytes
 - Total message size = 16 + payload_length
+
+**Dual Magic System (Binary Verified Feb 2026):**
+
+| Magic | Meaning | When Used |
+|-------|---------|-----------|
+| `0x55AA55AA` | Cleartext payload | Default; always for types 0x06, 0x07, 0x2A, 0x2C (performance-exempt) |
+| `0x55BB55BB` | AES-CBC encrypted payload | All other types when encryption is enabled via CMD_ENABLE_CRYPT |
+
+Assembly proof at `fcn.000645ec` (`0x645f4`): `add.w r2, r2, 0x110011` transforms 0x55AA55AA → 0x55BB55BB.
+Write path at `fcn.00064630` normalizes BB magic back to AA after decryption.
+
+**Encryption-exempt types** (always use AA magic for performance):
+- `0x06` VideoFrame — H.264 video stream
+- `0x07` AudioFrame — PCM audio data
+- `0x2A` DashBoard_DATA — Media/nav metadata
+- `0x2C` AltVideoFrame — Navigation video stream
 
 ---
 
@@ -70,34 +86,9 @@ All USB messages use a common 16-byte header:
 
 See `video_protocol.md` for detailed header structures and host implementation guidance.
 
-**AudioData (0x07) Commands:** When payload is 13 bytes, contains audio command (not PCM data):
-```
-Payload (13 bytes):
-[decodeType:4][volume:4][audioType:4][command:1]
-```
+**AudioData (0x07) Commands:** When payload is 13 bytes, it contains an audio command (not PCM data), structured as `[decodeType:4][volume:4][audioType:4][command:1]`. **IMPORTANT:** Siri and phone call events are received via AudioData (0x07), NOT Command (0x08). See the **Inbound Message Handling Reference** section below for the complete audio command table (cmds 1-14) with firmware triggers and host actions, or `audio_protocol.md` for the authoritative reference with decode_type and audio_type per command.
 
-| AudioCmd | Name | Direction | Host Action |
-|----------|------|-----------|-------------|
-| 4 | PHONECALL_START | Phone→Host | Start microphone capture |
-| 5 | PHONECALL_STOP | Phone→Host | Stop microphone capture |
-| 8 | SIRI_START | Phone→Host | Start microphone capture |
-| 9 | SIRI_STOP | Phone→Host | Stop microphone capture |
-| 6/7 | NAVI_START/STOP | Phone→Host | Duck/restore media audio |
-
-**IMPORTANT:** Siri and phone call events are received via AudioData (0x07), NOT Command (0x08).
-See `command_ids.md` for complete flow documentation and `../03_Audio_Processing/audio_formats.md` for audio format details.
-
-**Audio Formats (decodeType):**
-| decodeType | Sample Rate | Channels | Use Case | Status |
-|------------|-------------|----------|----------|--------|
-| 2 | 44100 Hz | Stereo | **Dual-purpose:** Commands (13-byte payload) OR 44.1kHz media audio | VERIFIED |
-| 3 | 8000 Hz | Mono | Phone call (narrow-band) | LEGACY - never observed in captures; firmware code exists but modern CarPlay negotiates 16kHz |
-| 4 | 48000 Hz | Stereo | Media HD / CarPlay | VERIFIED |
-| 5 | 16000 Hz | Mono | Siri / Mic input | VERIFIED |
-
-**Note on decode_type=2:** Behavior depends on payload size. 13-byte payloads are audio commands; larger payloads are 44.1kHz PCM audio data.
-
-**Note on decode_type=3:** Firmware still lists 8kHz as an option, but no manual configuration resulted in observed 8kHz audio during testing. May be legacy code with functionality effectively removed. Modern iPhones default to wideband (16kHz).
+**Audio Formats (decodeType):** Values 2 (44.1kHz stereo / commands), 4 (48kHz stereo), 5 (16kHz mono). **audio_type** values: 1=Media, 2=Nav, 3=Mic. For the complete decodeType format mapping, dual-purpose decode_type=2 behavior, and audio stream routing details, see `audio_protocol.md`.
 
 ### Control Commands
 
@@ -417,40 +408,24 @@ Offset  Size  Field           Description
 
 **Purpose:** Session telemetry sent from adapter to host containing device statistics and adapter identification. Used for logging/analytics.
 
-### Navigation Focus (iOS 13+)
+### Navigation Focus (iOS 13+) [CarPlay only]
+
+These are standalone message types for CarPlay navigation video focus, distinct from the Android Auto focus command IDs 500-509 (which are sent as Command 0x08 payloads -- see `command_ids.md`).
 
 | Type | Hex | Name | Dir | Payload | Description |
 |------|-----|------|-----|---------|-------------|
 | 506 | 0x1FA | NaviFocus | OUT | 0 | Request nav focus |
 | 507 | 0x1FB | NaviRelease | OUT | 0 | Release nav focus |
-| 508 | 0x1FC | RequestNaviScreenFocus | BOTH | 0 | **Asymmetric handshake**: Adapter sends first (IN), host echoes back (OUT) |
+| 508 | 0x1FC | RequestNaviScreenFocus | BOTH | 0 | Adapter may send (IN); host can echo back (OUT). See Navigation Video section — 508 handshake requirement is **inconclusive**. |
 | 509 | 0x1FD | ReleaseNaviScreenFocus | OUT | 0 | Release nav screen |
 | 110 | 0x6E | NaviFocusRequest | IN | 0 | Nav requesting focus |
 | 111 | 0x6F | NaviFocusRelease | IN | 0 | Nav released focus |
 
 ### WiFi/Bluetooth Connection Status (Binary Verified Feb 2026)
 
-**⚠️ CORRECTED:** Previous documentation incorrectly labeled these commands. Verified via `ARMadb-driver` binary disassembly.
+Commands 1000-1013 are **pure status notifications** sent by the adapter to report WiFi/Bluetooth internal state. They never indicate session failure and must never trigger disconnect. CMD 1010 (DeviceWifiNotConnected) is the most commonly misinterpreted -- it is a WiFi hotspot status check, completely irrelevant for USB CarPlay sessions. Use `Unplugged` (0x04) or `Phase 0` for session termination detection.
 
-| Type | Hex | Name | Dir | Payload | Description |
-|------|-----|------|-----|---------|-------------|
-| 1003 | 0x3EB | ScaningDevices | IN | 0 | Adapter scanning for devices |
-| 1004 | 0x3EC | DeviceFound | IN | 0 | Device found during scan |
-| 1005 | 0x3ED | DeviceNotFound | IN | 0 | No device found in scan |
-| 1007 | 0x3EF | DeviceBluetoothConnected | IN | 0 | Bluetooth connected |
-| 1008 | 0x3F0 | DeviceBluetoothNotConnected | IN | 0 | Bluetooth disconnected |
-| 1009 | 0x3F1 | DeviceWifiConnected | IN | 0 | Phone connected to adapter WiFi hotspot |
-| 1010 | 0x3F2 | DeviceWifiNotConnected | IN | 0 | No phone connected to adapter WiFi hotspot |
-
-**Critical Note on 1010 (DeviceWifiNotConnected):**
-
-This is a **WiFi hotspot status notification**, NOT a session termination signal. The adapter sends this when:
-- During initialization (no phone connected yet)
-- Periodically while idle/waiting for connection
-- When WiFi link drops during wireless session
-
-**Host apps must NOT terminate sessions upon receiving 1010.** For USB CarPlay, WiFi status is irrelevant.
-Use `Unplugged` (0x04) or `Phase 0` for session termination detection.
+For the complete 1000-1013 table with firmware trigger functions and binary evidence, see the **Inbound Message Handling Reference** section below (Messages That MUST NEVER Trigger Disconnect) and `command_details.md`.
 
 ---
 
@@ -508,44 +483,27 @@ Offset  Size  Field        Description
 
 **Payload:** 4-byte command ID
 
-| ID | Hex | Name | Description |
-|----|-----|------|-------------|
-| 1 | 0x01 | startRecordAudio | Begin audio recording |
-| 2 | 0x02 | stopRecordAudio | Stop audio recording |
-| 3 | 0x03 | requestHostUI | Request UI focus |
-| 5 | 0x05 | siri | Trigger Siri |
-| 7 | 0x07 | mic | Phone microphone control |
-| 15 | 0x0F | boxMic | Adapter microphone control |
-| 16 | 0x10 | nightModeOn | Enable night mode |
-| 17 | 0x11 | nightModeOff | Disable night mode |
-| 22 | 0x16 | audioTransferOn | Enable audio transfer |
-| 23 | 0x17 | audioTransferOff | Disable audio transfer |
-| 24 | 0x18 | wifi24g | Switch to 2.4GHz WiFi |
-| 25 | 0x19 | wifi5g | Switch to 5GHz WiFi |
-| 100-114 | | Navigation | D-pad controls |
-| 200 | 0xC8 | home | Home button |
-| 201 | 0xC9 | play | Play button |
-| 202 | 0xCA | pause | Pause button |
-| 204 | 0xCC | next | Next track |
-| 205 | 0xCD | prev | Previous track |
-| 500 | 0x1F4 | RequestVideoFocus | Request video focus (Android Auto) |
-| 501 | 0x1F5 | ReleaseVideoFocus | Release video focus (Android Auto) |
-| 502 | 0x1F6 | unknown502 | Android Auto related |
-| 503 | 0x1F7 | unknown503 | Android Auto related |
-| 504 | 0x1F8 | RequestAudioFocusDuck | Request audio focus with ducking (AA) |
-| 505 | 0x1F9 | ReleaseAudioFocus | Release audio focus (AA) |
-| 1000 | 0x3E8 | SupportWifi | WiFi mode supported |
-| 1001 | 0x3E9 | SupportAutoConnect | Auto-connect supported |
-| 1002 | 0x3EA | StartAutoConnect | Start auto-connect scan |
-| 1003 | 0x3EB | ScaningDevices | Device scanning |
-| 1004 | 0x3EC | DeviceFound | Device found |
-| 1005 | 0x3ED | DeviceNotFound | No device found |
-| 1007 | 0x3EF | DeviceBluetoothConnected | Bluetooth connected |
-| 1008 | 0x3F0 | DeviceBluetoothNotConnected | Bluetooth disconnected |
-| 1009 | 0x3F1 | DeviceWifiConnected | WiFi hotspot: phone connected |
-| 1010 | 0x3F2 | DeviceWifiNotConnected | WiFi hotspot: no phone connected (**NOT session end**) |
+**Command ID Range Summary:**
+
+| Range | Category | Direction | Count | Protocol Context |
+|-------|----------|-----------|-------|------------------|
+| 1-31 | Basic Session Control | Various | 20 | Universal (CarPlay + Android Auto) |
+| 100-106 | D-Pad Navigation | H→A→P | 7 | CarPlay-specific |
+| 111-114 | Rotary Knob | H→A→P | 4 | CarPlay-specific |
+| 200-205 | Media Playback | H→A→P | 6 | CarPlay-specific |
+| 300-314 | Phone/DTMF | H→A→P | 15 | CarPlay-specific |
+| 400-403 | App Launch | H→A→P | 4 | CarPlay-specific |
+| 410-412 | UI Control | H→A→P | 3 | CarPlay-specific |
+| 500-509 | Focus (Android Auto) | A→H | 8 | **Android Auto only** -- manages video/audio/nav focus |
+| 600-601 | DVR (Dead Code) | H→A | 2 | Dead code in FW 2025.10 |
+| 700-702 | Custom Commands | H→A→P | 3 | CarPlay-specific |
+| 1000-1013 | Connection Status | Both | 14 | Universal -- pure status notifications, never trigger disconnect |
+
+For the complete per-ID command listing, see `command_ids.md`. For per-command binary evidence and firmware handler details, see `command_details.md`.
 
 ### BoxSettings (0x19) - JSON Configuration
+
+> **[Protocol]** BoxSettings (0x19) is a JSON message sent H→A during initialization. For the firmware's internal handling of these fields, see `configuration.md`. For implementation guidance with code examples, see `host_app_guide.md`.
 
 **⚠️ SECURITY WARNING:** The `wifiName`, `btName`, and `oemIconLabel` fields are vulnerable to **command injection**. These values are passed to `popen()` shell commands without sanitization. See `03_Security_Analysis/vulnerabilities.md` for details.
 
@@ -609,7 +567,7 @@ Offset  Size  Field        Description
 | `productType` | string | Product type (e.g., "A15W") | - |
 | `lightType` | int | LED indicator type | - |
 
-**Navigation Video (iOS 13+ with AdvancedFeatures=1):**
+**Navigation Video (iOS 13+ — activated by sending `naviScreenInfo` in BoxSettings) [CarPlay only]:**
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -618,11 +576,13 @@ Offset  Size  Field        Description
 | `naviScreenInfo.height` | int | Nav screen height (default: 272) |
 | `naviScreenInfo.fps` | int | Nav screen FPS (default: 30, range: 10-60, recommended: 24-60) |
 
-**Android Auto Mode:**
+**Android Auto Mode [Android Auto only]:**
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `androidWorkMode` | int | Enable Android Auto daemon (0/1) - resets on disconnect |
+| `androidAutoSizeW` | int | Android Auto video width (also in Display/Video above) |
+| `androidAutoSizeH` | int | Android Auto video height (also in Display/Video above) |
 
 **Complete Example:**
 ```json
@@ -736,7 +696,7 @@ UPLOAD FILE Length Error!!!   - Size validation exists
 | `/tmp/night_mode` | 0 or 1 | Triggers `StartNightMode`/`StopNightMode` |
 | `/tmp/hand_drive_mode` | 0 or 1 | Left/right hand drive |
 | `/tmp/charge_mode` | 0 or 1 | USB charging speed (see below) |
-| `/tmp/gnss_info` | NMEA text | GPS data for CarPlay navigation (see below) |
+| `/tmp/gnss_info` | NMEA text | GPS data for CarPlay navigation -- see GnssData (0x29) section below for full pipeline |
 | `/tmp/carplay_mode` | Value | CarPlay mode setting |
 | `/tmp/manual_disconnect` | Flag | Manual disconnect trigger |
 | `/etc/android_work_mode` | 0 or 1 | **Critical**: Enables Android Auto daemon |
@@ -787,6 +747,8 @@ Controls USB charging speed via GPIO pins 6 and 7.
 
 #### GPS/GNSS Data (Binary Verified Jan 2026)
 
+> **[Protocol/Firmware]** This section documents the GnssData (0x29) message format and firmware GPS pipeline. For host app implementation with code examples, see `host_app_guide.md`. For StartGNSSReport/StopGNSSReport command details, see `command_details.md`.
+
 GPS data for CarPlay navigation is sent via `/tmp/gnss_info` file.
 
 **Format:** Standard NMEA 0183 sentences
@@ -823,6 +785,8 @@ See `command_ids.md` for StartGNSSReport (18) and StopGNSSReport (19) commands.
 
 **Direction:** Host → Adapter (OUT)
 **Purpose:** Forward GPS location data from head unit to connected phone for CarPlay/Android Auto navigation.
+
+> **Protocol context:** CarPlay and Android Auto use different GPS delivery paths. **CarPlay** receives GPS via iAP2 LocationInformation (NMEA → `CiAP2LocationEngine` → iPhone). **Android Auto** receives GPS via protobuf `gps_location` messages (NMEA → `ARMAndroidAuto` → phone), but the adapter's timestamp derivation is broken (see Android Auto GPS Path below).
 
 **Finding:** The CPC200-CCPA has a **fully implemented GPS forwarding pipeline**. GPS data sent via this message type is converted to iAP2 LocationInformation by `CiAP2LocationEngine` in ARMiPhoneIAP2 and delivered to the iPhone for use in CarPlay Maps.
 
@@ -1107,12 +1071,33 @@ See `initialization.md` and `configuration.md` for detailed timing requirements.
 
 ## Phase Values (0x03)
 
+### Host-Visible Phases (sent to host via USB)
+
 | Value | Meaning | Status | Evidence |
 |-------|---------|--------|----------|
 | 0 | Session Terminated / Idle | VERIFIED | Used for session end detection |
-| 1-6 | Reserved / Internal | UNKNOWN | Not observed in captures |
 | 7 | Connecting / Negotiating | VERIFIED | `@ 4.498s: Phase payload 07 00 00 00` |
 | 8 | Streaming Ready / Active | VERIFIED | `@ 7.504s: Phase payload 08 00 00 00` |
+| 13 | Session Negotiation Failed | VERIFIED | AirPlay negotiation rejected — typically viewArea/safeArea constraint violation (`safeArea ⊆ viewArea ⊆ display`). Adapter internally sees Phase 0 (disconnect) between Phase 2 and 103. Triggers Phase 7→13 reconnect loop. Observed Feb 2026 when HU_VIEWAREA_INFO dimensions exceeded OPEN resolution. |
+
+### Internal Firmware Phases (Binary Verified Feb 2026)
+
+These phases are used internally by the adapter firmware for CarPlay session management. The host sees only phases 0, 7, and 8 over USB. The internal phases drive the adapter's state machine:
+
+| Phase | Name | Internal Action |
+|-------|------|-----------------|
+| 0 | DISCONNECTED | Kill AppleCarPlay/ARMiPhoneIAP2, cleanup |
+| 1 | CONNECTED | Set state=3, prepare session |
+| 2 | SCREEN_INFO | Send Phase(type=3, value=7) to host |
+| 3 | STREAMING | Send Phase(type=3, value=8) to host, start streaming |
+| 100 | WIRELESS_PROBE | HNP check for wired, screen info relay |
+| 101 | USB_HNP_OK | Log `"PHASE_USBHNPOK!"`, launch AppleCarPlay binary |
+| 102 | KILL | Kill AppleCarPlay, reset session |
+| 103 | UI_CALLBACK | UI callback handler |
+| 104 | RESET_WIFI | Log `"PHASE_ResetWiFi!!!!"`, restart WiFi |
+| 105 | PHONE_CALL_START | Phone call audio routing setup |
+| 106 | PHONE_CALL_END | End phone call audio routing |
+| 200 | AUTO_CONNECT_TRIGGER | Triggers auto-connect sequence |
 
 **Session Termination Detection:**
 - Phase 0 indicates session has ended
@@ -1153,19 +1138,63 @@ Time      Dir  Type                   Payload Summary
 
 ---
 
-## Navigation Video Handshake (iOS 13+)
+## Navigation Video Setup (iOS 13+)
 
-**CRITICAL DISCOVERY (Jan 2026):** Command 508 is a bidirectional handshake.
+### What Is Required (Testing Verified Feb 2026)
 
-**Handshake Sequence:**
-1. Adapter sends 508 to host (RequestNaviScreenFocus)
-2. Host MUST respond by sending 508 back to adapter
-3. This triggers `HU_NEEDNAVI_STREAM` D-Bus signal
-4. Navigation video (Type 0x2C) streaming begins
+Navigation video (Type 0x2C AltVideoFrame) is activated by **sending `naviScreenInfo` in BoxSettings**. This is the only confirmed requirement. The firmware parses `naviScreenInfo` at `0x16e5c` and immediately branches to the `HU_SCREEN_INFO` path at `0x170d6`, **bypassing** the `AdvancedFeatures` config check entirely.
 
-If host does not respond with 508, navigation video will not start.
+```json
+{
+  "naviScreenInfo": {
+    "width": 480,
+    "height": 240,
+    "fps": 30
+  }
+}
+```
 
-**Verified implementation** (`pi-carplay-main/src/main/carplay/services/CarplayService.ts:270-277`):
+**Binary proof (ARMadb-driver `0x16e5c`):**
+```arm
+0x16e5c  blx fcn.00015228          ; parse "naviScreenInfo" from JSON
+0x16e62  cmp r0, 0                 ; key found?
+0x16e64  bne.w 0x170d6             ; YES → HU_SCREEN_INFO path (BYPASSES AdvancedFeatures)
+0x16e68  ldr r0, "AdvancedFeatures" ; only reached if naviScreenInfo NOT found
+0x16e6c  bl fcn.00066d3c           ; read config value
+0x16e70  cmp r0, 0                 ; AdvancedFeatures == 0?
+0x16e72  bne 0x16f20               ; if ≠ 0 → legacy path
+0x16e7c  "Not support NaviScreenInfo, return\n"
+```
+
+**Activation Matrix:**
+
+| `naviScreenInfo` in BoxSettings | `AdvancedFeatures` | Result |
+|--------------------------------|-------------------|--------|
+| **Yes** | 0 | **Works** — HU_SCREEN_INFO path (bypasses check) |
+| **Yes** | 1 | Works — same path |
+| No | 1 | Works — legacy HU_NAVISCREEN_INFO path |
+| No | 0 | Rejected — "Not support NaviScreenInfo, return" |
+
+### What Was Disproven
+
+**`AdvancedFeatures=1` is NOT required.** Earlier documentation stated `AdvancedFeatures=1` was needed for navigation video. Live testing confirmed this is false — sending `naviScreenInfo` in BoxSettings is sufficient regardless of the `AdvancedFeatures` config value.
+
+### Command 508 Handshake (INCONCLUSIVE)
+
+The firmware binary shows a 508 (RequestNaviScreenFocus) command path where the adapter sends 508 to the host, and the `pi-carplay` reference implementation echoes 508 back. However, **live testing with CarLink Native could not conclusively determine whether the 508 echo is required** for navigation video to start.
+
+**What the binary shows:**
+- Adapter sends cmd 508 to host during session setup
+- If host echoes 508 back, adapter emits `HU_NEEDNAVI_STREAM` D-Bus signal
+- `pi-carplay` implementation does echo 508 back
+
+**What testing showed:**
+- Navigation video worked with `naviScreenInfo` configured
+- The 508 handshake's necessity could not be isolated as the sole factor
+
+**Recommendation:** Echo 508 back if received (low cost, may be required in some firmware paths), but do not consider it the primary activation mechanism. The primary mechanism is `naviScreenInfo` in BoxSettings.
+
+**Reference implementation** (`pi-carplay-main/src/main/carplay/services/CarplayService.ts:270-277`):
 ```typescript
 if ((msg.value as number) === 508 && this.config.naviScreen?.enabled) {
   this.driver.send(new SendCommand('requestNaviScreenFocus'))
@@ -1174,22 +1203,40 @@ if ((msg.value as number) === 508 && this.config.naviScreen?.enabled) {
 
 ---
 
-## Undocumented Message Types
+## Previously Undocumented Message Types — NOW IDENTIFIED (Binary Verified Feb 2026)
 
-| Type | Hex | Notes |
-|------|-----|-------|
-| 11 | 0x0B | Encryption bypass list |
-| 16-17 | 0x10-0x11 | Unknown |
-| 19 | 0x13 | Unknown |
-| 27 | 0x1B | Encryption control |
-| 119 | 0x77 | **AdapterIdle** - Idle/waiting notification (see below) |
-| 136 | 0x88 | Debug mode enable |
-| 253 | 0xFD | Error/reset related |
-| 255 | 0xFF | Error or special control |
+All types previously listed as "unknown" have been identified via ARMadb-driver binary disassembly.
+Full operational details for each type follow the summary table.
 
-### AdapterIdle (0x77) - Idle Notification (Verified Jan 2026)
+| Type | Hex | Binary Name | Direction | Payload | Status in FW 2025.10 |
+|------|-----|-------------|-----------|---------|---------------------|
+| 11 | 0x0B | CMD_CARPLAY_MODE_CHANGE | A→H only | Variable (mode struct) | ACTIVE — forwarded from iPhone CarPlay stack |
+| 16 | 0x10 | CMD_CARPLAY_AirPlayModeChanges | A→H only | Variable (mode data) | ACTIVE — forwarded from iPhone AirPlay |
+| 17 | 0x11 | AutoConnect_By_BluetoothAddress | BOTH | BT MAC string | ACTIVE — auto-reconnect trigger |
+| 19 | 0x13 | CMD_BLUETOOTH_ONLINE_LIST | BOTH | Variable (device list) | ACTIVE — BT device enumeration |
+| 27 | 0x1B | BTAudioDevice_Signal | H→A | Unknown | **DEAD CODE** — logged and discarded, no handler |
+| 30 | 0x1E | Bluetooth_Search (IN) / BroadCastRemoteCxCy (OUT) | **DUAL** | IN: unused / OUT: 28B (resolution) | ACTIVE outbound, NO-OP inbound |
+| 119 | 0x77 | FactorySetting | BOTH | A→H: empty (idle notification) / H→A: 4B (factory reset) | ACTIVE — dual-purpose |
+| 136 | 0x88 | CMD_DEBUG_TEST | H→A | 4B (subcommand) | ACTIVE — log capture/retrieval |
+| 161 | 0xA1 | ICCOA Open/Info | A→H | 12-24B | ACTIVE — ICCOA protocol only (not CarPlay/AA) |
+| 205 | 0xCD | HUDComand_A_Reboot | H→A | None | ACTIVE — full system reboot |
+| 206 | 0xCE | HUDComand_A_ResetUSB | H→A | None | ACTIVE — USB gadget reset |
+| 240 | 0xF0 | CMD_ENABLE_CRYPT | H→A (trigger) / A→H (ack) | H→A: 4B crypto_mode / A→H: empty | ACTIVE — see full lifecycle below |
+| 253 | 0xFD | HUDComand_D_Ready | H→A | None (ignored) | ACTIVE — display-ready signal |
+| 255 | 0xFF | CMD_ACK | A→H | None | ACTIVE — Open session acknowledgment |
 
-**Direction:** Adapter → Host (IN)
+**Note on 0xF0 (CMD_ENABLE_CRYPT):** This is a standalone message type, NOT a sub-command of type 0x08. The host sends 0xF0 with a 4-byte crypto_mode value; the adapter echoes an empty 0xF0 back as acknowledgment. See full lifecycle below.
+
+**Note on 0xF1 (IPC_REGISTRATION):** Type 0xF1 is used for MiddleMan IPC registration/keepalive between internal processes. Proved at `0x64326`: `movs r1, 0xF1`. **Not sent over USB** — internal only.
+
+**Updated total: 51 message types** (49 USB dispatch + 0xF0 CMD_ENABLE_CRYPT + 0xF1 IPC_REGISTRATION internal).
+
+### FactorySetting (0x77) - Dual-Purpose (Binary Verified Feb 2026)
+
+**Direction:** BOTH
+**Binary Name:** `FactorySetting`
+
+**A→H (Adapter → Host) — Idle Notification:**
 **Payload:** None (header only, 16 bytes total)
 
 ```
@@ -1199,11 +1246,7 @@ if ((msg.value as number) === 508 && this.config.naviScreen?.enabled) {
 +------------------+------------------+------------------+------------------+
 ```
 
-**Observed Behavior:**
-- Sent by adapter to host during idle state
-- Occurred at ~33 seconds into a session with no active streaming
-- May indicate adapter is waiting for activity or phone connection
-- Similar to HeartBeat but in reverse direction (adapter-originated)
+Sent by adapter to host during idle state (observed ~33s into session with no active streaming). Acts as adapter-side "still waiting" signal. Host may log receipt but should take NO action.
 
 **Capture Evidence:**
 ```
@@ -1211,68 +1254,434 @@ if ((msg.value as number) === 508 && this.config.naviScreen?.enabled) {
   Header: aa 55 aa 55 00 00 00 00 77 00 00 00 88 ff ff ff
 ```
 
-**Purpose (Inferred):** Adapter-side keepalive or "still waiting" signal. Host may use this to detect adapter is responsive but idle.
+**H→A (Host → Adapter) — Factory Reset Command:**
+**Payload:** 4 bytes (reset command data)
+
+Triggers factory reset on the adapter. The handler at `kRiddleHUDComand_CommissionSetting` deletes `/etc/riddle.conf`, restores from `/etc/riddle_default.conf`, clears BT pairings, resets WiFi settings, and generates a new device serial. **Use with extreme caution.**
+
+**What the host should do:**
+- **On receive (A→H):** Log as informational. Do NOT trigger disconnect or state change.
+- **On send (H→A):** Only send for deliberate factory reset. Expect adapter reboot afterwards.
+
+### CMD_ENABLE_CRYPT (0xF0) — Full Encryption Lifecycle (Binary Verified Feb 2026)
+
+**Direction:** Bidirectional — Host sends trigger (4-byte payload), Adapter echoes empty ack
+**Dispatch:** `method.CAccessory_fd.virtual_24` at `0x1deea` → handler at `0x1f798`
+**NOT in `fcn.00017b74` dispatch table** — falls to "Not support decrypt cmd" log, then encryption processing path
+
+**⚠️ CORRECTION (Feb 2026):** Previous documentation listed a "RemoteDisplay" type at 0xF0. This was incorrect — the string "RemoteDisplay" does NOT exist in the binary. Type 0xF0 is used exclusively for CMD_ENABLE_CRYPT. The `0x1af48` address previously cited as a function is actually a **data table** (string pointer array for command name logging).
+
+#### Enable Protocol
+
+**Step 1 — Host sends 0xF0 with crypto_mode:**
+```
+Offset  Size  Field        Description
+------  ----  -----        -----------
+0x00    4     crypto_mode  uint32, must be > 0 to enable encryption
+```
+Host sends: `[magic:55AA55AA][len:04000000][type:F0000000][check:0FFFFFFF][mode:01000000]`
+
+**Step 2 — Adapter validates (at `0x1f798`):**
+```arm
+0x1f798  ldr r3, [r6, 4]       ; payload length
+0x1f79a  cmp r3, 4             ; must be exactly 4 bytes
+0x1f79c  bne 0x1f7d6           ; REJECT if wrong size
+0x1f79e  ldr r3, [r6, 0x10]   ; payload pointer
+0x1f7a0  ldr r3, [r3]         ; crypto_mode value
+0x1f7a2  cmp r3, 0
+0x1f7a4  ble 0x1f7d6           ; REJECT if value <= 0
+```
+
+**Step 3 — Adapter sends empty 0xF0 ack (at `0x1f7a6`):**
+```arm
+0x1f7a8  bl fcn.00064650       ; init message (magic=0x55AA55AA)
+0x1f7ae  movs r1, 0xf0        ; type = 0xF0
+0x1f7b0  movs r2, 0           ; payload = NULL (empty)
+0x1f7b2  bl fcn.00064670       ; set message header
+0x1f7bc  bl fcn.00018598       ; SEND empty 0xF0 back to host
+```
+Host receives: `[magic:55AA55AA][len:00000000][type:F0000000][check:0FFFFFFF]`
+
+**Step 4 — Adapter stores crypto_mode globally (at `0x1f7ca`):**
+```arm
+0x1f7c8  ldr r3, [r3]         ; reload crypto_mode from payload
+0x1f7ca  str r3, [r4]         ; WRITE to global at 0x11f408 (.bss)
+```
+Log: `"setUSB from HUCMD_ENABLE_CRYPT: %d\n"`
+
+**Step 5 — All subsequent messages are encrypted/decrypted:**
+The global at `0x11f408` is read by `fcn.00017b74` (4 read sites: `0x1DDBC`, `0x17B96`, `0x17D4A`, `0x18618`). When `> 0`, all messages with payload pass through AES-128-CBC, EXCEPT exempt types.
+
+#### State Machine
+
+```
+┌─────────────────────────────────────────────────────┐
+│  ENCRYPTION OFF (default, global=0)                 │
+│  All messages use magic 0x55AA55AA (cleartext)      │
+│                                                     │
+│  Host sends 0xF0 [crypto_mode > 0]                  │
+│       ↓                                             │
+│  Adapter validates (4 bytes, value > 0)             │
+│       ↓                                             │
+│  Adapter echoes empty 0xF0 ack                      │
+│       ↓                                             │
+│  Adapter stores crypto_mode to global 0x11f408      │
+│       ↓                                             │
+│  ENCRYPTION ON (global > 0)                         │
+│  Non-exempt messages: magic=0x55BB55BB + AES-CBC    │
+│  Exempt types (0x06,0x07,0x2A,0x2C): still 55AA    │
+│                                                     │
+│  ⚠ CANNOT be disabled mid-session                   │
+│  Only reset via adapter reboot (0x11f408 → 0)       │
+└─────────────────────────────────────────────────────┘
+```
+
+#### AES Key Derivation (at `0x17d9e`-`0x17dd0`)
+
+**Base key:** `"SkBRDy3gmrw1ieH0"` (16 bytes at `0x6d0d4`)
+
+**Derived key:** Rotated by `crypto_mode % 16`:
+```
+derived_key[i] = base_key[(i + crypto_mode) % 16]
+```
+Only 16 possible key rotations for a known hardcoded key — **obfuscation, not security**.
+
+**IV construction:** 16 zero bytes, then scatter `crypto_mode` bytes:
+```
+iv[1]  = (crypto_mode >>  0) & 0xFF
+iv[4]  = (crypto_mode >>  8) & 0xFF
+iv[9]  = (crypto_mode >> 16) & 0xFF
+iv[12] = (crypto_mode >> 24) & 0xFF
+```
+
+**AES call:** `AES_cbc_encrypt(payload, payload, len, schedule, iv, direction)`
+- Direction 1 = encrypt (outbound, host→adapter: r8≠0)
+- Direction 0 = decrypt (inbound, adapter→host: r8=0)
+
+#### Encryption Bypass (at `0x17d60`-`0x17d72`)
+
+```arm
+0x17d60  ldr r3, [r4, 8]       ; message type
+0x17d62  subs r2, r3, 6
+0x17d64  cmp r2, 1             ; types 6-7 → SKIP
+0x17d68  cmp r3, 0x2c          ; type 0x2C → SKIP
+0x17d6c  cmp r3, 0x2a          ; type 0x2A → SKIP
+0x17d72  bl fcn.00064614       ; all others → SET 0x55BB55BB magic
+```
+
+| Type | Encrypted? | Reason |
+|------|-----------|--------|
+| 0x06 VideoFrame | NO | Bandwidth — would add unacceptable latency |
+| 0x07 AudioFrame | NO | Bandwidth — real-time audio |
+| 0x2A DashBoard_DATA | NO | Performance — frequent metadata updates |
+| 0x2C AltVideoFrame | NO | Bandwidth — navigation video |
+| All others | YES | Payload encrypted with AES-128-CBC |
+
+#### Security Assessment
+
+| Property | Value | Risk |
+|----------|-------|------|
+| Key space | 16 rotations of known key | CRITICAL — trivially brute-forceable |
+| IV | Deterministic from crypto_mode | HIGH — same mode = same IV |
+| Key visibility | Hidden in UPX-packed binary | LOW — visible once unpacked |
+| HW acceleration | `/dev/hwaes` available | Performance mitigated |
+| Disable mechanism | None (one-way enable) | Session must restart |
+| Shared across all adapters | Yes — same hardcoded key | CRITICAL — one key for all units |
+
+### CMD_CARPLAY_MODE_CHANGE (0x0B) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Adapter → Host ONLY (inbound from host is logged as unsupported and dropped)
+**Dispatch:** `method.CAccessory_fd.virtual_24` — forwarded from iPhone CarPlay stack
+**Payload:** Variable — raw CarPlay mode data from iPhone
+
+**When sent:** iPhone transitions between work modes. The adapter's `OniPhoneWorkModeChanged` handler (`fcn.000176bc`) fires on:
+
+| Mode | Name | Meaning |
+|------|------|---------|
+| 0 | None/Idle | No active projection |
+| 1 | AirPlay | Wireless audio streaming |
+| 2 | CarPlay | Display projection active |
+| 3 | iOSMirror | Screen mirroring |
+| 4 | OnlyCharge | Phone charging, no projection |
+
+**Triggering code paths:**
+1. CarPlay data sub-type `0x64` (100) at `0x219c4` — direct mode forwarding
+2. WorkMode transition with state==6 at `0x1f646` — state-to-type mapping
+3. `StartPhoneLink` at `0x1cc00` — sends with 0x2C-byte payload containing linkType/transportType
+
+**What the host should do:** Parse the mode byte. On mode 0→2 (idle→CarPlay): prepare video/audio pipelines. On mode 2→0 (CarPlay→idle): tear down pipelines, prepare for disconnect. On mode change to 1 (AirPlay): switch to audio-only routing.
+
+### CMD_CARPLAY_AirPlayModeChanges (0x10) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Adapter → Host ONLY
+**Dispatch:** Forwarded from CarPlay data sub-type `0x65` (101) at `0x219be`
+**Payload:** Variable — AirPlay mode state from iPhone
+
+**When sent:** iPhone transitions to/from AirPlay audio streaming mode. This is distinct from 0x0B (CarPlay mode) — AirPlay is audio-only wireless, no display.
+
+**What the host should do:** Track AirPlay state. When active, the audio pipeline receives AirPlay-encoded audio rather than standard CarPlay media audio. The host may need different decoding or routing paths.
+
+**Firmware validation:** `"NoAirPlay recv data size error!"` at `0x6dd9a` — adapter validates data size before forwarding.
+
+### AutoConnect_By_BluetoothAddress (0x11) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Bidirectional (primarily Host → Adapter)
+**Payload:** Null-terminated Bluetooth MAC address string (e.g., `"AA:BB:CC:DD:EE:FF"`)
+
+**When sent (A→H):** Adapter sends as `"Ignal PhoneCommand: AutoConnect_By_BluetoothAddress(0x11)"` at `0x18fba`. This requests the host to initiate BT pairing to the given address.
+
+**When sent (H→A):** Host provides a BT MAC for the adapter to auto-connect to on subsequent sessions. Config `NeedAutoConnect` must be `1`.
+
+**Auto-connect flow (at `fcn.00022140`):**
+1. Adapter detects link type via `fcn.00069874` (returns `0x1E` for BT)
+2. Reads `NeedAutoConnect` config flag
+3. If enabled AND USB device type known AND `HU_LINK_TYPE` set:
+4. Reads stored BT MAC and initiates connection
+5. Log: `"Detect link type by AutoConnect!!!"` at `0x6f606`
+
+**Related commands:** `SetBluetoothAddress` (type 0x0A) sets the address; `ForgetBluetoothAddr` clears it.
+
+### CMD_BLUETOOTH_ONLINE_LIST (0x13) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Bidirectional
+**Payload (A→H):** Variable — list of Bluetooth devices from adapter's BT daemon
+
+**When sent (A→H):** After querying BT daemon via D-Bus (`org.riddle.BluetoothControl` at `0x739a0`, `/RiddleBluetoothService` at `0x73c04`). Triggered by:
+1. Phone command `0x3F5` (`GetBluetoothOnlineList`) at `0x19514`
+2. `OnBluetoothDaemonOn` callback at `0x6dd14` (BT subsystem init)
+3. BT connection state changes (`DeviceBluetoothConnected`/`NotConnected`/`PairStart`)
+
+**CarPlay data forwarding (at `0x21592`):** When receiving sub-type 0x13 from iPhone:
+- If payload > 12 bytes: extracts 64-bit value, stores at `[0x11f498]` (BT list offset)
+- If payload == 8 bytes: reads screen size values, logs `"recv CarPlay altScreen size info: %dx%d"`
+- If CarPlay active (state==5): constructs a type 0x2C message with resolution data
+
+**Firmware validation:** `"Invalid Bluetooth DeviceID! - %s(%d)"` at `0x6ee27`
+
+**What the host should do:** Parse BT device list for display or auto-connect decisions.
+
+### BTAudioDevice_Signal (0x1B) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Host → Adapter
+**Status: DEAD CODE** in firmware 2025.10.15.1127
+
+The adapter recognizes type 0x1B in the dispatch table at `0x17ba0` → `0x17d46`, but the handler only loads the string `"BTAudioDevice_Signal"` and falls through to `"Not support decrypt cmd: %s !!!"` at `0x17d3a`. No payload processing occurs.
+
+**Purpose (historical):** Likely a placeholder for HFP/A2DP Bluetooth audio handoff coordination that was never implemented. May be supported in other adapter models or future firmware versions.
+
+**What the host should do:** Do NOT send this type. It will be logged and discarded.
+
+### CMD_DEBUG_TEST (0x88) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Host → Adapter
+**Dispatch:** `method.CAccessory_fd.virtual_24` at `0x1deac` → handler at `0x1f6e0`
+**Payload:** Exactly 4 bytes — `uint32 subcommand`
+
+```
+Offset  Size  Field         Description
+------  ----  -----         -----------
+0x00    4     subcommand    1=open log, 2=read log, 3=enable periodic
+```
+
+| Sub-cmd | Action | Detail |
+|---------|--------|--------|
+| **1** | Start log capture | Checks `/tmp/userspace.log` exists, sets log-active flag, runs `system("/script/open_log.sh &")` |
+| **2** | Read & send log | Opens `/tmp/userspace.log` with `fopen("rb")`, reads up to 16MB, packages as **type 0x99** message, sends back to host |
+| **3** | Enable periodic | Sets global flag at `[0x11f3d0]=1`, starts timer (interval 50 ticks) for continuous log streaming |
+
+**Usage sequence:**
+1. Send `0x88` with `[01 00 00 00]` — start log capture
+2. Wait for log data to accumulate
+3. Send `0x88` with `[02 00 00 00]` — retrieve log
+4. Listen for **type 0x99** (SendFile) response containing firmware log contents
+5. Optionally: Send `0x88` with `[03 00 00 00]` for continuous streaming
+
+### HUDComand_A_Reboot (0xCD) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Host → Adapter
+**Dispatch:** `method.CAccessory_fd.virtual_24` at `0x1dee0` → `fcn.00067b18`
+**Payload:** None (empty — type alone triggers action)
+
+**What happens:**
+1. Logs `"Reboot box reason: kRiddleHUDComand_A_Reboot"`
+2. Checks a suppression flag file — if flag == 1, returns without rebooting
+3. If not suppressed, saves diagnostic logs:
+   - `echo "Save last log when reboot" > /var/log/box_last_reboot.log`
+   - `dmesg | tail -n 2000 >> /var/log/box_last_reboot.log`
+   - `tail -n 2000 /tmp/userspace.log >> /var/log/box_last_reboot.log`
+4. Executes: `sync; sleep 1; reboot`
+
+**What the host should do:** After sending, treat the connection as dead. Expect USB device detach followed by re-enumeration after reboot (~10-15 seconds). Enter DISCONNECTED state and wait for USB re-attach.
+
+### HUDComand_A_ResetUSB (0xCE) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Host → Adapter
+**Dispatch:** `method.CAccessory_fd.virtual_24` at `0x1dece` → `0x1f786`
+**Payload:** None (empty)
+**Log:** `"$$$ ResetUSB from HU\n"` at `0x1f78a`
+
+**What happens (at `fcn.0001c048`):**
+1. Checks device-opened flag at `[0x11f4a0+0x14]`
+2. If `/tmp/ram_fat32.img` exists, writes: `echo 0 > /sys/class/android_usb_accessory/android0/enable`
+3. This **disables the USB gadget**, forcing a USB-level disconnect
+4. Sets USB-resetting flag at `[obj+0x33c]=1`
+5. Resets two global state objects at `0x11f4a0` and `0x11f43c`
+6. If WiFi active (mode==2): runs `/script/close_bluetooth_wifi.sh; sleep 6` (also resets wireless)
+
+**Softer than 0xCD (Reboot):** Only tears down the USB link, does not reboot the entire adapter. The adapter process continues running.
+
+**What the host should do:** Expect USB detach event, then re-attach. Enter DISCONNECTED state. If in wireless mode, expect both USB and WiFi to drop.
+
+**Related:** `"AutoResetUSB"` string at `0x6c8f3` — the adapter can also trigger USB reset internally.
+
+### HUDComand_D_Ready (0xFD) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Host → Adapter
+**Dispatch:** `method.CAccessory_fd.virtual_24` at `0x1def0` → handler at `0x1dfbe`
+**Payload:** None (payload is ignored — the message type alone is the signal)
+
+**What happens (at `0x1dfbe`):**
+1. If `this->0x68` is non-NULL: calls `fcn.00023dce` which flushes/releases RAM disk at `/tmp/ram_fat32.img`
+2. Sets global byte flag at `0x96ea8` to `1` — the **display-ready** indicator
+
+**When to send:** After the host's video surface/decoder is initialized and ready to receive frames. The "D" in the name likely stands for "Display".
+
+**What the host should do:** Send type 0xFD (empty payload) as a fire-and-forget notification. No response from adapter. The adapter may gate video frame transmission on this flag.
+
+### CMD_ACK (0xFF) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Adapter → Host
+**Dispatch:** Type 0xFF is NOT in the main dispatcher's binary search tree. It is only recognized in the name-resolver at `0x17c6e`:
+```arm
+0x17c6e  cmp r3, 0xff
+0x17c72  mov r3, "CMD_ACK"     ; if 0xFF
+0x17c74  mov r3, "Unkown..."   ; else (any other unknown type)
+```
+
+**Payload:** None (empty — header only)
+
+**When sent:** The adapter sends 0xFF **after processing type 0x05 "Open"** for CarPlay session types (at `0x1e110`). It is the session-open acknowledgment.
+```arm
+0x1e110  movs r3, 0xff        ; type = CMD_ACK
+0x1e112  str r3, [sp, 0x88]   ; set type in message header
+0x1e114  bl fcn.00018598       ; send to host
+```
+
+**What the host should do:** Receiving 0xFF confirms the adapter has accepted the Open command and is ready for streaming. Proceed with video/audio configuration. If 0xFF is not received after sending Open, the session establishment may have failed.
+
+### BroadCastRemoteCxCy (0x1E outbound) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Adapter → Host (outbound only — inbound 0x1E is "Bluetooth_Search", unsupported/no-op)
+**Function:** `fcn.0001b574` (`BroadCastRemoteCxCy`)
+**Payload:** 28 bytes (inner type 0xF0 + resolution struct from `0x11f3d4`)
+
+**⚠️ CORRECTION (Feb 2026):** Previous documentation listed a separate "RemoteDisplay" type 0xF0. This was incorrect — the 0xF0 value inside this message is an **inner/sub-type**, NOT a separate USB message type. On the wire, this message has type **0x1E**. The string "RemoteDisplay" does NOT exist in the binary.
+
+**When sent:**
+1. **During Open handshake** (`ProcessCmdOpen` at `0x22098`): After processing the host's Open message, adapter broadcasts the phone's screen resolution
+2. **During link session init** (at `0x1c4bc`): When a new BT/WiFi link starts, resolution is pushed to all active sessions
+
+**Payload structure (at `fcn.0001b574`):**
+```arm
+0x1b5c4  movs r1, 0xf0        ; inner type marker = 0xF0
+0x1b5c8  movs r3, 0x1c        ; size = 28 bytes
+0x1b5ca  bl fcn.00064768       ; build message from struct at 0x11f3d4
+```
+Log: `"Accessory_fd::BroadCastRemoteCxCy : %d  %d"` — two uint32 values (width, height)
+
+**Key fields from source struct `[0x11f3d4]`:**
+```
+Offset  Size  Field    Description
+------  ----  -----    -----------
+0x00    4     Cx       Remote display width (pixels)
+0x04    4     Cy       Remote display height (pixels)
+0x08+   20    ...      Extended display parameters (28 total)
+```
+
+**What the host should do:** Extract Cx/Cy from the payload. These are the connected phone's display resolution. Use to configure ViewArea/SafeArea settings or video rendering surface size.
+
+**Inbound (0x1E "Bluetooth_Search"):** If the host sends type 0x1E, the adapter logs `"Not support decrypt cmd: Bluetooth_Search !!!"` and drops it. This is vestigial code — do NOT send 0x1E.
+
+### ICCOA Open/Info (0xA1) — Operational Details (Binary Verified Feb 2026)
+
+**Direction:** Adapter → Host
+**Payload:** 12-24 bytes (device info + coordinate data)
+
+**When sent:** Only for **ICCOA protocol** (link type `0x14` / decimal 20). The adapter's link-type-to-message-type mapper at `fcn.00017f4c` (`0x17f5c`) maps:
+
+| Link Type | Protocol | Response Msg Type |
+|-----------|----------|-------------------|
+| 3 | CarPlay Wired | 0x06 |
+| 5 | Android Auto Wired | 0x09 |
+| 6 | Android Auto Wireless | 0x0B |
+| 7 | HiCar Wired | 0x0D |
+| 8 | HiCar Wireless | 0x0F |
+| **20 (0x14)** | **ICCOA** | **0xA1** |
+
+The handler at `0x1faaa` performs floating-point coordinate conversion (`vcvt.f64.s32`, `vdiv.f64`) — converting integer lat/lon to floating-point degrees.
+
+**Payload structure (from `0x1faaa` handler):**
+```
+Offset  Size  Field        Description
+------  ----  -----        -----------
+0x00    4     sub_type     Message sub-type (0x0b) and length
+0x04    4     flags        link_type | sub_cmd << 8
+0x08    8     latitude     float64 (converted from int32)
+0x10    8     longitude    float64 (converted from int32)
+```
+
+**What the host should do:** If implementing ICCOA support, treat this as the Open acknowledgment (equivalent to 0x06 for CarPlay). For CarPlay/AA-only implementations, this message will never be seen.
 
 ---
 
-## Newly Identified Types (Firmware Binary Analysis - Jan 2026)
+## Additional Findings (Feb 2026)
 
-From disassembly of `ARMadb-driver_unpacked`:
+### Message Sender Functions (Corrected)
 
-| Type | Hex | Name | Dir | Payload | Code Evidence |
-|------|-----|------|-----|---------|---------------|
-| 30 | 0x1E | RemoteCxCy | A→H | Display resolution data | fcn.0001af48 @ `0x1afb0` |
-| 161 | 0xA1 | ExtendedMfgInfo | A→H | Extended OEM/manufacturer data | fcn.00018628, fcn.000186ba |
-| 240 | 0xF0 | RemoteDisplay | A→H | Remote display parameters | fcn.0001af48 @ `0x1af96` |
+| Function | Address | Messages Sent | Notes |
+|----------|---------|---------------|-------|
+| fcn.00018628 | `0x18628` | 0x06, 0x09, 0x0B, 0x0D, 0xA1 | Link-type-dependent info response |
+| fcn.000186ba | `0x186ba` | 0x14 (ManufacturerInfo), 0xA1 | OEM info sender |
+| fcn.00018850 | `0x18850` | 0x06, 0x0B | HiCar DevList JSON (32B) |
+| fcn.0001b574 | `0x1b574` | 0x1E (BroadCastRemoteCxCy) | Resolution broadcast (28B, inner type 0xF0) |
+| fcn.00017328 | `0x17328` | Generic | 21+ call sites, generic message sender |
+| fcn.00067b18 | `0x67b18` | N/A | Reboot handler (0xCD) |
+| fcn.0001c048 | `0x1c048` | N/A | USB gadget reset (0xCE) |
 
-### Message Sender Functions
+**⚠️ CORRECTION:** `0x1af48` was previously listed as a function that sends types 0x01, 0x1E, 0xF0. It is actually a **data table** — a `.dword` array of string pointers used for command name logging (contains strings like "LaunchAppNowPlaying", "ShowUI", "StopUI", etc.).
 
-| Function | Address | Message Types Sent |
-|----------|---------|-------------------|
-| fcn.00018628 | `0x18628` | 0x06, 0x09, 0x0B, 0x0D, 0xA1 (state-dependent) |
-| fcn.000186ba | `0x186ba` | 0x14 (ManufacturerInfo), 0xA1 |
-| fcn.00018850 | `0x18850` | 0x06, 0x0B (HiCar DevList JSON) |
-| fcn.0001af48 | `0x1af48` | 0x01, 0x1E, 0xF0 |
-| fcn.00017340 | `0x17340` | Generic message sender (21 call sites) |
+### iPhone/Android Work Mode Enumerations (Binary Verified)
 
-### Payload Structure Details (Binary Analysis - Jan 2026)
+**iPhone modes** (from `fcn.000176bc` / `OniPhoneWorkModeChanged`):
 
-**RemoteCxCy (0x1E)** - 8 bytes payload:
-```
-+--------+--------+
-| Width  | Height |
-| (4B)   | (4B)   |
-+--------+--------+
-```
-- Log string: `Accessory_fd::BroadCastRemoteCxCy : %d  %d` @ `0x5c20d`
-- Broadcast display resolution from adapter to host
+| Mode | Name |
+|------|------|
+| 0 | None/Idle |
+| 1 | AirPlay |
+| 2 | CarPlay |
+| 3 | iOSMirror |
+| 4 | OnlyCharge |
 
-**RemoteDisplay (0xF0)** - 28 bytes payload:
-```
-+--------------------------------------------------------------------------+
-|                    Display Parameters (28 bytes @ 0x11d00c)              |
-+--------------------------------------------------------------------------+
-```
-- Size evidence: `movs r3, 0x1c` @ `0x1af9a`
-- Runtime data structure, fields require protocol capture to verify
+**Android modes** (from `fcn.0001777c` / `OnAndroidWorkModeChanged`):
 
-**ExtendedMfgInfo (0xA1)** - 12 bytes payload:
-```
-+--------------------------------------------------------------------------+
-|                    Extended OEM Data (12 bytes)                          |
-+--------------------------------------------------------------------------+
-```
-- Size evidence: `movs r2, 0xc` @ `0x186ca`
-- Sent alongside ManufacturerInfo (0x14) when state==0x14 (20)
+| Mode | Name |
+|------|------|
+| 0 | None/Idle |
+| 1 | AndroidAuto |
+| 2 | CarLife |
+| 3 | AndroidMirror |
+| 4 | HiCar |
+| 5 | ICCOA |
 
-**HiCar DevList (0x0B)** - 32 bytes payload:
+### HiCar DevList (0x0B subtype) — 32 bytes payload
+
+When sent as HiCar device list (via `fcn.00018850` at `0x18890`):
 ```
 +--------------------------------------------------------------------------+
 |                    Device List Data (32 bytes)                           |
 +--------------------------------------------------------------------------+
 ```
-- Size evidence: `movs r2, 0x20` @ `0x18890`
-- Contains "DevList" and "type" JSON fields
+Contains "DevList" and "type" JSON fields.
 
 ### JSON Payload Format Strings (Firmware Addresses)
 
@@ -1301,6 +1710,176 @@ From disassembly of `ARMadb-driver_unpacked`:
 | `DeviceWifiNotConnected` | `0x5bcd1` | WiFi disconnected |
 | `CMD_BOX_INFO` | `0x5b44c` | Box info request/response |
 | `CMD_CAR_MANUFACTURER_INFO` | `0x5b3e4` | OEM info (Type 0x14) |
+
+---
+
+## Inbound Message Handling Reference (Binary Verified Feb 2026)
+
+This section is the **definitive guide** for how the host app should respond to every message the adapter sends. All classifications were verified by tracing the firmware binary's outbound message generation paths in `ARMadb-driver_2025.10_unpacked` and cross-referencing with the `_SendPhoneCommandToCar` dispatcher at `fcn.00019244`.
+
+### Session-Critical Messages (MUST Handle)
+
+These messages indicate state changes that **require** host action. Ignoring them can leave the session in an inconsistent state.
+
+| Type | Name | Payload | Host Action |
+|------|------|---------|-------------|
+| 0x02 | PlugIn | 8B (phoneType + connected) | Prepare video/audio pipelines. Transition to DEVICE_CONNECTED state. |
+| 0x03 | Phase | 4B (phase value) | Phase 7: transition to CONNECTING. Phase 8: start video/audio, transition to STREAMING. **Phase 0: FULL SESSION TEARDOWN** — see critical note below. |
+| 0x04 | PlugOut | 0B | **Immediate disconnect.** Phone was physically unplugged from adapter. Stop all pipelines, transition to DISCONNECTED. |
+| 0x06 | VideoFrame | Variable | Feed H.264 NAL units to decoder. |
+| 0x07 | AudioData | Variable | If 13B: audio command (see below). If larger: PCM audio data → AudioTrack. |
+| 0x2A | DashBoard_DATA | Variable | Parse subtype: 1=media JSON, 3=album art, 200=NaviJSON. Update media session and navigation state. |
+| 0x2C | AltVideoFrame | Variable | Navigation video stream → secondary decoder (iOS 13+, activated by `naviScreenInfo` in BoxSettings). |
+| 0x08 | CarPlayControl | 4B (cmd ID) | Dispatch on command ID — see Command ID Classification below. |
+| 0xFF | CMD_ACK | 0B | Open session acknowledged. Proceed with streaming configuration. |
+
+**CRITICAL — Phase 0 Detection:**
+
+Firmware binary proof at `0x1c6c4`: Phase 0 handler executes `killall AppleCarPlay` and `killall ARMiPhoneIAP2` — a **full teardown** of all phone-link processes. This is the adapter's definitive "session is over" signal.
+
+```
+0x1c6c4: cmp r5, 0     ; phase == 0?
+0x1c6c6: bne ...        ; no → check other phases
+         ; YES → teardown path:
+         ; killall AppleCarPlay
+         ; killall ARMiPhoneIAP2
+         ; reset session state
+```
+
+The host app MUST:
+1. Stop video decoder
+2. Stop audio playback
+3. Stop microphone capture
+4. Stop GNSS forwarding
+5. Transition to DISCONNECTED state
+6. Await new PlugIn (0x02) for reconnection
+
+### Audio Commands (Type 0x07, 13-byte payloads)
+
+When AudioData has exactly 13 bytes, it's an audio **command**, not PCM data:
+
+| AudioCmd | Name | Firmware Trigger | Host Action |
+|----------|------|------------------|-------------|
+| 1 | OUTPUT_START | Media playback beginning | Prepare media AudioTrack |
+| 2 | OUTPUT_STOP | Media playback ending | May stop media AudioTrack |
+| 3 | INPUT_CONFIG | Mic config from phone | Configure mic sample rate/channels |
+| 4 | PHONECALL_START | Active phone call | Start microphone capture, route call audio |
+| 5 | PHONECALL_STOP | Phone call ended | Stop microphone capture |
+| 6 | NAVI_START | Navigation audio starting | Duck media volume or route to nav AudioTrack |
+| 7 | NAVI_STOP | Navigation audio stopped | Restore media volume |
+| 8 | SIRI_START | Siri activated | Start microphone capture |
+| 9 | SIRI_STOP | Siri deactivated | Stop microphone capture |
+| 10 | MEDIA_START | Media stream opening | Internal — can be used for state tracking |
+| 11 | MEDIA_STOP | Media stream closing | Internal — can be used for state tracking |
+| 12 | ALERT_START | System alert sound | Duck media or route alert audio |
+| 13 | ALERT_STOP | System alert ended | Restore audio routing |
+| 14 | PHONECALL_Incoming | Incoming call ringing | Start ring audio routing (distinct from active call) |
+
+**Note:** AudioCmd 14 (PHONECALL_Incoming) was previously undocumented. It signals an **incoming call ring**, distinct from PHONECALL_START which signals the **active call** after answering.
+
+### Informational Messages (Log Only — Do NOT Change State)
+
+These messages are **pure status notifications**. The adapter sends them to inform the host of internal state. **No session action required.**
+
+| Type | Name | Payload | What It Means | Host Action |
+|------|------|---------|---------------|-------------|
+| 0x0A | SetBluetoothAddress | 17B | Adapter's BT MAC address | Store for reference. |
+| 0x0B | CMD_CARPLAY_MODE_CHANGE | Variable | iPhone work mode changed (0=idle, 1=AirPlay, 2=CarPlay, 3=iOSMirror, 4=OnlyCharge) | Log mode. Pipeline setup is driven by Phase, not mode change. |
+| 0x0D | BluetoothDeviceName | Variable | Adapter's BT device name | Store for display. |
+| 0x0E | WifiDeviceName | Variable | Adapter's WiFi SSID | Store for display. |
+| 0x10 | AirPlayModeChange | Variable | iPhone AirPlay mode changed | Log. AirPlay is audio-only wireless mode. |
+| 0x12 | BluetoothPairedList | Variable | List of BT-paired devices | Display or use for auto-connect UI. |
+| 0x18 | CMD_CONNECTION_URL | Variable | HiCar/wireless connection URL | Store for wireless pairing flow. |
+| 0x19 | BoxSettings (A→H) | Variable JSON | Adapter info (uuid, model, version, DevList) | Parse and store. No state change. |
+| 0x1E | BroadCastRemoteCxCy | 28B | Phone's display resolution (Cx, Cy) | Store for ViewArea/SafeArea. |
+| 0x23 | Bluetooth_ConnectStart | 17B | BT connection started | Log. |
+| 0x24 | Bluetooth_Connected | 17B | BT connection established | Log. |
+| 0x25 | Bluetooth_DisConnect | 0B | BT disconnected | Log. Do NOT disconnect USB session. |
+| 0x26 | Bluetooth_Listen | 0B | BT advertising/listening | Log. |
+| 0x28 | iAP2PlistBinary | Variable | iAP2 binary plist data | Pass through or log. |
+| 0x2B | Connection_PINCODE | Variable | BT pairing PIN to display | Show to user for pairing confirmation. |
+| 0x77 | FactorySetting (A→H) | 0B | Adapter idle notification | Log. Do NOT disconnect. |
+| 0xA3 | SessionToken | ~500B | Encrypted session telemetry | Parse if interested, otherwise ignore. |
+| 0xBB | CMD_UPDATE | 4B | Status/config value from adapter | Log. |
+| 0xCC | SoftwareVersion | 32B | Firmware version string | Store for display/logging. |
+| 0xFD | HUDComand_D_Ready (A→H) | 0B | N/A — this is HOST→ADAPTER only | Should never be received. Log if seen. |
+
+### Messages That MUST NEVER Trigger Disconnect
+
+The following messages are **frequently misinterpreted** as error/disconnect signals. Firmware binary analysis proves they are all **pure status notifications** generated by `_SendPhoneCommandToCar` (`fcn.00019244`). They report internal adapter state and **do not indicate session failure**.
+
+| Cmd ID | Name | Firmware Trigger Function | Why NOT a Disconnect |
+|--------|------|--------------------------|----------------------|
+| 3 | RequestHostUI | `0x1de52` — phone requests native HU screen | **Notification only.** Phone wants HU to show its own UI. CarPlay session remains active in background. |
+| 14 | Hide | `0x19536` — CarPlay going to background | **NOT a disconnect.** Phone UI is still running, just backgrounded. |
+| 28 | StartStandbyMode | `0x19572` — low-power mode | **Power management.** Session paused, not terminated. |
+| 29 | StopStandbyMode | `0x19576` — exit low-power mode | **Resume from standby.** |
+| 1000 | SupportWifi | Init-time, from `fcn.00022284` after Open | **Capability advertisement.** Sent once during init. |
+| 1001 | SupportAutoConnect | Init-time, from BT daemon `BluetoothDaemonControlerEx` | **Capability advertisement.** |
+| 1002 | StartAutoConnect | Auto-connect sequence begin | **Status notification.** |
+| 1003 | ScaningDevices | Auto-connect scanning via `virtual_44` callback | **Status notification.** |
+| 1004 | DeviceFound | Device found during scan | **Status notification.** |
+| 1005 | DeviceNotFound | Scan complete, no device | **Status notification.** |
+| 1006 | DeviceConnectFailed | Connection attempt failed | **Status notification.** Does NOT mean active session failed. |
+| 1007 | DeviceBluetoothConnected | BT connected via D-Bus callback at `fcn.0001b7c8` | **Status notification.** BT link is secondary to USB session. |
+| 1008 | DeviceBluetoothNotConnected | BT disconnected via D-Bus callback at `fcn.0001b9d8` | **CAN fire during active USB CarPlay.** BT is used for audio routing — losing BT does NOT affect USB video/audio streaming. |
+| 1009 | DeviceWifiConnected | WiFi client connected (`fcn.00069d7c` returns 2) | **Status notification.** WiFi is independent of USB session. |
+| **1010** | **DeviceWifiNotConnected** | **WiFi check returns 3 or 4 (`fcn.00069d7c`)** | **THE MOST MISINTERPRETED MESSAGE.** This is a WiFi hotspot status check, NOT a session error. For USB CarPlay, WiFi is entirely irrelevant. Old apps that disconnected on 1010 caused unnecessary session interruptions. |
+| 1011 | DeviceBluetoothPairStart | BT pairing initiated | **Status notification.** |
+| 1012 | SupportWifiNeedKo | WiFi needs kernel module | **Status notification.** |
+
+**Historical Bug — CMD 1010:**
+The old app incorrectly treated `DeviceWifiNotConnected` (1010) as a session termination signal and would reset the connection. Firmware analysis proves this message is generated by `_SendPhoneCommandToCar` as a pure WiFi status notification with NO session management implications. The adapter continues operating normally — CarPlay video/audio streaming is unaffected. Ignoring 1010 (and all 1000-1013 commands) dramatically improved session stability.
+
+### Command ID Classification (Type 0x08 Inbound)
+
+Commands received as inbound CarPlayControl (type 0x08) messages from the adapter:
+
+**Session-Affecting (require action):**
+
+| Cmd ID | Name | Required Host Action |
+|--------|------|---------------------|
+| 3 | RequestHostUI | Show native HU UI (hide CarPlay overlay). Session stays active. |
+| 508 | RequestNaviScreenFocus | Echo 508 back to adapter (recommended but **inconclusive** if required — see Navigation Video Setup). |
+
+**Audio Routing (require action):**
+
+| Cmd ID | Name | Required Host Action |
+|--------|------|---------------------|
+| 1 | StartRecordMic | Start microphone capture |
+| 2 | StopRecordMic | Stop microphone capture |
+| 7 | UseCarMic | Route to car microphone |
+| 8 | UseBoxMic | Route to adapter microphone |
+| 21 | UsePhoneMic | Route to phone microphone |
+| 22 | UseBluetoothAudio | Route audio via Bluetooth |
+| 23 | UseBoxTransAudio | Route audio via USB |
+| 18 | StartGNSSReport | Start GPS forwarding to adapter |
+| 19 | StopGNSSReport | Stop GPS forwarding |
+
+**Pure Status (log only, no action):**
+
+All commands 1000-1013 (SupportWifi through SupportWifiNeedKo) — see table above.
+
+### Direction Corrections (Binary Verified Feb 2026)
+
+Several message types had incorrect direction documentation. Corrected via firmware binary trace:
+
+| Type | Name | Previously Documented | Corrected Direction | Evidence |
+|------|------|-----------------------|---------------------|----------|
+| 0x0F | CMD_MANUAL_DISCONNECT_PHONE | Ambiguous | **H→A ONLY** | `fcn.000178e8` (DisconnectPhoneConnection) — host sends to disconnect phone. Adapter never sends this type. |
+| 0x15 | CMD_STOP_PHONE_CONNECTION | Ambiguous | **H→A ONLY** | `fcn.00017940` (full stop) — aggressive disconnect. Adapter never sends this type. |
+| 0x77 | FactorySetting | A→H only | **BOTH** | A→H: idle notification (0B). H→A: factory reset command (4B payload). |
+
+### App Handling Gaps (Audit Results Feb 2026)
+
+Cross-referencing firmware binary analysis with the CarLink Native app code (`CarlinkManager.kt`) identified these gaps:
+
+| Gap | Severity | Details |
+|-----|----------|---------|
+| **Phase 0 not detected** | HIGH | The app does not check for Phase value 0. Firmware kills all phone-link processes on Phase 0 — this is the definitive session termination signal. The app should transition to DISCONNECTED. |
+| **NaviFocus 508 not echoed** | LOW | Adapter sends cmd 508 (RequestNaviScreenFocus). The `pi-carplay` reference implementation echoes 508 back, but **live testing could not conclusively confirm this is required**. Navigation video activation is primarily driven by `naviScreenInfo` in BoxSettings. Echoing 508 back is recommended as a low-cost precaution. |
+| **AudioCmd 14 not handled** | LOW | `kRiddleAudioSignal_PHONECALL_Incoming` (audio command 14) signals an incoming call ring, distinct from PHONECALL_START. Missing handler means incoming ring audio may not be routed correctly. |
+| **0x0F/0x15 defined but never sent** | INFO | `DISCONNECT_PHONE` (0x0F) and `CLOSE_DONGLE` (0x15) are defined in MessageTypes but are H→A only commands. The app should never receive them. They can be removed from the inbound parser. |
 
 ---
 

@@ -37,13 +37,13 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.carlink.cluster.ClusterBindingState
 import com.carlink.logging.FileLogManager
 import com.carlink.logging.LogPreset
 import com.carlink.logging.Logger
 import com.carlink.logging.apply
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
-import com.carlink.cluster.ClusterBindingState
 import com.carlink.protocol.AdapterConfig
 import com.carlink.protocol.KnownDevices
 import com.carlink.ui.MainScreen
@@ -55,6 +55,9 @@ import com.carlink.ui.theme.CarlinkTheme
 import com.carlink.util.IconAssets
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Main Activity - Entry Point for Carlink Native
@@ -216,6 +219,15 @@ class MainActivity : ComponentActivity() {
         if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
             logInfo("[LIFECYCLE] onNewIntent: USB_DEVICE_ATTACHED — re-launching cluster binding", tag = "MAIN")
             launchCarAppActivity()
+
+            // Auto-connect when adapter re-enumerates (e.g., after reboot or replug)
+            val manager = carlinkManager
+            if (manager != null && manager.state == CarlinkManager.State.DISCONNECTED) {
+                logInfo("[LIFECYCLE] Manager disconnected — auto-starting connection", tag = "MAIN")
+                CoroutineScope(Dispatchers.IO).launch {
+                    manager.start()
+                }
+            }
         }
     }
 
@@ -336,13 +348,6 @@ class MainActivity : ComponentActivity() {
         val evenWidth = videoWidth and 1.inv()
         val evenHeight = videoHeight and 1.inv()
 
-        // Build binary ViewArea/SafeArea data for CarPlay display insets
-        val viewAreaData = buildViewAreaData(evenWidth, evenHeight)
-        val safeAreaData = buildSafeAreaData(
-            evenWidth, evenHeight,
-            safeInsetTop, safeInsetBottom, safeInsetLeft, safeInsetRight,
-        )
-
         // Load icons from assets for adapter initialization
         val (icon120, icon180, icon256) = IconAssets.loadIcons(this)
         val iconsLoaded = icon120 != null && icon180 != null && icon256 != null
@@ -351,7 +356,7 @@ class MainActivity : ComponentActivity() {
         // These are optional - only configured settings are sent to the adapter
         val userConfig = AdapterConfigPreference.getInstance(this).getUserConfigSync()
 
-        // Apply video resolution preference
+        // Apply video resolution preference (must be before ViewArea/SafeArea construction)
         // AUTO = use detected usable dimensions, otherwise use user-selected resolution
         val userSelectedResolution = !userConfig.videoResolution.isAuto
         val (configWidth, configHeight) = if (userConfig.videoResolution.isAuto) {
@@ -360,6 +365,16 @@ class MainActivity : ComponentActivity() {
             // User selected a specific resolution - use it for adapter config
             // Note: Surface size remains the actual display size for touch normalization
             Pair(userConfig.videoResolution.width, userConfig.videoResolution.height)
+        }
+
+        // Build binary ViewArea/SafeArea data using the configured resolution
+        // ViewArea/SafeArea must match OPEN message dimensions (safeArea ⊆ viewArea ⊆ display)
+        val viewAreaData = buildViewAreaData(configWidth, configHeight)
+        val safeAreaData = if (userSelectedResolution) {
+            // User-selected resolution: zero insets (cutouts handled by Android surface scaling)
+            buildSafeAreaData(configWidth, configHeight, 0, 0, 0, 0)
+        } else {
+            buildSafeAreaData(configWidth, configHeight, safeInsetTop, safeInsetBottom, safeInsetLeft, safeInsetRight)
         }
 
         // Map user config enums to AdapterConfig values
@@ -396,6 +411,7 @@ class MainActivity : ComponentActivity() {
                 mediaDelay = userConfig.mediaDelay.delayMs,
                 viewAreaData = viewAreaData,
                 safeAreaData = safeAreaData,
+                gpsForwarding = userConfig.gpsForwarding,
             )
 
         logInfo(
@@ -408,12 +424,16 @@ class MainActivity : ComponentActivity() {
         )
         logInfo("Display config: ${config.width}x${config.height}@${config.fps}fps, ${config.dpi}dpi", tag = "MAIN")
         logInfo(
-            "Icons loaded: $iconsLoaded (120: ${icon120?.size ?: 0}B, 180: ${icon180?.size ?: 0}B, 256: ${icon256?.size ?: 0}B)",
+            "Icons loaded: $iconsLoaded " +
+                "(120: ${icon120?.size ?: 0}B, 180: ${icon180?.size ?: 0}B, " +
+                "256: ${icon256?.size ?: 0}B)",
             tag = "MAIN",
         )
         logInfo(
-            "[ADAPTER_CONFIG] User config: audioTransferMode=${if (userConfig.audioTransferMode) "bluetooth" else "adapter"}, " +
-                "sampleRate=48000Hz (hardcoded), mic=$micType, wifi=$wifiType, callQuality=${userConfig.callQuality.name}, " +
+            "[ADAPTER_CONFIG] User config: " +
+                "audioTransferMode=${if (userConfig.audioTransferMode) "bluetooth" else "adapter"}, " +
+                "sampleRate=48000Hz (hardcoded), mic=$micType, wifi=$wifiType, " +
+                "callQuality=${userConfig.callQuality.name}, " +
                 "mediaDelay=${userConfig.mediaDelay.name}(${userConfig.mediaDelay.delayMs}ms), " +
                 "resolution=${userConfig.videoResolution.toStorageString()} (adapter: ${configWidth}x$configHeight)",
             tag = "MAIN",

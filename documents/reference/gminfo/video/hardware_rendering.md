@@ -3,7 +3,7 @@
 **Device:** GM Info 3.7 (gminfo37)
 **Platform:** Intel Apollo Lake (Broxton)
 **Android Version:** 12 (API 32)
-**Research Date:** December 7, 2025
+**Research Date:** December 2025 - February 2026
 
 ---
 
@@ -14,10 +14,10 @@
 | Property | Value |
 |----------|-------|
 | Vendor | GenuineIntel |
-| Model | IoT CPU 1.0 (Model 92, Stepping 10) |
+| Model | Intel Atom x7-A3960 (Goldmont/Apollo Lake), IoT CPU 1.0 (Model 92, Stepping 10) |
 | Architecture | x86_64 |
 | Cores | 4 |
-| Base Frequency | 1881.6 MHz |
+| Frequency | Base 800 MHz, Boost 2.4 GHz (1881.6 MHz nominal) |
 | Cache | 1024 KB per core |
 | Address Space | 39-bit physical, 48-bit virtual |
 
@@ -48,8 +48,8 @@
 
 | Component | Implementation |
 |-----------|----------------|
-| Gralloc (Memory Allocator) | `gralloc.broxton.so` (96 KB) |
-| HW Composer | `hwcomposer.broxton.so` |
+| Gralloc | minigbm CrosGralloc4 (`gralloc.broxton.so`, 96 KB) |
+| HW Composer | iahwcomposer (Intel Automotive HWC @2.1/@2.2/@2.3, explicit sync, high quality scaling) |
 | Vulkan ICD | `vulkan.broxton.so` (9.8 MB) |
 
 ### Driver Properties
@@ -133,7 +133,7 @@ ro.board.platform=broxton
 
 - **ICD:** `vulkan.broxton.so`
 - **Driver Type:** Mesa/Intel ANV
-- **Usage:** Available but GLES preferred for UI rendering
+- **Usage:** **Available but NOT used at runtime** — SurfaceFlinger uses GLES backend exclusively. Vulkan driver exists (vulkan.broxton.so) but no components use it.
 
 ---
 
@@ -147,7 +147,7 @@ ro.board.platform=broxton
 | Manufacturer PNP ID | CMN (Chimei Innolux) |
 | Resolution | 2400 x 960 pixels |
 | Refresh Rate | 60.00 Hz |
-| DPI | 192.91 x 193.52 |
+| DPI | Physical: xDpi=192.911 yDpi=193.523; system lcd_density=200 (xhdpi) |
 | Display Density | 200 dpi |
 | VSYNC Period | 16.666 ms |
 | Color Mode | Native (Mode 0) |
@@ -191,8 +191,9 @@ Build configuration:
 ## Hardware Composer (HWC)
 
 ### HWC Version
-- **Interface:** `android.hardware.graphics.composer@2.1::IComposer`
-- **Implementation:** `hwcomposer.broxton`
+- **Interface:** `android.hardware.graphics.composer@2.1`, `@2.2`, `@2.3`
+- **Service Binary:** `composer.intel@2.3-service`
+- **Implementation:** `iahwcomposer` (Intel Automotive Hardware Composer)
 
 ### Layer Composition Types
 
@@ -208,6 +209,12 @@ Build configuration:
 - Scaling and rotation in hardware
 - Alpha blending in hardware
 - No HDR tone mapping (not supported)
+
+### HWC Configuration
+- Only 1 DRM display active (3 defined in hwc_display.ini)
+- VSYNC period: 16.666 ms, presentation deadline: 14.666 ms
+- No DCI-P3, no wide color gamut, no HDR
+- Max luminance: 500 nits
 
 ---
 
@@ -247,6 +254,12 @@ The Intel HD Graphics 505 includes dedicated video processing hardware:
 | VPG (Video Post-Processor) | Scaling, color conversion |
 | Display Engine | Overlay composition |
 
+### OMX Service
+- **Interface:** HIDL 1.0 (`android.hardware.media.omx@1.0`)
+- **User:** `mediacodec`
+- **Groups:** `camera`, `drmrpc`, `mediadrm`
+- **I/O Priority:** `rt 4` (real-time, priority 4)
+
 ### Decode Path
 1. **Input:** Compressed video bitstream
 2. **MediaCodec API** → Intel OMX decoder
@@ -284,6 +297,14 @@ The Intel HD Graphics 505 includes dedicated video processing hardware:
 | 1920x1080 | 190-400 |
 | 3840x2160 | 120-130 |
 
+**VP8 Hardware Decode:**
+| Resolution | FPS Range |
+|------------|-----------|
+| 320x180 | 600-1300 |
+| 640x360 | 500-800 |
+| 1280x720 | 200-400 |
+| 1920x1080 | 150-330 |
+
 **VP9 Hardware Decode:**
 | Resolution | FPS Range |
 |------------|-----------|
@@ -314,12 +335,51 @@ ANGLE: Not used
 ### System Services
 - `automotive_display` service: Running
 - `remote_display` service: Stopped (not in use)
+  - Binary: `/vendor/bin/remote_display`
+  - User: `system`
+  - Type: `oneshot` (does not auto-restart)
 
 ### Hardware SKU
 ```
 ro.boot.product.hardware.sku=gv221
 ro.hardware.type=automotive
 ```
+
+---
+
+## Boot-Time GPU/Display Init (init.bxtp_gm.rc)
+
+### GPU Configuration
+- **GPU Min Frequency:** Forced to 300 MHz on `post-fs` phase (required for IPU camera integration)
+- **Mesa Driver Environment:**
+  - `INTEL_DEBUG=heur32` (heuristic tuning for Gen 3.2 / Apollo Lake)
+  - `MESA_LOADER_DRIVER_OVERRIDE=iris` (forces Iris driver over i965)
+
+### CPU Power States During Boot
+- **C-states (C1-C3):** Disabled during boot for deterministic init timing
+- **C-states:** Re-enabled on `boot_completed` trigger
+- **Suspend:** Disabled permanently via `nosleeptillbrooklyn` wake_lock — the system never enters suspend
+
+### GPIO Assignments (External Processors)
+| GPIO | Function |
+|------|----------|
+| 466 | Dirana Reset |
+| 460 | Dirana Bootstate |
+| 458 | Saturn Reset |
+| 464 | Saturn Bootmode |
+
+---
+
+## Ethernet Switch Hardware ID
+
+The property `persist.vendor.harman.hardwareid` determines which Ethernet switch driver is loaded.
+
+| Switch Vendor | Hardware IDs |
+|---------------|-------------|
+| Broadcom (`bcm`) | ED, DV1, DV2, DV4, DV6, PV1, MY22PV01-08 |
+| Marvell (`mrvl`) | MY23DV0, MY23DV1, MY24DV1 |
+
+MY23 and later hardware revisions use the Marvell switch.
 
 ---
 

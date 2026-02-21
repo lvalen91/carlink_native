@@ -175,7 +175,9 @@ class AdapterDriver(
     /**
      * Send a multi-touch event.
      */
-    fun sendMultiTouch(touches: List<MessageSerializer.TouchPoint>): Boolean = send(MessageSerializer.serializeMultiTouch(touches))
+    fun sendMultiTouch(
+        touches: List<MessageSerializer.TouchPoint>,
+    ): Boolean = send(MessageSerializer.serializeMultiTouch(touches))
 
     /**
      * Send microphone audio data.
@@ -191,42 +193,41 @@ class AdapterDriver(
      */
     fun sendGnssData(nmeaSentences: String): Boolean = send(MessageSerializer.serializeGnssData(nmeaSentences))
 
+    fun rebootAdapter(): Boolean {
+        log("[SEND] Reboot adapter (0xCD)")
+        return send(MessageSerializer.serializeRebootAdapter())
+    }
+
+    fun resetUsb(): Boolean {
+        log("[SEND] USB reset (0xCE)")
+        return send(MessageSerializer.serializeUsbReset())
+    }
+
+    fun disconnectPhone(): Boolean {
+        log("[SEND] Disconnect phone (0x0F)")
+        return send(MessageSerializer.serializeDisconnectPhone())
+    }
+
+    fun closeDongle(): Boolean {
+        log("[SEND] Close dongle (0x15)")
+        return send(MessageSerializer.serializeCloseDongle())
+    }
+
     /**
-     * Get performance statistics.
+     * Send graceful teardown sequence. Must be called BEFORE stop()
+     * since send() requires isRunning==true.
+     *
+     * Sequence (from pi-carplay USB captures):
+     * 1. DisconnectPhone (0x0F) — end phone's CarPlay/AA session
+     * 2. CloseDongle (0x15) — stop adapter internal processes
+     * 3. RebootAdapter (0xCD) — optional full adapter reboot
      */
-    fun getPerformanceStats(): Map<String, Any> {
-        val sessionDuration =
-            if (sessionStart.get() > 0) {
-                (System.currentTimeMillis() - sessionStart.get()) / 1000
-            } else {
-                0L
-            }
-        val lastHb = lastHeartbeat.get()
-        val lastHeartbeatAge =
-            if (lastHb > 0) {
-                (System.currentTimeMillis() - lastHb) / 1000
-            } else {
-                0L
-            }
-
-        val sent = bytesSent.get()
-        val received = bytesReceived.get()
-
-        return mapOf(
-            "sessionDurationSeconds" to sessionDuration,
-            "initMessagesCount" to initMessagesCount,
-            "messagesSent" to messagesSent.get(),
-            "messagesReceived" to messagesReceived.get(),
-            "bytesSent" to sent,
-            "bytesReceived" to received,
-            "sendErrors" to sendErrors.get(),
-            "receiveErrors" to receiveErrors.get(),
-            "heartbeatsSent" to heartbeatsSent.get(),
-            "lastHeartbeatSecondsAgo" to lastHeartbeatAge,
-            "sendThroughputKBps" to if (sessionDuration > 0) sent / sessionDuration / 1024.0 else 0.0,
-            "receiveThroughputKBps" to if (sessionDuration > 0) received / sessionDuration / 1024.0 else 0.0,
-            "usbStats" to usbDevice.getPerformanceStats(),
-        )
+    fun sendGracefulTeardown(reboot: Boolean = false) {
+        disconnectPhone()
+        closeDongle()
+        if (reboot) {
+            rebootAdapter()
+        }
     }
 
     // ==================== Private Methods ====================
@@ -239,12 +240,19 @@ class AdapterDriver(
                 scheduleAtFixedRate(
                     object : TimerTask() {
                         override fun run() {
-                            if (isRunning.get()) {
-                                lastHeartbeat.set(System.currentTimeMillis())
-                                heartbeatsSent.incrementAndGet()
-                                if (!send(MessageSerializer.serializeHeartbeat())) {
-                                    log("Heartbeat send failed (count: $heartbeatsSent)")
+                            // Guard against unchecked exceptions killing the Timer thread.
+                            // java.util.Timer silently terminates on any exception from run(),
+                            // which would stop all heartbeats and cause adapter disconnect.
+                            try {
+                                if (isRunning.get()) {
+                                    lastHeartbeat.set(System.currentTimeMillis())
+                                    heartbeatsSent.incrementAndGet()
+                                    if (!send(MessageSerializer.serializeHeartbeat())) {
+                                        log("Heartbeat send failed (count: $heartbeatsSent)")
+                                    }
                                 }
+                            } catch (e: Exception) {
+                                android.util.Log.e("HeartbeatTimer", "Heartbeat exception: ${e.message}", e)
                             }
                         }
                     },
@@ -274,7 +282,8 @@ class AdapterDriver(
 
                     // For VIDEO_DATA with direct processing, data is null (processed directly by videoProcessor)
                     // Just signal the message handler that video is streaming
-                    if (type == MessageType.VIDEO_DATA.id && videoProcessor != null && (data == null || dataLength == 0)) {
+                    if (type == MessageType.VIDEO_DATA.id &&
+                        videoProcessor != null && (data == null || dataLength == 0)) {
                         // Video data was processed directly by videoProcessor - just signal streaming
                         try {
                             messageHandler(VideoStreamingSignal)
@@ -289,7 +298,8 @@ class AdapterDriver(
                     val message = MessageParser.parseMessage(header, data)
 
                     // Log received message (except high-frequency types)
-                    if (type != MessageType.VIDEO_DATA.id && type != MessageType.AUDIO_DATA.id) {
+                    if (type != MessageType.VIDEO_DATA.id && type != MessageType.AUDIO_DATA.id &&
+                        type != MessageType.NAVI_VIDEO_DATA.id && type != MessageType.HEARTBEAT_ECHO.id) {
                         log("[RECV] $message")
                     }
 

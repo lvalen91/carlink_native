@@ -91,6 +91,7 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
          * Called from CarlinkManager when media metadata changes.
          */
         fun updateNowPlaying(title: String?, artist: String?) {
+            if (title == currentTitle && artist == currentArtist) return
             currentTitle = title
             currentArtist = artist
             instance?.refreshNotification()

@@ -205,6 +205,18 @@ object MessageSerializer {
      */
     fun serializeHeartbeat(): ByteArray = serializeHeaderOnly(MessageType.HEARTBEAT)
 
+    /** Reboot adapter. Type 0xCD outbound = HUDComand_A_Reboot. Header-only. */
+    fun serializeRebootAdapter(): ByteArray = serializeHeaderOnly(MessageType.HEARTBEAT_ECHO)
+
+    /** USB-level reset only (softer than reboot). Type 0xCE outbound = HUDComand_A_ResetUSB. */
+    fun serializeUsbReset(): ByteArray = serializeHeaderOnly(MessageType.ERROR_REPORT)
+
+    /** Disconnect phone's CarPlay/AA session. Type 0x0F outbound. Header-only. */
+    fun serializeDisconnectPhone(): ByteArray = serializeHeaderOnly(MessageType.DISCONNECT_PHONE)
+
+    /** Close dongle — stop adapter internal processes. Type 0x15 outbound. Header-only. */
+    fun serializeCloseDongle(): ByteArray = serializeHeaderOnly(MessageType.CLOSE_DONGLE)
+
     /**
      * Serialize an open message with adapter configuration.
      */
@@ -271,7 +283,10 @@ object MessageSerializer {
      * Uses explicit \n (not raw multiline string)
      */
     fun generateAirplayConfig(config: AdapterConfig): String {
-        return "oemIconVisible = 1\nname = AutoBox\nmodel = Magic-Car-Link-1.00\noemIconPath = /etc/oem_icon.png\noemIconLabel = Exit\n"
+        return "oemIconVisible = 1\nname = AutoBox\n" +
+            "model = Magic-Car-Link-1.00\n" +
+            "oemIconPath = /etc/oem_icon.png\n" +
+            "oemIconLabel = Exit\n"
     }
 
     // ==================== Firmware Configuration ====================
@@ -282,7 +297,7 @@ object MessageSerializer {
      *
      * Sets these persistent riddleBoxCfg keys:
      * - GNSSCapability=3: Enable GPS forwarding (GPGGA + GPRMC) via iAP2 LocationInformation
-     * - DashboardInfo=5: Enable vehicleInformation (bit 0) + routeGuidanceDisplay (bit 2) for nav cluster
+     * - DashboardInfo=5: Enable MediaPlayer (bit 0) + routeGuidanceDisplay (bit 2) for nav cluster
      * - AdvancedFeatures=1: Enable iOS 13+ CarPlay Dashboard / navigation video
      *
      * Also clears the cached iAP2 engine negotiation datastore so the adapter
@@ -295,10 +310,11 @@ object MessageSerializer {
      * IMPORTANT: The injection breaks the sed command for wifiName, so a second
      * normal BoxSettings must follow to restore the correct WiFi SSID.
      */
-    fun serializeFirmwareConfig(): ByteArray {
+    fun serializeFirmwareConfig(gpsForwarding: Boolean = true): ByteArray {
+        val gnssCapability = if (gpsForwarding) 3 else 0
         val injection = buildString {
             append("a\"; ")
-            append("/usr/sbin/riddleBoxCfg -s GNSSCapability 3; ")
+            append("/usr/sbin/riddleBoxCfg -s GNSSCapability $gnssCapability; ")
             append("/usr/sbin/riddleBoxCfg -s DashboardInfo 5; ")
             append("/usr/sbin/riddleBoxCfg -s AdvancedFeatures 1; ")
             append("rm -f /etc/RiddleBoxData/AIEIPIEREngines.datastore; ")
@@ -328,6 +344,7 @@ object MessageSerializer {
         const val CALL_QUALITY = "call_quality"
         const val MEDIA_DELAY = "media_delay"
         const val HAND_DRIVE = "hand_drive_mode"
+        const val GPS_FORWARDING = "gps_forwarding"
     }
 
     /**
@@ -441,6 +458,13 @@ object MessageSerializer {
                 ConfigKey.HAND_DRIVE -> {
                     messages.add(serializeNumber(config.handDriveMode, FileAddress.HAND_DRIVE_MODE))
                 }
+
+                ConfigKey.GPS_FORWARDING -> {
+                    // Firmware re-config needed to toggle GNSSCapability
+                    messages.add(serializeFirmwareConfig(config.gpsForwarding))
+                    // Follow with normal BoxSettings to restore wifiName after injection
+                    messages.add(serializeBoxSettings(config))
+                }
             }
         }
     }
@@ -473,7 +497,7 @@ object MessageSerializer {
         // Firmware configuration via command injection (idempotent, persists across reboots)
         // Sets riddleBoxCfg keys required for GPS forwarding, nav cluster, and nav video.
         // Must come BEFORE normal BoxSettings since injection breaks the sed for wifiName.
-        messages.add(serializeFirmwareConfig())
+        messages.add(serializeFirmwareConfig(config.gpsForwarding))
 
         // Box settings JSON (includes sample rate, call quality)
         // This second BoxSettings also restores the correct wifiName after injection.
@@ -488,7 +512,8 @@ object MessageSerializer {
         messages.add(serializeCommand(micCommand))
 
         // Audio transfer mode
-        val audioTransferCommand = if (config.audioTransferMode) CommandMapping.AUDIO_TRANSFER_ON else CommandMapping.AUDIO_TRANSFER_OFF
+        val audioTransferCommand = if (config.audioTransferMode)
+            CommandMapping.AUDIO_TRANSFER_ON else CommandMapping.AUDIO_TRANSFER_OFF
         messages.add(serializeCommand(audioTransferCommand))
 
         // Android work mode (if enabled)

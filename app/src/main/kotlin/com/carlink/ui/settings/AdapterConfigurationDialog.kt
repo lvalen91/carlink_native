@@ -24,7 +24,9 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Hd
+import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhoneAndroid
@@ -36,10 +38,15 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SecondaryTabRow
+import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -63,6 +70,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.CarlinkManager
 import com.carlink.logging.logWarn
 import com.carlink.ui.theme.AutomotiveDimens
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
@@ -110,6 +119,9 @@ fun AdapterConfigurationDialog(
     )
     val savedHandDrive by adapterConfigPreference.handDriveFlow.collectAsStateWithLifecycle(
         initialValue = HandDriveConfig.DEFAULT,
+    )
+    val savedGpsForwarding by adapterConfigPreference.gpsForwardingFlow.collectAsStateWithLifecycle(
+        initialValue = false,
     )
 
     // Get usable display dimensions based on current display mode
@@ -165,6 +177,7 @@ fun AdapterConfigurationDialog(
     var selectedVideoResolution by remember { mutableStateOf(savedVideoResolution) }
     var selectedFps by remember { mutableStateOf(savedFps) }
     var selectedHandDrive by remember { mutableStateOf(savedHandDrive) }
+    var selectedGpsForwarding by remember { mutableStateOf(savedGpsForwarding) }
 
     // Sync local state when saved value loads (for initial load)
     LaunchedEffect(savedAudioSource) { selectedAudioSource = savedAudioSource }
@@ -175,6 +188,7 @@ fun AdapterConfigurationDialog(
     LaunchedEffect(savedVideoResolution) { selectedVideoResolution = savedVideoResolution }
     LaunchedEffect(savedFps) { selectedFps = savedFps }
     LaunchedEffect(savedHandDrive) { selectedHandDrive = savedHandDrive }
+    LaunchedEffect(savedGpsForwarding) { selectedGpsForwarding = savedGpsForwarding }
 
     // Track if any changes were made
     // All adapter configuration changes require app restart
@@ -186,7 +200,8 @@ fun AdapterConfigurationDialog(
             selectedMediaDelay != savedMediaDelay ||
             selectedVideoResolution != savedVideoResolution ||
             selectedFps != savedFps ||
-            selectedHandDrive != savedHandDrive
+            selectedHandDrive != savedHandDrive ||
+            selectedGpsForwarding != savedGpsForwarding
 
     // Responsive dialog width - 60% of container width, clamped between 320dp and 600dp
     val windowInfo = LocalWindowInfo.current
@@ -235,7 +250,30 @@ fun AdapterConfigurationDialog(
 
                 Spacer(modifier = Modifier.height(20.dp))
 
-                // Scrollable content area for configuration options
+                // Tab bar for configuration categories
+                var selectedTabIndex by remember { mutableStateOf(0) }
+
+                SecondaryTabRow(selectedTabIndex = selectedTabIndex) {
+                    Tab(
+                        selected = selectedTabIndex == 0,
+                        onClick = { selectedTabIndex = 0 },
+                        text = { Text("Audio") },
+                    )
+                    Tab(
+                        selected = selectedTabIndex == 1,
+                        onClick = { selectedTabIndex = 1 },
+                        text = { Text("Visual") },
+                    )
+                    Tab(
+                        selected = selectedTabIndex == 2,
+                        onClick = { selectedTabIndex = 2 },
+                        text = { Text("Misc") },
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // Scrollable content area — shows settings for selected tab
                 Column(
                     modifier =
                         Modifier
@@ -243,6 +281,9 @@ fun AdapterConfigurationDialog(
                             .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
+                    when (selectedTabIndex) {
+                        // ===== Audio Tab =====
+                        0 -> {
                     // Audio Source Configuration Option
                     ConfigurationOptionCard(
                         title = "Audio Source",
@@ -317,43 +358,6 @@ fun AdapterConfigurationDialog(
                                 when (selectedMicSource) {
                                     MicSourceConfig.APP -> "This device captures mic input from Android/OS"
                                     MicSourceConfig.PHONE -> "Phone uses its own mic (or adapter mic if present)"
-                                },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = colorScheme.primary,
-                        )
-                    }
-
-                    // WiFi Band Configuration
-                    ConfigurationOptionCard(
-                        title = "WiFi Band",
-                        description = "Wireless band for CarPlay connection",
-                        icon = Icons.Default.Wifi,
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            AudioSourceButton(
-                                label = "5 GHz",
-                                icon = Icons.Default.Speed,
-                                isSelected = selectedWifiBand == WiFiBandConfig.BAND_5GHZ,
-                                onClick = { selectedWifiBand = WiFiBandConfig.BAND_5GHZ },
-                                modifier = Modifier.weight(1f),
-                            )
-                            AudioSourceButton(
-                                label = "2.4 GHz",
-                                icon = Icons.Default.SignalCellularAlt,
-                                isSelected = selectedWifiBand == WiFiBandConfig.BAND_24GHZ,
-                                onClick = { selectedWifiBand = WiFiBandConfig.BAND_24GHZ },
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text =
-                                when (selectedWifiBand) {
-                                    WiFiBandConfig.BAND_5GHZ -> "Better speed, less interference (recommended)"
-                                    WiFiBandConfig.BAND_24GHZ -> "Fallback (Slow NOT recommended)"
                                 },
                             style = MaterialTheme.typography.bodySmall,
                             color = colorScheme.primary,
@@ -458,6 +462,9 @@ fun AdapterConfigurationDialog(
                         )
                     }
 
+                        }
+                        // ===== Visual Tab =====
+                        1 -> {
                     // Video Resolution Configuration
                     ConfigurationOptionCard(
                         title = "Video Resolution",
@@ -580,7 +587,7 @@ fun AdapterConfigurationDialog(
                     ConfigurationOptionCard(
                         title = "Drive Side",
                         description = "Sets which side the CarPlay dock appears on",
-                        icon = Icons.Default.SettingsInputComponent,
+                        icon = Icons.Default.DirectionsCar,
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -588,14 +595,14 @@ fun AdapterConfigurationDialog(
                         ) {
                             AudioSourceButton(
                                 label = "Left (LHD)",
-                                icon = Icons.Default.SettingsInputComponent,
+                                icon = Icons.Default.DirectionsCar,
                                 isSelected = selectedHandDrive == HandDriveConfig.LEFT,
                                 onClick = { selectedHandDrive = HandDriveConfig.LEFT },
                                 modifier = Modifier.weight(1f),
                             )
                             AudioSourceButton(
                                 label = "Right (RHD)",
-                                icon = Icons.Default.SettingsInputComponent,
+                                icon = Icons.Default.DirectionsCar,
                                 isSelected = selectedHandDrive == HandDriveConfig.RIGHT,
                                 onClick = { selectedHandDrive = HandDriveConfig.RIGHT },
                                 modifier = Modifier.weight(1f),
@@ -611,6 +618,149 @@ fun AdapterConfigurationDialog(
                             style = MaterialTheme.typography.bodySmall,
                             color = colorScheme.primary,
                         )
+                    }
+
+                        }
+                        // ===== Misc Tab =====
+                        2 -> {
+                    // GPS Forwarding Configuration
+                    ConfigurationOptionCard(
+                        title = "GPS Forwarding",
+                        description = "Forward vehicle GPS to CarPlay Maps",
+                        icon = Icons.Default.LocationOn,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            AudioSourceButton(
+                                label = "Off",
+                                icon = Icons.Default.LocationOn,
+                                isSelected = !selectedGpsForwarding,
+                                onClick = { selectedGpsForwarding = false },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "On",
+                                icon = Icons.Default.LocationOn,
+                                isSelected = selectedGpsForwarding,
+                                onClick = { selectedGpsForwarding = true },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                if (selectedGpsForwarding) {
+                                    "Enabled — vehicle GPS forwarded to CarPlay"
+                                } else {
+                                    "Disabled — phone uses its own GPS"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
+                    }
+
+                    // WiFi Band Configuration
+                    ConfigurationOptionCard(
+                        title = "WiFi Band",
+                        description = "Wireless band for CarPlay connection",
+                        icon = Icons.Default.Wifi,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            AudioSourceButton(
+                                label = "5 GHz",
+                                icon = Icons.Default.Speed,
+                                isSelected = selectedWifiBand == WiFiBandConfig.BAND_5GHZ,
+                                onClick = { selectedWifiBand = WiFiBandConfig.BAND_5GHZ },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "2.4 GHz",
+                                icon = Icons.Default.SignalCellularAlt,
+                                isSelected = selectedWifiBand == WiFiBandConfig.BAND_24GHZ,
+                                onClick = { selectedWifiBand = WiFiBandConfig.BAND_24GHZ },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                when (selectedWifiBand) {
+                                    WiFiBandConfig.BAND_5GHZ -> "Better speed, less interference (recommended)"
+                                    WiFiBandConfig.BAND_24GHZ -> "Fallback (Slow NOT recommended)"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
+                    }
+
+                    // Adapter Reset Actions
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    var showRebootDialog by remember { mutableStateOf(false) }
+
+                    FilledTonalButton(
+                        onClick = { showRebootDialog = true },
+                        enabled = carlinkManager != null,
+                        modifier = Modifier.fillMaxWidth().height(AutomotiveDimens.ButtonMinHeight),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = colorScheme.tertiaryContainer,
+                            contentColor = colorScheme.onTertiaryContainer,
+                        ),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.RestartAlt,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Reboot Adapter",
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
+
+                    // Reboot Confirmation Dialog
+                    if (showRebootDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showRebootDialog = false },
+                            icon = {
+                                Icon(
+                                    imageVector = Icons.Default.RestartAlt,
+                                    contentDescription = null,
+                                    tint = colorScheme.tertiary,
+                                )
+                            },
+                            title = { Text("Reboot Adapter?") },
+                            text = {
+                                Text("The adapter will restart. It will reconnect automatically in about 15 seconds.")
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        showRebootDialog = false
+                                        onDismiss()
+                                        CoroutineScope(Dispatchers.IO).launch {
+                                            carlinkManager?.rebootAdapter()
+                                        }
+                                    },
+                                ) {
+                                    Text("Reboot", color = colorScheme.tertiary)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showRebootDialog = false }) {
+                                    Text("Cancel")
+                                }
+                            },
+                        )
+                    }
+
+                        }
                     }
                 }
 
@@ -635,7 +785,11 @@ fun AdapterConfigurationDialog(
                     // Default button
                     TextButton(
                         onClick = {
-                            logWarn("[UI_ACTION] Adapter Config: Reset to Defaults clicked - next session will run FULL init", tag = "UI")
+                            logWarn(
+                                "[UI_ACTION] Adapter Config: Reset to Defaults clicked" +
+                                    " - next session will run FULL init",
+                                tag = "UI",
+                            )
                             scope.launch {
                                 adapterConfigPreference.resetToDefaults()
                                 onDismiss()
@@ -649,7 +803,19 @@ fun AdapterConfigurationDialog(
                     // Apply & Restart button - all adapter config changes require restart
                     Button(
                         onClick = {
-                            logWarn("[UI_ACTION] Adapter Config: Apply & Restart clicked - audio=$selectedAudioSource, mic=$selectedMicSource, wifi=$selectedWifiBand, callQuality=$selectedCallQuality, mediaDelay=$selectedMediaDelay, resolution=${selectedVideoResolution.toStorageString()}, fps=${selectedFps.fps}, handDrive=$selectedHandDrive", tag = "UI")
+                            logWarn(
+                                "[UI_ACTION] Adapter Config: Apply & Restart clicked" +
+                                    " - audio=$selectedAudioSource" +
+                                    ", mic=$selectedMicSource" +
+                                    ", wifi=$selectedWifiBand" +
+                                    ", callQuality=$selectedCallQuality" +
+                                    ", mediaDelay=$selectedMediaDelay" +
+                                    ", resolution=${selectedVideoResolution.toStorageString()}" +
+                                    ", fps=${selectedFps.fps}" +
+                                    ", handDrive=$selectedHandDrive" +
+                                    ", gpsForwarding=$selectedGpsForwarding",
+                                tag = "UI",
+                            )
                             scope.launch {
                                 // Save all configuration
                                 adapterConfigPreference.setAudioSource(selectedAudioSource)
@@ -660,14 +826,18 @@ fun AdapterConfigurationDialog(
                                 adapterConfigPreference.setVideoResolution(selectedVideoResolution)
                                 adapterConfigPreference.setFps(selectedFps)
                                 adapterConfigPreference.setHandDrive(selectedHandDrive)
+                                adapterConfigPreference.setGpsForwarding(selectedGpsForwarding)
 
                                 // All adapter config changes require restart.
                                 // Schedule MainActivity launch before kill so the system
                                 // restarts into it instead of the CarApp task.
-                                carlinkManager?.stop()
+                                carlinkManager?.stop(reboot = true)
                                 val launchIntent = context.packageManager
                                     .getLaunchIntentForPackage(context.packageName)
-                                    ?.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                                    ?.addFlags(
+                                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                                            android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK,
+                                    )
                                 launchIntent?.let { context.startActivity(it) }
                                 kotlinx.coroutines.delay(500)
                                 android.os.Process.killProcess(android.os.Process.myPid())

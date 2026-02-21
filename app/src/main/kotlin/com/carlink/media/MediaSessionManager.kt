@@ -65,6 +65,10 @@ class MediaSessionManager(
     private var isPlaying: Boolean = false
     private var currentPosition: Long = 0L
 
+    // Album art bitmap cache — avoids redundant BitmapFactory.decodeByteArray on same cover
+    private var cachedAlbumArtHash: Int = 0
+    private var cachedBitmap: android.graphics.Bitmap? = null
+
     // Lock for thread-safe MediaSession access (USB thread + main thread)
     private val sessionLock = Any()
 
@@ -149,6 +153,8 @@ class MediaSessionManager(
             }
             mediaSession = null
             mediaControlCallback = null
+            cachedAlbumArtHash = 0
+            cachedBitmap = null
             log("[MEDIA_SESSION] Released")
         } catch (e: Exception) {
             log("[MEDIA_SESSION] Error during release: ${e.message}")
@@ -211,10 +217,18 @@ class MediaSessionManager(
                     builder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration)
                 }
 
-                // Decode and add album art, or clear if null/failed
+                // Decode and add album art with caching to avoid redundant decodes
                 if (albumArt != null) {
                     try {
-                        val bitmap = BitmapFactory.decodeByteArray(albumArt, 0, albumArt.size)
+                        val hash = albumArt.contentHashCode()
+                        val bitmap = if (hash == cachedAlbumArtHash && cachedBitmap != null) {
+                            cachedBitmap
+                        } else {
+                            BitmapFactory.decodeByteArray(albumArt, 0, albumArt.size)?.also {
+                                cachedAlbumArtHash = hash
+                                cachedBitmap = it
+                            }
+                        }
                         if (bitmap != null) {
                             builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
                             builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
@@ -282,6 +296,8 @@ class MediaSessionManager(
 
             isPlaying = false
             currentPosition = 0L
+            cachedAlbumArtHash = 0
+            cachedBitmap = null
 
             try {
                 session.setPlaybackState(buildPlaybackState(PlaybackStateCompat.STATE_STOPPED))

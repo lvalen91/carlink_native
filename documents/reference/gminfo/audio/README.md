@@ -3,7 +3,7 @@
 **Device:** GM Info 3.7 (gminfo37)
 **Platform:** Intel Apollo Lake (Broxton)
 **Android Version:** 12 (API 32)
-**Research Date:** December 2025 - January 2026
+**Research Date:** December 2025 - February 2026
 
 ---
 
@@ -16,7 +16,7 @@
 | [audio_effects.md](audio_effects.md) | Audio effects (Harman preprocessing, NXP bundle) |
 | [automotive_audio.md](automotive_audio.md) | AAOS multi-zone architecture, policies, focus |
 | **[carplay_audio_pipeline.md](carplay_audio_pipeline.md)** | **CarPlay/AirPlay bidirectional audio processing (CINEMO framework)** |
-| **[../intel_audio/README.md](../intel_audio/README.md)** | **Intel IAS SmartX + SST audio architecture (no official docs)** |
+| **[intel_audio.md](intel_audio.md)** | **Intel IAS SmartX + SST audio architecture (no official docs)** |
 | [../projection_comparison.md](../projection_comparison.md) | CarPlay vs Android Auto audio/video comparison |
 
 ---
@@ -27,12 +27,12 @@
 
 | Component | Specification |
 |-----------|---------------|
-| Audio HAL | Version 3.0 |
+| Audio HAL | Version 5.0 (`vendor.hardware.audio@5.0`) |
 | Sample Rate | 48000 Hz (primary) |
 | Format | PCM 16-bit |
 | Channels | Stereo |
 | Latency | ~24 ms |
-| Output Buses | 12 dedicated buses |
+| Output Buses | 14 dedicated buses |
 | Input Buses | 12 external sources |
 | Effects | Harman preprocessing + NXP bundle |
 
@@ -77,7 +77,7 @@
 ### Strengths
 - Full Android Automotive multi-zone audio architecture
 - Harman-tuned preprocessing for vehicle acoustics
-- 12 dedicated output buses for audio routing
+- 14 dedicated output buses for audio routing
 - External DSP handles mixing and ducking
 - Low-latency 8ms mix period
 - Comprehensive audio effects library
@@ -145,6 +145,21 @@ Voice:
 | Navigation | GAIN_TRANSIENT_MAY_DUCK | Ducks media |
 | Voice Assistant | GAIN_TRANSIENT_MAY_DUCK | Ducks media |
 | Phone Call | GAIN_TRANSIENT | Ducks/pauses media |
+
+### Below-HAL Audio Architecture
+
+Audio from the 14 AudioFlinger buses passes through several layers below the Android HAL barrier:
+
+| Layer | Component | Detail |
+|-------|-----------|--------|
+| HAL | Harman "Titan" HarmanAudioControl | `vendor.hardware.audio@5.0`, Dirana3 plugin |
+| Mixing | PulseAudio | 34-channel combine sink (crossbar mixing) |
+| Transport (I2S) | TDM output | 8ch s32le 48kHz → broxtontdf8532 codec |
+| Transport (AVB) | Ethernet AVB | 6ch s16le 48kHz → csm_amp (amplifier) |
+| Transport (AVB) | Ethernet AVB | 1ch s16le 48kHz → csm_tcp (telemetry) |
+| Hardware | NXP TDF8532 | Audio codec → external amplifier → 4 speakers |
+
+See [intel_audio.md](intel_audio.md) for the complete Intel IAS SmartX + SST architecture.
 
 ---
 

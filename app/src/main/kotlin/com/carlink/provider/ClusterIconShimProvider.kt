@@ -8,6 +8,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import androidx.core.graphics.scale
+import androidx.core.net.toUri
 import com.carlink.logging.Logger
 import java.io.ByteArrayOutputStream
 import java.util.Collections
@@ -56,7 +58,7 @@ class ClusterIconShimProvider : ContentProvider() {
     override fun insert(uri: Uri, values: ContentValues?): Uri? {
         if (values == null) {
             Logger.w("insert() called with null ContentValues", tag = TAG)
-            return Uri.parse("content://$AUTHORITY/img/empty")
+            return "content://$AUTHORITY/img/empty".toUri()
         }
 
         val iconId = values.getAsString("iconId")
@@ -65,12 +67,12 @@ class ClusterIconShimProvider : ContentProvider() {
         if (iconId == null || data == null) {
             Logger.w("insert() missing iconId or data (iconId=$iconId, dataSize=${data?.size})", tag = TAG)
             // Return a non-null URI to prevent skipIcons = true
-            return Uri.parse("content://$AUTHORITY/img/unknown")
+            return "content://$AUTHORITY/img/unknown".toUri()
         }
 
         val cacheKey = "cluster_icon_$iconId"
         iconCache[cacheKey] = data
-        val resultUri = Uri.parse("content://$AUTHORITY/img/$cacheKey")
+        val resultUri = "content://$AUTHORITY/img/$cacheKey".toUri()
         Logger.d("insert() cached $cacheKey (${data.size} bytes) → $resultUri", tag = TAG)
         return resultUri
     }
@@ -108,7 +110,10 @@ class ClusterIconShimProvider : ContentProvider() {
 
         val contentUri = "content://$AUTHORITY/img/$cacheKey"
         cursor.addRow(arrayOf<Any>(contentUri, aspectRatio))
-        Logger.d("query() hit for $cacheKey (${opts.outWidth}x${opts.outHeight}, ar=${"%.2f".format(aspectRatio)})", tag = TAG)
+        Logger.d(
+            "query() hit for $cacheKey (${opts.outWidth}x${opts.outHeight}, ar=${"%.2f".format(aspectRatio)})",
+            tag = TAG,
+        )
         return cursor
     }
 
@@ -156,7 +161,7 @@ class ClusterIconShimProvider : ContentProvider() {
     private fun scaleIcon(pngData: ByteArray, w: Int, h: Int): ByteArray {
         return try {
             val original = BitmapFactory.decodeByteArray(pngData, 0, pngData.size) ?: return pngData
-            val scaled = Bitmap.createScaledBitmap(original, w, h, true)
+            val scaled = original.scale(w, h, true)
             val out = ByteArrayOutputStream()
             scaled.compress(Bitmap.CompressFormat.PNG, 100, out)
             if (scaled !== original) scaled.recycle()
@@ -170,7 +175,12 @@ class ClusterIconShimProvider : ContentProvider() {
 
     override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
 
-    override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
+    override fun update(
+        uri: Uri,
+        values: ContentValues?,
+        selection: String?,
+        selectionArgs: Array<out String>?,
+    ): Int = 0
 
     override fun getType(uri: Uri): String = "image/png"
 }

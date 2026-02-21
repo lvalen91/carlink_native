@@ -162,10 +162,11 @@ Verified from firmware switch statement at fcn.00017b74.
 - Unknown1 field: Always 1 (does NOT indicate frame type)
 - Frame type determined by NAL unit type in H.264 payload
 
-**Requirements:**
-- iOS 13+ with `AdvancedFeatures=1` in riddle.conf
-- Host must send `naviScreenInfo` in BoxSettings JSON
-- Host must respond to 508 handshake (see Navigation Video Protocol section below)
+**Requirements (Corrected Feb 2026):**
+- iOS 13+
+- Host must send `naviScreenInfo` in BoxSettings JSON — this is the **primary activation mechanism**. The firmware parses `naviScreenInfo` at `0x16e5c` and branches directly to the `HU_SCREEN_INFO` path, **bypassing** the `AdvancedFeatures` config check.
+- `AdvancedFeatures=1` is **NOT required** when `naviScreenInfo` is provided (disproven by testing)
+- Command 508 handshake: **inconclusive** — the `pi-carplay` reference echoes 508 back, but testing could not isolate this as a requirement. Recommended as precaution.
 
 ### Wireless CarPlay Navigation Video (TCP Stream Type 111)
 
@@ -444,15 +445,21 @@ P-frame: 00 00 00 01 41 ... (NAL type 1)
 
 ## Navigation Video Protocol (iOS 13+)
 
-### Handshake Sequence (REQUIRED)
+### Activation (Testing Verified Feb 2026)
 
-**VERIFIED (Jan 2026):** The 508 handshake is **required** for navigation video to start. Analysis of pi-carplay-main confirms the bidirectional handshake implementation.
+Navigation video is activated by **sending `naviScreenInfo` in BoxSettings**. This is the confirmed, tested primary mechanism. The firmware parses `naviScreenInfo` at `0x16e5c` and branches directly to `HU_SCREEN_INFO` path, bypassing the `AdvancedFeatures` config check.
 
-**Handshake sequence:**
+**`AdvancedFeatures=1` is NOT required** when `naviScreenInfo` is provided.
+
+### Handshake Sequence (INCONCLUSIVE)
+
+The firmware binary shows a 508 handshake path, and the `pi-carplay` reference implementation echoes 508 back. However, **live testing with CarLink Native could not conclusively determine whether the 508 echo is required**.
+
+**Observed sequence:**
 ```
 1. Adapter sends Command 508 to host (RequestNaviScreenFocus)
-2. Host MUST respond by sending Command 508 back to adapter
-3. This triggers HU_NEEDNAVI_STREAM D-Bus signal in firmware
+2. Host echoes Command 508 back to adapter (recommended but inconclusive if required)
+3. Adapter emits HU_NEEDNAVI_STREAM D-Bus signal
 4. Navigation video (Type 0x2C) streaming begins
 ```
 
@@ -463,9 +470,11 @@ if ((msg.value as number) === 508 && this.config.naviScreen?.enabled) {
 }
 ```
 
-**Prerequisites for 508 handshake to occur:**
-- `AdvancedFeatures=1` must be set in riddle.conf
-- `naviScreenInfo` must be sent in BoxSettings JSON
+**Recommendation:** Echo 508 back if received (low cost, may be needed in some firmware paths), but the primary activation mechanism is `naviScreenInfo` in BoxSettings.
+
+**Prerequisites for navigation video:**
+- `naviScreenInfo` must be sent in BoxSettings JSON (confirmed requirement)
+- `AdvancedFeatures=1` is NOT required when `naviScreenInfo` is provided
 - CarPlay navigation app becomes active on phone
 - Host's `naviScreen.enabled` config must be true
 

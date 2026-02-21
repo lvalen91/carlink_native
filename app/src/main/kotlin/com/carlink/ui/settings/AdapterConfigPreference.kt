@@ -264,6 +264,9 @@ class AdapterConfigPreference private constructor(
         // Hand drive mode: stored as int (0=LHD, 1=RHD)
         private val KEY_HAND_DRIVE = intPreferencesKey("hand_drive_mode")
 
+        // GPS forwarding: true = forward vehicle GPS to CarPlay, false = phone uses own GPS
+        private val KEY_GPS_FORWARDING = booleanPreferencesKey("gps_forwarding")
+
         // Initialization tracking
         private val KEY_HAS_COMPLETED_FIRST_INIT = booleanPreferencesKey("has_completed_first_init")
         private val KEY_PENDING_CHANGES = stringSetPreferencesKey("pending_changes")
@@ -279,6 +282,7 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_VIDEO_RESOLUTION = "video_resolution"
         private const val SYNC_CACHE_KEY_FPS = "fps"
         private const val SYNC_CACHE_KEY_HAND_DRIVE = "hand_drive_mode"
+        private const val SYNC_CACHE_KEY_GPS_FORWARDING = "gps_forwarding"
         private const val SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT = "has_completed_first_init"
         private const val SYNC_CACHE_KEY_PENDING_CHANGES = "pending_changes"
 
@@ -295,6 +299,7 @@ class AdapterConfigPreference private constructor(
             const val VIDEO_RESOLUTION = "video_resolution"
             const val FPS = "fps"
             const val HAND_DRIVE = "hand_drive_mode"
+            const val GPS_FORWARDING = "gps_forwarding"
         }
     }
 
@@ -564,6 +569,34 @@ class AdapterConfigPreference private constructor(
         }
     }
 
+    val gpsForwardingFlow: Flow<Boolean> =
+        dataStore.data.map { preferences ->
+            preferences[KEY_GPS_FORWARDING] ?: false
+        }
+
+    /**
+     * Get current GPS forwarding configuration synchronously.
+     */
+    fun getGpsForwardingSync(): Boolean =
+        syncCache.getBoolean(SYNC_CACHE_KEY_GPS_FORWARDING, false)
+
+    /**
+     * Set GPS forwarding configuration.
+     */
+    suspend fun setGpsForwarding(enabled: Boolean) {
+        try {
+            dataStore.edit { preferences ->
+                preferences[KEY_GPS_FORWARDING] = enabled
+            }
+            syncCache.edit().putBoolean(SYNC_CACHE_KEY_GPS_FORWARDING, enabled).apply()
+            addPendingChange(ConfigKey.GPS_FORWARDING)
+            logInfo("GPS forwarding preference saved: $enabled", tag = "AdapterConfig")
+        } catch (e: Exception) {
+            logError("Failed to save GPS forwarding preference: $e", tag = "AdapterConfig")
+            throw e
+        }
+    }
+
     data class UserConfig(
         /** Audio transfer mode: true = bluetooth, false = adapter (default) */
         val audioTransferMode: Boolean,
@@ -581,6 +614,8 @@ class AdapterConfigPreference private constructor(
         val fps: FpsConfig,
         /** Hand drive mode configuration */
         val handDrive: HandDriveConfig,
+        /** GPS forwarding: true = forward vehicle GPS to CarPlay, false = phone uses own GPS */
+        val gpsForwarding: Boolean = false,
     ) {
         companion object {
             val DEFAULT =
@@ -593,6 +628,7 @@ class AdapterConfigPreference private constructor(
                     videoResolution = VideoResolutionConfig.AUTO,
                     fps = FpsConfig.DEFAULT,
                     handDrive = HandDriveConfig.DEFAULT,
+                    gpsForwarding = false,
                 )
         }
     }
@@ -612,6 +648,7 @@ class AdapterConfigPreference private constructor(
         val videoResolution = getVideoResolutionSync()
         val fps = getFpsSync()
         val handDrive = getHandDriveSync()
+        val gpsForwarding = getGpsForwardingSync()
         return UserConfig(
             audioTransferMode = audioSource == AudioSourceConfig.BLUETOOTH,
             micSource = micSource,
@@ -621,6 +658,7 @@ class AdapterConfigPreference private constructor(
             videoResolution = videoResolution,
             fps = fps,
             handDrive = handDrive,
+            gpsForwarding = gpsForwarding,
         )
     }
 
@@ -641,6 +679,7 @@ class AdapterConfigPreference private constructor(
                 preferences.remove(KEY_VIDEO_RESOLUTION)
                 preferences.remove(KEY_FPS)
                 preferences.remove(KEY_HAND_DRIVE)
+                preferences.remove(KEY_GPS_FORWARDING)
                 preferences.remove(KEY_HAS_COMPLETED_FIRST_INIT)
                 preferences.remove(KEY_PENDING_CHANGES)
             }
@@ -657,10 +696,15 @@ class AdapterConfigPreference private constructor(
                     remove(SYNC_CACHE_KEY_VIDEO_RESOLUTION)
                     remove(SYNC_CACHE_KEY_FPS)
                     remove(SYNC_CACHE_KEY_HAND_DRIVE)
+                    remove(SYNC_CACHE_KEY_GPS_FORWARDING)
                     remove(SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT)
                     remove(SYNC_CACHE_KEY_PENDING_CHANGES)
                 }.apply()
-            logInfo("Adapter config preferences reset to defaults (sync cache cleared, next session will run FULL init)", tag = "AdapterConfig")
+            logInfo(
+                "Adapter config preferences reset to defaults" +
+                    " (sync cache cleared, next session will run FULL init)",
+                tag = "AdapterConfig",
+            )
         } catch (e: Exception) {
             logError("Failed to reset adapter config preferences: $e", tag = "AdapterConfig")
             throw e
@@ -701,7 +745,8 @@ class AdapterConfigPreference private constructor(
     /**
      * Get pending configuration changes synchronously.
      */
-    fun getPendingChangesSync(): Set<String> = syncCache.getStringSet(SYNC_CACHE_KEY_PENDING_CHANGES, emptySet()) ?: emptySet()
+    fun getPendingChangesSync(): Set<String> =
+        syncCache.getStringSet(SYNC_CACHE_KEY_PENDING_CHANGES, emptySet()) ?: emptySet()
 
     /**
      * Add a configuration key to pending changes.

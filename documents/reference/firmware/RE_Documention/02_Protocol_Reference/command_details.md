@@ -3,7 +3,7 @@
 **Status:** Binary-verified command documentation
 **Source:** ARMadb-driver.unpacked disassembly analysis
 **Firmware Version:** 2025.10.15.1127 (binary analysis reference version)
-**Last Updated:** 2026-02-02
+**Last Updated:** 2026-02-19 (Added: firmware trigger points for all 1000-1013 commands, historical 1010 bug analysis, session termination signals clarification. Prior: 14 new commands 400-403, 410-412, 502-503, 600-601, 700-702)
 **Verification Method:** Direct radare2 disassembly tracing of command handlers
 
 ---
@@ -500,8 +500,8 @@ These commands simulate hardware navigation controls and are forwarded directly 
 |----|------|-----------|---------|
 | 500 | RequestVideoFocus | A→H | Adapter requests host display video |
 | 501 | ReleaseVideoFocus | A→H | Adapter releases video focus |
-| 502 | unknown502 | - | **UNKNOWN** |
-| 503 | unknown503 | - | **UNKNOWN** |
+| 502 | RequestAudioFocus | A→H | Request audio focus (binary-verified Feb 2026) |
+| 503 | RequestAudioFocusTransient | A→H | Request transient audio focus (binary-verified Feb 2026) |
 | 504 | RequestAudioFocusDuck | A→H | Request host duck other audio |
 | 505 | ReleaseAudioFocus | A→H | Release audio focus |
 | 506 | RequestNaviFocus | A→H | Request navigation audio focus |
@@ -514,7 +514,7 @@ These commands simulate hardware navigation controls and are forwarded directly 
 - 501: May hide video view
 - 504: Lower volume of other audio sources
 - 505: Restore normal audio levels
-- 508: **Critical** - Must echo back 508 to adapter to enable nav video
+- 508: Echo back 508 to adapter (recommended precaution — testing was inconclusive on whether strictly required; nav video activation is primarily driven by `naviScreenInfo` in BoxSettings)
 
 ---
 
@@ -547,27 +547,112 @@ These commands simulate hardware navigation controls and are forwarded directly 
 | 1010 | DeviceWifiNotConnected | No phone connected to WiFi hotspot |
 | 1011 | DeviceBluetoothPairStart | Bluetooth pairing started |
 
-**Binary Evidence:** All strings at `0x6bbd0`-`0x6bcb7`.
+**Binary Evidence:** All strings at `0x6bbd0`-`0x6bcb7`. All status notifications (1003-1012) are sent via `_SendPhoneCommandToCar` (`fcn.00019244`) which constructs a type 0x08 message and sends it to the host. These are **pure informational** — the firmware takes no session management action when generating them.
 
-### ⚠️ CRITICAL: Command 1010 (DeviceWifiNotConnected)
+### Firmware Trigger Points (Binary Verified Feb 2026)
 
-**Status:** VERIFIED via binary at `0x19a64`
+| Cmd ID | Trigger Function | Specific Trigger | Notes |
+|--------|-----------------|------------------|-------|
+| 1000 | `fcn.00022284` (ProcessCmdOpen) | Sent immediately after processing Open (0x01) | Init-time capability flag |
+| 1001 | `fcn.00022284` | Sent immediately after 1000 | Init-time capability flag |
+| 1003 | `BluetoothDaemonControlerEx.virtual_44` | Auto-connect scan started | D-Bus callback |
+| 1004 | `BluetoothDaemonControlerEx.virtual_44` | Device found during scan | D-Bus callback |
+| 1005 | `BluetoothDaemonControlerEx.virtual_44` | Scan complete, no device | D-Bus callback |
+| 1006 | `BluetoothDaemonControlerEx.virtual_44` | BT connection attempt failed | D-Bus callback |
+| 1007 | `fcn.0001b7c8` | BT connected via D-Bus signal from `org.riddle.BluetoothControl` | Fires on BT HFP connect |
+| 1008 | `fcn.0001b9d8` | BT disconnected via D-Bus signal | **CAN fire during active USB CarPlay** — BT disconnect does NOT affect USB |
+| 1009 | `fcn.00069d7c` returns 2 | WiFi client connected | Internal WiFi state check |
+| 1010 | `fcn.00069d7c` returns 3 or 4 | WiFi client not connected or error | Internal WiFi state check |
+| 1011 | `BluetoothDaemonControlerEx` callback | BT pairing initiated | D-Bus callback |
+| 1012 | `fcn.00022284` | WiFi kernel module needed | Init-time status |
 
-**This is a WiFi hotspot status notification, NOT a session termination signal.**
+### ⚠️ CRITICAL: Commands 1000-1013 Are ALL Pure Status Notifications
 
-**Correct Behavior:**
+**Status:** VERIFIED via firmware binary trace of every trigger path
+
+**ALL commands in the 1000-1013 range are informational status notifications.** The adapter generates them via `_SendPhoneCommandToCar` which simply constructs a type 0x08 message and writes it to USB. **No session management logic is associated with any of these commands.**
+
+**Correct Host Behavior for ALL 1000-1013:**
 - Log the status for debugging
-- Update WiFi status indicator in UI
-- **DO NOT terminate active CarPlay/Android Auto sessions**
+- Optionally update UI status indicators
+- **DO NOT terminate, pause, or reset active sessions**
+- **DO NOT trigger reconnect sequences**
 
-**Why:**
-- For USB CarPlay: WiFi status is irrelevant (data flows over USB)
-- For Wireless CarPlay: WiFi may temporarily drop without ending session
+### ⚠️ Command 1010 (DeviceWifiNotConnected) — Historical Bug
 
-**Session Termination Signals:**
-- `Unplugged` (message type 0x04)
-- `Phase 0` (message type 0x03 with value 0)
-- Heartbeat timeout
+**This is the most misinterpreted message in the protocol.**
+
+The old app incorrectly treated 1010 as a session termination signal and would reset the USB connection. Firmware analysis proves:
+
+1. **Trigger:** `fcn.00069d7c` is a WiFi state polling function. Returns 3 (not connected) or 4 (error). Has NO connection to USB session state.
+2. **Delivery:** Packaged by `_SendPhoneCommandToCar` — same path as all status notifications.
+3. **Adapter behavior:** After sending 1010, the adapter **continues operating normally**. USB read loop, video forwarding, audio streaming — all unaffected.
+4. **Fix:** Ignoring 1010 (and all 1000-1013) dramatically improved session stability. CarPlay sessions that previously dropped on transient WiFi fluctuations now run uninterrupted.
+
+**Session Termination Signals (the ONLY ones):**
+- `Unplugged` (message type 0x04) — physical USB disconnect
+- `Phase 0` (message type 0x03 with value 0) — firmware kills all phone-link processes
+- Heartbeat timeout (~10-15 seconds without heartbeat response)
+
+---
+
+## App Launch Commands (400-403) — Binary Verified Feb 2026
+
+**Direction:** All H→A→P (forwarded to phone via MiddleMan IPC)
+**Status:** VERIFIED (strings in `_SendPhoneCommandToCar` at `0x19244`)
+
+| ID | Name | Purpose |
+|----|------|---------|
+| 400 | LaunchAppMaps | Launch Apple Maps on phone |
+| 401 | LaunchAppPhone | Launch Phone app on phone |
+| 402 | LaunchAppMusic | Launch Apple Music on phone |
+| 403 | LaunchAppNowPlaying | Launch Now Playing on phone |
+
+**When to Use:** To programmatically launch specific apps on the connected phone. Commands are forwarded to AppleCarPlay via MiddleMan IPC.
+
+---
+
+## UI Control Commands (410-412) — Binary Verified Feb 2026
+
+**Direction:** All H→A→P
+**Status:** VERIFIED (strings in `_SendPhoneCommandToCar`)
+
+| ID | Name | Purpose |
+|----|------|---------|
+| 410 | ShowUI | Show CarPlay UI (URL payload via `HU_SHOWUI_URL` config) |
+| 411 | StopUI | Hide/stop CarPlay UI |
+| 412 | SuggestUI | Siri suggestions (via `altScreenSuggestUIURLs`) |
+
+---
+
+## DVR Commands (600-601) — Binary Verified Feb 2026
+
+**Direction:** All H→A
+**Status:** VERIFIED (strings in binary) — **Dead code, no camera hardware**
+
+| ID | Name | Purpose |
+|----|------|---------|
+| 600 | DVRCommand_RequestPreview | Request DVR camera preview |
+| 601 | DVRCommand_ScanAndConnect | Scan and connect to DVR camera |
+
+**Note:** DVRServer binary not shipped on live firmware. These commands exist in the dispatch table but have no functional implementation.
+
+---
+
+## Custom Commands (700-702) — Binary Verified Feb 2026
+
+**Direction:** All H→A→P
+**Status:** VERIFIED (strings in `_SendPhoneCommandToCar`)
+
+| ID | Name | Purpose |
+|----|------|---------|
+| 700 | CusCommand_UpdateAudioVolume | Forward HU volume level to CarPlay session (via `HU_AUDIOVOLUME_INFO`) |
+| 701 | CusCommand_HFPCallStart | Notify CarPlay of HFP call start |
+| 702 | CusCommand_HFPCallStop | Notify CarPlay of HFP call end |
+
+**When to Use:**
+- **700:** When the head unit volume changes, forward the level to CarPlay so it can adjust audio rendering.
+- **701/702:** When a Hands-Free Profile call starts/stops via the vehicle's Bluetooth, notify CarPlay to coordinate audio routing.
 
 ---
 
@@ -584,8 +669,12 @@ The following command IDs were NOT found in the switch table at `fcn.00019744`:
 | 107-110 | Gap between D-Pad and Knob |
 | 115-199 | Not implemented |
 | 206-299 | Not implemented |
-| 315-499 | Not implemented |
-| 510-999 | Not implemented |
+| 315-399 | Not implemented |
+| 404-409 | Not implemented |
+| 413-499 | Not implemented |
+| 510-599 | Not implemented |
+| 602-699 | Not implemented |
+| 703-999 | Not implemented |
 | 1014+ | Not implemented |
 
 ---

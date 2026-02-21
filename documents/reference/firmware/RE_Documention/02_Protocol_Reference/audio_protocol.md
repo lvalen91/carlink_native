@@ -1,8 +1,10 @@
 # CPC200-CCPA Audio Protocol Reference
 
+> **[Protocol]** This document is the canonical reference for AudioData (0x07) message format, audio command signals, and stream routing between the CPC200-CCPA adapter firmware and host app.
+
 **Status:** VERIFIED against 21 controlled capture sessions across 7 scenarios
 **Consolidated from:** GM_research, carlink_native
-**Last Updated:** 2026-01-20
+**Last Updated:** 2026-02-19
 
 ---
 
@@ -83,7 +85,7 @@ PayloadLen = 12 (audio header) + audio_payload_size
 - Observed: 972-byte packets = 960 PCM bytes = 480 samples @ 16kHz = 30ms ✓
 - Expected for 8kHz: ~492-byte packets = 480 PCM bytes = 240 samples @ 8kHz = 30ms (never seen)
 
-**WebRTC Requirement (Binary Verified at 0x2dfa2):** The firmware WebRTC AECM module **only accepts 8kHz or 16kHz** for microphone input. Other sample rates will fail WebRTC initialization.
+**WebRTC Requirement (Binary Verified at 0x2dfa2):** The firmware WebRTC AECM module **only accepts 8kHz or 16kHz** for microphone input. Other sample rates will fail WebRTC initialization (see `../03_Audio_Processing/audio_formats.md` for binary verification with ARM assembly evidence).
 
 ### decode_type=2 Dual-Purpose Behavior (CRITICAL)
 
@@ -134,23 +136,25 @@ USB packet:  decode_type=0x04, payload=11532 bytes → 48kHz audio
 
 When payload_len is 13, the final byte is a command:
 
-| Byte | Hex | Name | decode_type | audio_type | Verified |
-|------|-----|------|-------------|------------|----------|
-| 1 | 0x01 | OUTPUT_START | 4, 5 | 1, 2 | Yes |
-| 2 | 0x02 | OUTPUT_STOP | 4, 5 | 1, 2 | Yes |
-| 3 | 0x03 | INPUT_START | 5 | 1 | Yes |
-| 4 | 0x04 | INPUT_STOP | 5 | 1 | Yes |
-| 5 | 0x05 | PHONECALL_START | 5 | 1 | Yes |
-| 6 | 0x06 | PHONECALL_STOP | 2, 4 | 2 | Yes |
-| 7 | 0x07 | NAVI_START | 4 | 2 | Yes |
-| 8 | 0x08 | NAVI_STOP | 5 | 1 | Yes* |
-| 9 | 0x09 | SIRI_START | 5 | 1 | Yes |
-| 10 | 0x0A | MEDIA_START | 4 | 1 | Yes |
-| 11 | 0x0B | MEDIA_STOP | 2, 4 | 1 | Yes |
-| 12 | 0x0C | ALERT_START | 4 | 1 | Yes |
-| 13 | 0x0D | ALERT_STOP | 4 | 1 | Yes |
-| 14 | 0x0E | INCOMING_CALL_INIT | 5 | 1 | Yes |
-| 16 | 0x10 | NAVI_COMPLETE | 4 | 2 | Yes |
+| Byte | Hex | Name | decode_type | audio_type | Firmware Trigger | Host Action | Verified |
+|------|-----|------|-------------|------------|------------------|-------------|----------|
+| 1 | 0x01 | OUTPUT_START | 4, 5 | 1, 2 | Media/voice playback beginning | Prepare AudioTrack for the stream | Yes |
+| 2 | 0x02 | OUTPUT_STOP | 4, 5 | 1, 2 | Media/voice playback ending | May stop AudioTrack | Yes |
+| 3 | 0x03 | INPUT_START | 5 | 1 | Mic config from phone | Start microphone capture; configure sample rate/channels | Yes |
+| 4 | 0x04 | INPUT_STOP | 5 | 1 | Mic session ending | Stop microphone capture | Yes |
+| 5 | 0x05 | PHONECALL_START | 5 | 1 | Active phone call connected | Start mic capture, route call audio | Yes |
+| 6 | 0x06 | PHONECALL_STOP | 2, 4 | 2 | Phone call ended / channel clear | Stop mic capture if active; clear channel | Yes |
+| 7 | 0x07 | NAVI_START | 4 | 2 | Navigation audio starting | Duck media volume or route to nav AudioTrack | Yes |
+| 8 | 0x08 | NAVI_STOP | 5 | 1 | Navigation audio stopped / Siri mode | Restore media volume; prepare voice mode | Yes* |
+| 9 | 0x09 | SIRI_START | 5 | 1 | Siri activated / responding | Start mic capture if not already active | Yes |
+| 10 | 0x0A | MEDIA_START | 4 | 1 | Media stream opening | Internal state tracking | Yes |
+| 11 | 0x0B | MEDIA_STOP | 2, 4 | 1 | Media stream closing | Internal state tracking | Yes |
+| 12 | 0x0C | ALERT_START | 4 | 1 | System alert sound | Duck media or route alert audio | Yes |
+| 13 | 0x0D | ALERT_STOP | 4 | 1 | System alert ended | Restore audio routing | Yes |
+| 14 | 0x0E | INCOMING_CALL_INIT | 5 | 1 | Incoming call ringing | Start ring audio routing (distinct from active call) | Yes |
+| 16 | 0x10 | NAVI_COMPLETE | 4 | 2 | Navigation prompt finished | End nav audio, restore routing | Yes |
+
+**Naming Note:** Command 14 is called `PHONECALL_Incoming` in the firmware D-Bus signals (`kRiddleAudioSignal_PHONECALL_Incoming`); `INCOMING_CALL_INIT` is the capture-derived name used here. Command 16 (`NAVI_COMPLETE`) is not listed in the simplified `usb_protocol.md` command table but is capture-verified.
 
 **IMPORTANT:**
 - No SIRI_STOP (0x0F) command exists - Siri sessions end via OUTPUT_STOP
@@ -304,7 +308,7 @@ VOL packet (vol=1.0)             ← Restore media
 | Phone (mic) | 3 or 5 | 3 | 0x03 | - | 8kHz or 16kHz |
 | Ringtone | 2/4 | 1 | 0x0C | 0x0D | 44.1/48kHz |
 
-**Microphone Note:** Microphone audio (audio_type=3) must be 8kHz or 16kHz. The firmware WebRTC AECM will reject other sample rates (binary verified at `0x2dfa2`).
+**Microphone Note:** Microphone audio (audio_type=3) must be 8kHz or 16kHz. The firmware WebRTC AECM will reject other sample rates (see `../03_Audio_Processing/audio_formats.md` for binary verification at `0x2dfa2`). This requirement applies to both CarPlay and Android Auto.
 
 ---
 

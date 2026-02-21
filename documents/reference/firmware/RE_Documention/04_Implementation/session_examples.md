@@ -100,15 +100,17 @@ This document contains real captured session examples showing the exact packet s
 | Touch events | User input | 5 | Touch coordinates |
 | Audio data | As needed | 7 | PCM audio streams |
 
-### Navigation Handshake (508 Exchange)
+### Navigation Video Activation
+
+Navigation video is activated by sending `naviScreenInfo` in BoxSettings. `AdvancedFeatures=1` is NOT required when `naviScreenInfo` is provided.
 
 | Seq | Time | Dir | Type | Details |
 |-----|------|-----|------|---------|
 | - | ~7500ms | IN | 8 | cmd=508 (adapter requests nav focus) |
-| - | ~7500ms | OUT | 8 | cmd=508 (host confirms nav focus) |
+| - | ~7500ms | OUT | 8 | cmd=508 (host echoes nav focus — recommended but inconclusive if required) |
 | 43 | 7524ms | IN | 44 | First navigation video frame |
 
-**Note:** The 508 handshake is **bidirectional and required** for navigation video to start.
+**Note:** The 508 exchange was observed in captures, but testing could not conclusively isolate it as a requirement. The confirmed trigger is `naviScreenInfo` in BoxSettings.
 
 ### Session Statistics
 
@@ -336,35 +338,15 @@ The adapter sends these WiFi credentials to the phone:
 
 ---
 
-## Command Reference Quick Lookup
+## Command Reference
 
-### Commands Sent by Host (OUT)
-
-| ID | Name | When Used |
-|----|------|-----------|
-| 7 | UseCarMic | During init, enable car mic |
-| 12 | startVideoEncoderV2 | After Open, start video |
-| 23 | audioTransfer on | During init, enable audio routing |
-| 25 | wifi5g | During init, select 5GHz band |
-| 1000 | wifiListGetCmd | Request WiFi device list |
-| 1002 | wifiConnect | Initiate WiFi connection |
-| 1012 | wifiBtCommand | WiFi/BT control |
-
-### Commands Received from Adapter (IN)
-
-| ID | Name | Meaning |
-|----|------|---------|
-| 7 | UseCarMic | Confirm mic routing |
-| 500 | videoFocusRequest | Adapter requesting video focus |
-| 505 | videoReleaseNotify | Adapter releasing audio focus |
-| 1000 | SupportWifi | WiFi mode supported |
-| 1001 | btListReady | Bluetooth list ready |
-| 1003 | ScaningDevices / wifiConnectSuccess | Scanning or connected |
-| 1005 | DeviceNotFound / wifiReady | No device or WiFi ready |
+For complete command ID reference, see `02_Protocol_Reference/command_ids.md`. For per-command binary evidence, see `02_Protocol_Reference/command_details.md`.
 
 ---
 
 ## Type 163 (SessionToken) Analysis
+
+SessionToken (type 0xA3) is AES-128-CBC encrypted. Key: `W2EC1X1NbZ58TXtn`, IV = first 16 bytes of Base64-decoded payload. See `02_Protocol_Reference/usb_protocol.md` > SessionToken for full decryption analysis and field descriptions.
 
 Both CarPlay and Android Auto sessions include a single Type 163 packet:
 
@@ -373,32 +355,7 @@ Both CarPlay and Android Auto sessions include a single Type 163 packet:
 | CarPlay | 46 | 8065ms | 508 bytes |
 | Android Auto | 55 | 39319ms | 444 bytes |
 
-**Structure:**
-- 16-byte USB header
-- Base64-encoded payload (492 bytes CarPlay / 428 bytes Android Auto)
-- Decodes to encrypted binary (368 bytes CarPlay / 320 bytes Android Auto)
-
 **Timing:** Always sent immediately after BoxSettings (phone info) and before Phase 8.
-
-**Decryption (Verified Jan 2026):**
-
-| Property | Value |
-|----------|-------|
-| Algorithm | AES-128-CBC |
-| Key | `W2EC1X1NbZ58TXtn` (same as USB Communication Key) |
-| IV | First 16 bytes of Base64-decoded payload |
-| Ciphertext | Bytes 16+ of Base64-decoded payload |
-
-**Decryption Command:**
-```bash
-# Extract Base64 payload (skip 16-byte USB header), decode, decrypt
-KEY_HEX=$(printf "W2EC1X1NbZ58TXtn" | xxd -p)
-IV_HEX=$(dd if=decoded_payload.bin bs=1 count=16 | xxd -p)
-dd if=decoded_payload.bin bs=1 skip=16 | \
-  openssl enc -d -aes-128-cbc -K "$KEY_HEX" -iv "$IV_HEX" -nopad
-```
-
-**Purpose:** Session telemetry JSON containing phone info, adapter identification, and connection statistics. See `02_Protocol_Reference/usb_protocol.md` for full field descriptions.
 
 ---
 

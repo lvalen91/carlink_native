@@ -69,6 +69,7 @@ fun MainScreen(
 ) {
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf(CarlinkManager.State.DISCONNECTED) }
+    var statusText by remember { mutableStateOf("Connect Adapter") }
     var isResetting by remember { mutableStateOf(false) }
     val surfaceState = rememberVideoSurfaceState()
 
@@ -106,9 +107,9 @@ fun MainScreen(
                             state = newState
                         }
 
-                        override fun onMediaInfoChanged(mediaInfo: CarlinkManager.MediaInfo) {}
-
-                        override fun onLogMessage(message: String) {}
+                        override fun onStatusTextChanged(text: String) {
+                            statusText = text
+                        }
 
                         override fun onHostUIPressed() {
                             onNavigateToSettings()
@@ -155,7 +156,11 @@ fun MainScreen(
                 if (BuildConfig.DEBUG && isUserInteractingWithProjection) {
                     val now = System.currentTimeMillis()
                     if (now - lastTouchTime > 1000) {
-                        logDebug("[UI_TOUCH] touch: action=${event.actionMasked}, pointers=${event.pointerCount}", tag = "UI")
+                        logDebug(
+                            "[UI_TOUCH] touch: action=${event.actionMasked}" +
+                                ", pointers=${event.pointerCount}",
+                            tag = "UI",
+                        )
                         lastTouchTime = now
                     }
                 }
@@ -192,13 +197,7 @@ fun MainScreen(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     Text(
-                        text =
-                            when (state) {
-                                CarlinkManager.State.DISCONNECTED -> "[ Connect Adapter ]"
-                                CarlinkManager.State.CONNECTING -> "[ Connecting... ]"
-                                CarlinkManager.State.DEVICE_CONNECTED -> "[ Waiting for Phone ]"
-                                CarlinkManager.State.STREAMING -> "[ Streaming ]"
-                            },
+                        text = "[ $statusText ]",
                         style = MaterialTheme.typography.bodyLarge,
                         color = Color(0xFFDDE4E5), // Fixed light color for dark overlay
                     )
@@ -351,12 +350,12 @@ private fun handleTouchEvent(
     }
 
     val touchList =
-        activeTouches.entries.mapIndexed { index, entry ->
+        activeTouches.entries.map { entry ->
             MessageSerializer.TouchPoint(
                 x = entry.value.x,
                 y = entry.value.y,
                 action = entry.value.action,
-                id = index,
+                id = entry.key,
             )
         }
 

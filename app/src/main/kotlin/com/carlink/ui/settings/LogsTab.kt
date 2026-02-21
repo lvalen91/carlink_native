@@ -343,7 +343,10 @@ internal fun LogsTabContent(
                                         createDocumentLauncher.launch(file.name)
                                     } catch (e: Exception) {
                                         // Reset state if launcher fails (no activity to handle intent)
-                                        logError("[FILE_EXPORT] Failed to launch document picker: ${e.message}", tag = "FILE_LOG")
+                                        logError(
+                                            "[FILE_EXPORT] Failed to launch document picker: ${e.message}",
+                                            tag = "FILE_LOG",
+                                        )
                                         Toast.makeText(context, "Cannot open file picker", Toast.LENGTH_SHORT).show()
                                         pendingExportFile = null
                                         isExporting = false
@@ -548,7 +551,8 @@ internal fun LogsTabContent(
                             }
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "This file will be permanently deleted from your device. This action cannot be undone.",
+                                text = "This file will be permanently deleted from your device. " +
+                                    "This action cannot be undone.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colorScheme.onErrorContainer,
                                 lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.4,

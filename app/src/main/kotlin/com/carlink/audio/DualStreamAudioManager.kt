@@ -112,6 +112,9 @@ class DualStreamAudioManager(
 
     @Volatile private var navStartTime: Long = 0
 
+    @Volatile private var mediaPendingPlay = false
+    @Volatile private var navPendingPlay = false
+
     // Minimum playback duration before allowing stop (fixes premature cutoff - Sessions 1-2)
     private val minNavPlayDurationMs = 300
 
@@ -296,8 +299,6 @@ class DualStreamAudioManager(
                 // Drop packets after NAVI_STOP (~2s silence before NAVI_COMPLETE per USB captures)
                 if (navStopped) return 0
 
-                val bufferLevelMs = navBuffer?.fillLevelMs() ?: 0
-
                 // Check end marker before track creation (navStartTime may be 0)
                 if (isNavEndMarker(data, dataOffset, dataLength)) {
                     flushNavBuffers()
@@ -312,7 +313,10 @@ class DualStreamAudioManager(
                     windowZeroFiltered.incrementAndGet()
                     if (consecutiveNavZeroPackets >= navZeroFlushThreshold) {
                         flushNavBuffers()
-                        log("[AUDIO_FILTER] Nav buffer flushed after $consecutiveNavZeroPackets consecutive zero packets")
+                        log(
+                            "[AUDIO_FILTER] Nav buffer flushed after " +
+                                "$consecutiveNavZeroPackets consecutive zero packets"
+                        )
                         consecutiveNavZeroPackets = 0
                     }
                     return 0
@@ -326,7 +330,10 @@ class DualStreamAudioManager(
                 if (timeSinceStart < navWarmupSkipMs && isWarmupNoise(data, dataOffset, dataLength)) {
                     navWarmupFramesSkipped++
                     if (navWarmupFramesSkipped == 1L || navWarmupFramesSkipped % 10 == 0L) {
-                        log("[AUDIO] Skipped nav warmup frame (${timeSinceStart}ms since start, total: $navWarmupFramesSkipped)")
+                        log(
+                            "[AUDIO] Skipped nav warmup frame " +
+                                "(${timeSinceStart}ms since start, total: $navWarmupFramesSkipped)"
+                        )
                     }
                     return 0
                 }
@@ -436,6 +443,7 @@ class DualStreamAudioManager(
             }
 
             navStarted = false
+            navPendingPlay = false
             navStopped = false // Reset stopped state for next nav session
             navPackets = 0 // Reset packet counter for next nav prompt
             navUnderruns = 0 // Reset underrun counter for next nav prompt
@@ -478,8 +486,8 @@ class DualStreamAudioManager(
         synchronized(lock) {
             // Resume paused track (Siri tone fix)
             mediaTrack?.let { track ->
-                if (track.playState == AudioTrack.PLAYSTATE_PAUSED && mediaFormat == format) {
-                    track.play()
+                if (track.playState == AudioTrack.PLAYSTATE_PAUSED && mediaFormat == format && !mediaPendingPlay) {
+                    mediaPendingPlay = true
                     mediaStarted = false
                     log("[AUDIO] Resumed paused media track (same format ${format.sampleRate}Hz)")
                     return
@@ -499,7 +507,7 @@ class DualStreamAudioManager(
                     )
 
                 mediaTrack = createAudioTrack(format, AudioStreamType.MEDIA)
-                mediaTrack?.play()
+                mediaPendingPlay = true
             }
         }
     }
@@ -512,11 +520,11 @@ class DualStreamAudioManager(
 
             // Resume paused track with flush (secondary to end marker flush)
             navTrack?.let { track ->
-                if (track.playState == AudioTrack.PLAYSTATE_PAUSED && navFormat == format) {
+                if (track.playState == AudioTrack.PLAYSTATE_PAUSED && navFormat == format && !navPendingPlay) {
                     val discardedMs = navBuffer?.fillLevelMs() ?: 0
                     track.flush()
                     navBuffer?.clear()
-                    track.play()
+                    navPendingPlay = true
                     navStarted = false
                     navStartTime = System.currentTimeMillis()
                     log("[AUDIO] Resumed paused nav track with flush (same format ${format.sampleRate}Hz)")
@@ -537,7 +545,7 @@ class DualStreamAudioManager(
                     )
 
                 navTrack = createAudioTrack(format, AudioStreamType.NAVIGATION)
-                navTrack?.play()
+                navPendingPlay = true
                 navStartTime = System.currentTimeMillis() // Track start time for min duration
             }
         }
@@ -656,6 +664,7 @@ class DualStreamAudioManager(
         mediaTrack = null
         mediaFormat = null
         mediaStarted = false
+        mediaPendingPlay = false
     }
 
     private fun releaseNavTrack() {
@@ -674,6 +683,7 @@ class DualStreamAudioManager(
         navTrack = null
         navFormat = null
         navStarted = false
+        navPendingPlay = false
     }
 
     private fun log(message: String) {
@@ -686,8 +696,9 @@ class DualStreamAudioManager(
 
     /** Playback thread (URGENT_AUDIO priority). Separate buffers per stream for safety. */
     private inner class AudioPlaybackThread : Thread("AudioPlayback") {
-        private val mediaTempBuffer = ByteArray(playbackChunkSize)
-        private val navTempBuffer = ByteArray(playbackChunkSize)
+        // Sized for bulk transfer: fill AudioTrack deeply per wake on constrained AAOS
+        private val mediaTempBuffer = ByteArray(playbackChunkSize * 20)
+        private val navTempBuffer = ByteArray(playbackChunkSize * 20)
 
         // Residual tracking for partial WRITE_NON_BLOCKING returns.
         // Per Android docs, non-blocking write may return fewer bytes than requested
@@ -708,14 +719,46 @@ class DualStreamAudioManager(
 
                     mediaBuffer?.let { buffer ->
                         mediaTrack?.let { track ->
-                            if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                            if (track.playState == AudioTrack.PLAYSTATE_PLAYING || mediaPendingPlay) {
                                 val currentFillMs = buffer.fillLevelMs()
 
                                 // Pre-fill before first playback
                                 if (!mediaStarted) {
                                     if (currentFillMs < prefillThresholdMs) return@let
                                     mediaStarted = true
-                                    log("[AUDIO] Media pre-fill complete: ${currentFillMs}ms buffered, starting playback")
+                                    if (mediaPendingPlay) {
+                                        // Pre-load AudioTrack buffer while STOPPED/PAUSED
+                                        // before play() so AudioFlinger finds data on first pull
+                                        var preloaded = 0
+                                        while (buffer.fillLevelMs() > minBufferLevelMs) {
+                                            val avail = buffer.availableForRead()
+                                            if (avail <= 0) break
+                                            val bytesRead = buffer.read(
+                                                mediaTempBuffer, 0,
+                                                minOf(avail, mediaTempBuffer.size),
+                                            )
+                                            if (bytesRead <= 0) break
+                                            val written = track.write(
+                                                mediaTempBuffer, 0, bytesRead,
+                                                AudioTrack.WRITE_NON_BLOCKING,
+                                            )
+                                            if (written <= 0) break
+                                            windowMediaPlayed.addAndGet(written.toLong())
+                                            preloaded += written
+                                            if (written < bytesRead) {
+                                                mediaResidualOffset = written
+                                                mediaResidualCount = bytesRead - written
+                                                break
+                                            }
+                                        }
+                                        track.play()
+                                        mediaPendingPlay = false
+                                        mediaUnderruns = track.underrunCount
+                                    }
+                                    log(
+                                        "[AUDIO] Media pre-fill complete: " +
+                                            "${currentFillMs}ms buffered, starting playback"
+                                    )
                                 }
 
                                 // Retry residual from prior partial WRITE_NON_BLOCKING
@@ -744,10 +787,11 @@ class DualStreamAudioManager(
                                 val available = buffer.availableForRead()
                                 if (available > 0) {
                                     val bytesPerMs =
-                                        (mediaFormat?.sampleRate ?: audioConfig.sampleRate) * (mediaFormat?.channelCount ?: 2) * 2 / 1000
+                                        (mediaFormat?.sampleRate ?: audioConfig.sampleRate) *
+                                            (mediaFormat?.channelCount ?: 2) * 2 / 1000
                                     val maxReadableMs = currentFillMs - minBufferLevelMs
                                     val maxReadableBytes = maxReadableMs * bytesPerMs
-                                    val toRead = minOf(available, playbackChunkSize, maxReadableBytes.coerceAtLeast(0))
+                                    val toRead = minOf(available, mediaTempBuffer.size, maxReadableBytes.coerceAtLeast(0))
 
                                     if (toRead > 0) {
                                         val bytesRead = buffer.read(mediaTempBuffer, 0, toRead)
@@ -800,14 +844,47 @@ class DualStreamAudioManager(
 
                     navBuffer?.let { buffer ->
                         navTrack?.let { track ->
-                            if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                            if (track.playState == AudioTrack.PLAYSTATE_PLAYING || navPendingPlay) {
                                 val currentNavFillMs = buffer.fillLevelMs()
 
                                 // Shorter pre-fill for nav (lower latency)
                                 if (!navStarted) {
                                     if (currentNavFillMs < prefillThresholdMs / 2) return@let
                                     navStarted = true
-                                    log("[AUDIO] Nav pre-fill complete: ${currentNavFillMs}ms buffered, starting playback")
+                                    if (navPendingPlay) {
+                                        // Pre-load AudioTrack buffer while STOPPED/PAUSED
+                                        // before play() so AudioFlinger finds data on first pull
+                                        val navMinBuf = minBufferLevelMs / 2
+                                        var preloaded = 0
+                                        while (buffer.fillLevelMs() > navMinBuf) {
+                                            val avail = buffer.availableForRead()
+                                            if (avail <= 0) break
+                                            val bytesRead = buffer.read(
+                                                navTempBuffer, 0,
+                                                minOf(avail, navTempBuffer.size),
+                                            )
+                                            if (bytesRead <= 0) break
+                                            val written = track.write(
+                                                navTempBuffer, 0, bytesRead,
+                                                AudioTrack.WRITE_NON_BLOCKING,
+                                            )
+                                            if (written <= 0) break
+                                            windowNavPlayed.addAndGet(written.toLong())
+                                            preloaded += written
+                                            if (written < bytesRead) {
+                                                navResidualOffset = written
+                                                navResidualCount = bytesRead - written
+                                                break
+                                            }
+                                        }
+                                        track.play()
+                                        navPendingPlay = false
+                                        navUnderruns = track.underrunCount
+                                    }
+                                    log(
+                                        "[AUDIO] Nav pre-fill complete: " +
+                                            "${currentNavFillMs}ms buffered, starting playback"
+                                    )
                                 }
 
                                 // Retry residual from prior partial WRITE_NON_BLOCKING
@@ -836,10 +913,11 @@ class DualStreamAudioManager(
                                 val available = buffer.availableForRead()
                                 if (available > 0) {
                                     val bytesPerMs =
-                                        (navFormat?.sampleRate ?: audioConfig.sampleRate) * (navFormat?.channelCount ?: 2) * 2 / 1000
+                                        (navFormat?.sampleRate ?: audioConfig.sampleRate) *
+                                            (navFormat?.channelCount ?: 2) * 2 / 1000
                                     val maxReadableMs = currentNavFillMs - navMinBufferMs
                                     val maxReadableBytes = maxReadableMs * bytesPerMs
-                                    val toRead = minOf(available, playbackChunkSize, maxReadableBytes.coerceAtLeast(0))
+                                    val toRead = minOf(available, navTempBuffer.size, maxReadableBytes.coerceAtLeast(0))
 
                                     if (toRead > 0) {
                                         val bytesRead = buffer.read(navTempBuffer, 0, toRead)
@@ -959,12 +1037,14 @@ class DualStreamAudioManager(
                                 mediaTrack = null
                                 mediaFormat = null
                                 mediaStarted = false
+                                mediaPendingPlay = false
                             }
                             "NAV" -> {
                                 try { navTrack?.release() } catch (_: Exception) {}
                                 navTrack = null
                                 navFormat = null
                                 navStarted = false
+                                navPendingPlay = false
                             }
                         }
                     }

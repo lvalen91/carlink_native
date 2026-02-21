@@ -122,9 +122,9 @@ GM AAOS implements CarPlay video projection using the **CINEMO** multimedia fram
                                 │
                                 ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                    SurfaceFlinger + HWC 2.1                                  │
+│                    SurfaceFlinger + HWC 2.3                                  │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
-│  │  hwcomposer.broxton                                                 │    │
+│  │  iahwcomposer (Intel Automotive HWC)                                │    │
 │  │  - DEVICE composition (hardware overlay)                            │    │
 │  │  - CLIENT composition (GPU fallback)                                │    │
 │  │  - Triple buffering (3 framebuffers)                                │    │

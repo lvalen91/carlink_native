@@ -82,7 +82,10 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.enableAllTags()
-            Logger.setTagsEnabled(listOf(Logger.Tags.SERIALIZE, Logger.Tags.TOUCH, Logger.Tags.AUDIO, Logger.Tags.MEDIA), false)
+            Logger.setTagsEnabled(
+                listOf(Logger.Tags.SERIALIZE, Logger.Tags.TOUCH, Logger.Tags.AUDIO, Logger.Tags.MEDIA),
+                false,
+            )
             Logger.setDebugLoggingEnabled(com.carlink.BuildConfig.DEBUG)
         }
 
@@ -116,7 +119,10 @@ fun LogPreset.apply() {
             Logger.setLogLevel(Logger.LogLevel.ERROR, true)
             Logger.disableAllTags()
             Logger.setTagsEnabled(
-                listOf(Logger.Tags.USB, Logger.Tags.ADAPTR, Logger.Tags.PLATFORM, Logger.Tags.VIDEO_PERF, Logger.Tags.AUDIO_PERF),
+                listOf(
+                    Logger.Tags.USB, Logger.Tags.ADAPTR, Logger.Tags.PLATFORM,
+                    Logger.Tags.VIDEO_PERF, Logger.Tags.AUDIO_PERF,
+                ),
                 true,
             )
             Logger.setDebugLoggingEnabled(true)

@@ -4,13 +4,14 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import androidx.car.app.model.CarIcon
-import androidx.core.content.res.ResourcesCompat
 import androidx.car.app.navigation.model.Maneuver
+import androidx.core.content.res.ResourcesCompat
+import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.IconCompat
 import com.carlink.R
+import com.carlink.logging.Logger
 import com.carlink.logging.logNavi
 import com.carlink.logging.logWarn
-import com.carlink.logging.Logger
 
 /**
  * Maps CarPlay CPManeuverType values (0-53) to AAOS Car App Library Maneuver.TYPE_* constants
@@ -48,8 +49,10 @@ object ManeuverMapper {
             3  -> Maneuver.TYPE_STRAIGHT             // straight
             4  -> if (isLeftDrive) Maneuver.TYPE_U_TURN_RIGHT else Maneuver.TYPE_U_TURN_LEFT // uTurn
             5  -> Maneuver.TYPE_STRAIGHT             // followRoad
-            6  -> if (isLeftDrive) Maneuver.TYPE_ROUNDABOUT_ENTER_CW else Maneuver.TYPE_ROUNDABOUT_ENTER_CCW // enterRoundabout
-            7  -> if (isLeftDrive) Maneuver.TYPE_ROUNDABOUT_EXIT_CW else Maneuver.TYPE_ROUNDABOUT_EXIT_CCW // exitRoundabout
+            6  -> if (isLeftDrive) Maneuver.TYPE_ROUNDABOUT_ENTER_CW // enterRoundabout
+                 else Maneuver.TYPE_ROUNDABOUT_ENTER_CCW
+            7  -> if (isLeftDrive) Maneuver.TYPE_ROUNDABOUT_EXIT_CW // exitRoundabout
+                 else Maneuver.TYPE_ROUNDABOUT_EXIT_CCW
             8  -> Maneuver.TYPE_OFF_RAMP_NORMAL_RIGHT // rampOff (highway exit)
             9  -> Maneuver.TYPE_ON_RAMP_NORMAL_RIGHT  // rampOn (merge onto highway)
             10 -> Maneuver.TYPE_DESTINATION           // endOfNavigation
@@ -60,8 +63,10 @@ object ManeuverMapper {
             15 -> Maneuver.TYPE_FERRY_BOAT            // enterFerry
             16 -> Maneuver.TYPE_FERRY_BOAT            // exitFerry
             17 -> Maneuver.TYPE_FERRY_BOAT            // changeFerry
-            18 -> if (isLeftDrive) Maneuver.TYPE_U_TURN_RIGHT else Maneuver.TYPE_U_TURN_LEFT // uTurnToRoute
-            19 -> if (isLeftDrive) Maneuver.TYPE_ROUNDABOUT_ENTER_CW else Maneuver.TYPE_ROUNDABOUT_ENTER_CCW // roundaboutUTurn
+            18 -> if (isLeftDrive) Maneuver.TYPE_U_TURN_RIGHT // uTurnToRoute
+                 else Maneuver.TYPE_U_TURN_LEFT
+            19 -> if (isLeftDrive) Maneuver.TYPE_ROUNDABOUT_ENTER_CW // roundaboutUTurn
+                 else Maneuver.TYPE_ROUNDABOUT_ENTER_CCW
             20 -> Maneuver.TYPE_TURN_NORMAL_LEFT      // endOfRoadLeft
             21 -> Maneuver.TYPE_TURN_NORMAL_RIGHT     // endOfRoadRight
             22 -> Maneuver.TYPE_OFF_RAMP_NORMAL_LEFT  // rampOffLeft
@@ -83,7 +88,10 @@ object ManeuverMapper {
             52 -> Maneuver.TYPE_KEEP_LEFT             // changeHighwayLeft
             53 -> Maneuver.TYPE_KEEP_RIGHT            // changeHighwayRight
             else -> {
-                logWarn("[NAVI] Unknown CPManeuverType=$cpType, turnSide=$turnSide — falling back to TYPE_UNKNOWN", tag = Logger.Tags.NAVI)
+                logWarn(
+                    "[NAVI] Unknown CPManeuverType=$cpType, turnSide=$turnSide — falling back to TYPE_UNKNOWN",
+                    tag = Logger.Tags.NAVI,
+                )
                 Maneuver.TYPE_UNKNOWN
             }
         }
@@ -155,7 +163,7 @@ object ManeuverMapper {
     private fun rasterizeIcon(context: Context, resId: Int): Bitmap {
         bitmapCache[resId]?.let { return it }
         val drawable = ResourcesCompat.getDrawable(context.resources, resId, context.theme)!!
-        val bitmap = Bitmap.createBitmap(ICON_SIZE_PX, ICON_SIZE_PX, Bitmap.Config.ARGB_8888)
+        val bitmap = createBitmap(ICON_SIZE_PX, ICON_SIZE_PX)
         val canvas = Canvas(bitmap)
         drawable.setBounds(0, 0, ICON_SIZE_PX, ICON_SIZE_PX)
         drawable.draw(canvas)

@@ -1,9 +1,11 @@
 # CPC200-CCPA Audio Format Analysis
 
+> **[Firmware]** This document covers firmware-level audio format support derived from binary analysis of the CPC200-CCPA adapter. For the capture-verified protocol-level reference (wire format, command sequences, stream routing), see `../02_Protocol_Reference/audio_protocol.md`.
+
 **Status:** Documented from binary analysis
 **Source:** ARMadb-driver_unpacked, ARMiPhoneIAP2_unpacked binary analysis
 **Firmware Version:** 2025.10.15.1127 (binary analysis reference version)
-**Last Updated:** 2026-02-02 (added legacy note for decode_type=3, explicit failure mode warning)
+**Last Updated:** 2026-02-19
 
 ---
 
@@ -17,15 +19,17 @@ The CPC200-CCPA adapter performs **active audio processing** rather than simple 
 
 The adapter uses a `decodeType` value (4-byte LE integer) in AudioData messages to specify audio format:
 
-| decodeType | Sample Rate | Channels | Bits | Use Case |
-|------------|-------------|----------|------|----------|
-| 1 | 44100 Hz | 2 (stereo) | 16 | Media playback (44.1kHz CD quality) |
-| 2 | 44100 Hz | 2 (stereo) | 16 | 44.1kHz media OR stop/cleanup commands (dual-purpose) |
-| 3 | 8000 Hz | 1 (mono) | 16 | Phone call narrow-band **(LEGACY - not observed in modern implementations, CarPlay uses 16kHz)** |
-| 4 | 48000 Hz | 2 (stereo) | 16 | Media HD / Standard CarPlay |
-| 5 | 16000 Hz | 1 (mono) | 16 | Siri / Phone / Mic input |
-| 6 | 24000 Hz | 1 (mono) | 16 | Voice recognition |
-| 7 | 16000 Hz | 2 (stereo) | 16 | Stereo voice |
+> **[Firmware Binary Analysis]** The following values were extracted from firmware binary analysis. Only decodeType 2, 4, and 5 have been verified in USB captures. See `../02_Protocol_Reference/audio_protocol.md` for the capture-verified subset.
+
+| decodeType | Sample Rate | Channels | Bits | Use Case | Capture Status |
+|------------|-------------|----------|------|----------|----------------|
+| 1 | 44100 Hz | 2 (stereo) | 16 | Media playback (44.1kHz CD quality) | **[Not observed on USB]** |
+| 2 | 44100 Hz | 2 (stereo) | 16 | 44.1kHz media OR stop/cleanup commands (dual-purpose) | Capture-verified |
+| 3 | 8000 Hz | 1 (mono) | 16 | Phone call narrow-band **(LEGACY - not observed in modern implementations, CarPlay uses 16kHz)** | **[Not observed on USB]** |
+| 4 | 48000 Hz | 2 (stereo) | 16 | Media HD / Standard CarPlay | Capture-verified |
+| 5 | 16000 Hz | 1 (mono) | 16 | Siri / Phone / Mic input | Capture-verified |
+| 6 | 24000 Hz | 1 (mono) | 16 | Voice recognition | **[Not observed on USB]** |
+| 7 | 16000 Hz | 2 (stereo) | 16 | Stereo voice | **[Not observed on USB]** |
 
 ### Semantic Context (from firmware analysis)
 
@@ -92,6 +96,8 @@ Expected Mic Format (WebRTC validated):
 ## WebRTC Audio Processing (Firmware Evidence)
 
 ### Supported Sample Rates (Binary Analysis)
+
+> This is the definitive binary evidence for the 8kHz/16kHz microphone requirement. Other documents reference this section.
 
 **CRITICAL FINDING:** The WebRTC AECM initialization function at `0x2dfa2` explicitly validates the sample rate parameter:
 
@@ -367,6 +373,8 @@ The firmware can write debug PCM files:
 
 ## Related Documentation
 
+- `../02_Protocol_Reference/audio_protocol.md` - **Canonical** AudioData (0x07) protocol reference (capture-verified commands, stream routing, packet sizes)
 - `../02_Protocol_Reference/command_ids.md` - Audio command IDs
 - `../02_Protocol_Reference/usb_protocol.md` - AudioData message format
 - `../01_Firmware_Architecture/initialization.md` - Audio initialization sequence
+- `microphone_processing.md` - Firmware microphone pipeline (WebRTC, I2S, format conversion)

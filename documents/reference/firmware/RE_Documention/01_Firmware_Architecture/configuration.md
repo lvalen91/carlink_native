@@ -1,8 +1,8 @@
 # CPC200-CCPA Configuration Reference
 
-**Purpose:** Complete riddleBoxCfg configuration keys reference
+**Purpose:** Complete riddleBoxCfg **[Firmware]** configuration keys reference — these are CPC200-CCPA adapter firmware settings (`/etc/riddle.conf`), not Android host app settings.
 **Consolidated from:** pi-carplay firmware analysis, carlink_native research
-**Last Updated:** 2026-02-18 (AdvancedFeatures bitmask correction, HudGPSSwitch default correction, feature gate documentation)
+**Last Updated:** 2026-02-19 (deduplicated heartbeat deep dive and D-Bus signal table; added direction/context labels)
 
 ---
 
@@ -119,8 +119,8 @@ Sets `frameRate` field in Open message.
 
 Reduces connection time by ~2-5 seconds on reconnect.
 
-### SendHeartBeat (CRITICAL)
-**Type:** Toggle (0/1) | **Default:** 1 | **Access:** SSH only
+### SendHeartBeat (CRITICAL) **[Firmware]**
+**Type:** Toggle (0/1) | **Default:** 1 | **Access:** SSH only | **Applies to:** CarPlay and Android Auto
 
 Controls whether the adapter firmware expects and responds to heartbeat messages (0xAA) from the host application. This is a **critical setting for connection stability**.
 
@@ -134,7 +134,7 @@ Controls whether the adapter firmware expects and responds to heartbeat messages
 - Unstable firmware initialization
 - Session termination without warning
 
-See [SendHeartBeat Deep Dive](#sendheartbeat-deep-dive) below for complete analysis.
+See [SendHeartBeat — Deep Analysis](#sendheartbeat--deep-analysis) below for full protocol details and [`heartbeat_analysis.md`](../01_Firmware_Architecture/heartbeat_analysis.md) for comprehensive binary evidence.
 
 ### BackgroundMode
 **Type:** Toggle (0/1) | **Default:** 0
@@ -315,7 +315,7 @@ Controls whether GPS data from the head unit is forwarded to the phone.
 
 **Binary Evidence:** `BOX_CFG_HudGPSSwitch Closed, not use GPS from HUD`
 
-### GNSSCapability (Live-Tested Feb 2026)
+### GNSSCapability (Live-Tested Feb 2026) **[CarPlay only]**
 **Type:** Bitmask (0-65535) | **Default:** 0
 
 Detailed bitmask specifying which GNSS features are advertised to the phone during iAP2 identification.
@@ -341,7 +341,7 @@ Detailed bitmask specifying which GNSS features are advertised to the phone duri
 
 Recommended: `GNSSCapability=3` (GPGGA + GPRMC).
 
-### DashboardInfo (Live-Tested & Verified Feb 2026)
+### DashboardInfo (Live-Tested & Verified Feb 2026) **[CarPlay only]**
 **Type:** Bitmask (0-7) | **Default:** 1
 
 Controls which iAP2 data engines are enabled during identification. This is a **3-bit bitmask** where each bit enables a different data stream to the head unit:
@@ -569,15 +569,17 @@ echo 1 >/sys/class/gpio/gpio7/value   # Slow mode (default)
 
 ## Navigation Video Parameters (iOS 13+)
 
-### AdvancedFeatures
+### AdvancedFeatures **[CarPlay only]**
 **Type:** Boolean (0-1) | **Default:** 0 | **Range:** 0-1 (enforced by riddleBoxCfg)
 
 **Purpose:** Controls instrument cluster / navigation video (CarPlay Dashboard) and NaviScreen view area negotiation.
 
 | Value | Global Flag Set | Feature |
 |-------|-----------------|---------|
-| 0 (default) | none | Navigation video disabled. NaviScreen ViewArea/SafeArea disabled. |
-| 1 | `g_bSupportNaviScreen` | Navigation video stream (Type 0x2C AltVideoFrame) + NaviScreen ViewArea/SafeArea |
+| 0 (default) | none | Navigation video only via `naviScreenInfo` in BoxSettings (bypass path). NaviScreen ViewArea/SafeArea disabled. |
+| 1 | `g_bSupportNaviScreen` | Navigation video stream (Type 0x2C AltVideoFrame) + NaviScreen ViewArea/SafeArea (legacy activation path) |
+
+**IMPORTANT (Testing Verified Feb 2026):** `AdvancedFeatures=1` is **NOT required** for navigation video when the host sends `naviScreenInfo` in BoxSettings. The firmware's JSON parser at `0x16e5c` checks for `naviScreenInfo` FIRST — if found, it branches directly to `HU_SCREEN_INFO` at `0x170d6`, completely bypassing the `AdvancedFeatures` check. Simply including `naviScreenInfo` in BoxSettings is the confirmed, tested activation mechanism.
 
 **CORRECTION (2026-02-18, r2 + live verified):** Earlier documentation incorrectly described this as a bitmask (0-3) with bit 1 controlling `g_bSupportViewarea`. This is **wrong**:
 - `riddleBoxCfg` enforces max=1 (`AdvancedFeatures:0 ~ 1`). Values 2+ are rejected.
@@ -886,9 +888,9 @@ Host applications configure navigation video via BoxSettings JSON:
 ```
 
 **Requirements (when using naviScreenInfo Path A):**
-1. Host must send `naviScreenInfo` in BoxSettings (0x19) JSON
-2. Host must implement Command 508 handshake
-3. Host must handle NaviVideoData (Type 0x2C) messages
+1. Host must send `naviScreenInfo` in BoxSettings (0x19) JSON — **this is the only confirmed requirement**
+2. Host must handle NaviVideoData (Type 0x2C) messages
+3. Command 508 handshake: recommended to echo 508 back if received, but **testing was inconclusive** on whether this is strictly required
 
 **Note:** When `naviScreenInfo` is present in BoxSettings, it **bypasses** the AdvancedFeatures check entirely. The firmware branches directly to the HU_SCREEN_INFO path. See "Navigation Video Activation" section above for the binary-verified control flow.
 
@@ -898,7 +900,7 @@ Host applications configure navigation video via BoxSettings JSON:
 
 **⚠️ SECURITY WARNING:** The `wifiName`, `btName`, and `oemIconLabel` fields are vulnerable to **command injection**. See `03_Security_Analysis/vulnerabilities.md`.
 
-### Host to Adapter Fields - Complete List
+### Host to Adapter Fields **[Host→Adapter]** - Complete List
 
 **Core Configuration:**
 
@@ -958,7 +960,7 @@ Host applications configure navigation video via BoxSettings JSON:
 | `productType` | - | string | Product type (e.g., "A15W") |
 | `lightType` | - | int | LED indicator type |
 
-**Navigation Video (requires AdvancedFeatures≥1 or naviScreenInfo bypass):**
+**Navigation Video (activated by sending `naviScreenInfo` — AdvancedFeatures NOT required):**
 
 | JSON Field | Type | Description |
 |------------|------|-------------|
@@ -973,7 +975,7 @@ Host applications configure navigation video via BoxSettings JSON:
 |------------|------|-------------|
 | `androidWorkMode` | int | Enable Android Auto daemon (0/1) |
 
-### Adapter to Host Fields
+### Adapter to Host Fields **[Adapter→Host]**
 
 | JSON Field | Type | Description |
 |------------|------|-------------|
@@ -1003,7 +1005,7 @@ Host applications configure navigation video via BoxSettings JSON:
 
 ---
 
-## AndroidWorkMode Deep Dive
+## AndroidWorkMode Deep Dive **[Android Auto only]**
 
 ### Critical Discovery (Dec 2025)
 
@@ -1051,108 +1053,16 @@ Start Link Deamon: AndroidAuto
 
 ---
 
-## SendHeartBeat Deep Dive
+## SendHeartBeat — Deep Analysis
 
-### Binary Analysis (January 2026)
+For complete heartbeat protocol analysis including binary evidence, timing requirements, D-Bus signal flow, and implementation patterns, see [`heartbeat_analysis.md`](../01_Firmware_Architecture/heartbeat_analysis.md).
 
-The `SendHeartBeat` configuration key controls the USB heartbeat mechanism critical for firmware stability.
+Key facts: 2-second interval, 15,000ms firmware timeout (~10s practical budget), 0xAA message type (16-byte header-only), exempt from encryption.
 
-### Binary Locations
-
-| Binary | Offset | String/Symbol | Purpose |
-|--------|--------|---------------|---------|
-| **riddleBoxCfg_unpacked** | `0x00018f54` | `SendHeartBeat` | Config key in key table |
-| **ARMadb-driver_unpacked** | `0x0006e515` | `SendHeartBeat` | Config reader |
-| **ARMadb-driver_unpacked** | `0x0005b583` | `HUDComand_A_HeartBeat` | D-Bus signal name |
-| **ARMadb-driver_unpacked** | `0x0001053c` | `0x000000AA` | Message dispatch table entry |
-
-### Protocol Details
-
-**USB Message Format (Type 0xAA / 170):**
-```
-+------------------+------------------+------------------+------------------+
-|   Magic (4B)     |   Length (4B)    |   Type (4B)      | Type Check (4B)  |
-|   0x55AA55AA     |   0x00000000     |   0x000000AA     |   0xFFFFFF55     |
-+------------------+------------------+------------------+------------------+
-```
-
-- **Magic**: `0x55AA55AA` (little-endian)
-- **Length**: 0 bytes (no payload)
-- **Type**: `0xAA` (170 decimal) - HeartBeat
-- **Type Check**: `0xAA XOR 0xFFFFFFFF = 0xFFFFFF55`
-- **Total message size**: 16 bytes (header only, no payload)
-
-### D-Bus Signal Flow
-
-```
-Host sends HeartBeat (0xAA) via USB
-         │
-         ▼
-ARMadb-driver receives at FUN_00018e2c (message dispatcher)
-         │
-         ▼
-Emits D-Bus signal: HUDComand_A_HeartBeat
-         │
-         ▼
-Internal processes receive keepalive notification
-```
-
-**D-Bus dispatch assembly (ARMadb-driver at 0x6327a):**
-```asm
-0x0006327a  ldr r4, [str.HUDComand_A_HeartBeat]  ; Load signal name
-0x0006327c  b 0x63362                            ; Jump to signal handler
-```
-
-### Firmware Behavior by Value
-
-| SendHeartBeat | Firmware Expects | Missing Heartbeat Effect | Recommended |
-|---------------|------------------|--------------------------|-------------|
-| **1 (default)** | 0xAA every ~2s | Triggers internal timeout → disconnect | ✅ Yes |
-| **0** | Nothing | No timeout, but boot instability | ❌ No |
-
-### Critical Timing Requirement
-
-The heartbeat serves dual purposes:
-1. **USB Keepalive**: Prevents USB interface timeout
-2. **Boot Stabilization**: Signals firmware that host is ready
-
-**CRITICAL**: Heartbeat must start **BEFORE** initialization messages:
-
-```
-CORRECT (stable):                    INCORRECT (11.7s failure):
-──────────────────                   ────────────────────────
-USB Connect                          USB Connect
-    │                                    │
-    ▼                                    ▼
-Start Heartbeat ◄── First!           Send Init Messages
-    │                                    │
-    ▼                                    ▼
-Send Init Messages                   Start Heartbeat ◄── Too late!
-    │                                    │
-    ▼                                    ▼
-Stable session                       projectionDisconnected @ 11.7s
-```
-
-### Key Functions (ARMadb-driver)
-
-| Address | Function | Purpose |
-|---------|----------|---------|
-| `0x00018088` | Message pre-processor | Validates header, magic bytes |
-| `0x00018244` | Decrypt/validate handler | Processes incoming messages |
-| `0x00018e2c` | Main message dispatcher | Routes by type (0xAA → heartbeat handler) |
-| `0x0006327a` | D-Bus signal dispatch | Emits HUDComand_A_HeartBeat |
-
-### Diagnostic Commands
-
-**Check current setting:**
+**Diagnostic commands [Firmware]:**
 ```bash
-riddleBoxCfg SendHeartBeat
-# Returns: 0 or 1
-```
-
-**Enable heartbeat (recommended):**
-```bash
-riddleBoxCfg SendHeartBeat 1
+riddleBoxCfg SendHeartBeat        # Read current value (0 or 1)
+riddleBoxCfg SendHeartBeat 1      # Enable (recommended)
 ```
 
 **Note:** Changes require reboot to take effect. The running ARMadb-driver process caches the value at startup.
@@ -1174,20 +1084,9 @@ riddleBoxCfg SendHeartBeat 1
 
 ## D-Bus Interface
 
-The firmware uses D-Bus (`org.riddle`) for inter-process communication.
+The firmware uses D-Bus (`org.riddle`) as its inter-process communication mechanism between ARMadb-driver, bluetoothDaemon, and other adapter processes.
 
-### Key Signals
-| Signal | Purpose |
-|--------|---------|
-| AudioSignal_* | Audio routing control |
-| HUDComand_* | Head unit commands |
-| **HUDComand_A_HeartBeat** | USB keepalive received (from host 0xAA message) |
-| HUDComand_A_ResetUSB | USB controller reset |
-| HUDComand_A_UploadFile | File upload complete |
-| HUDComand_B_BoxSoftwareVersion | Version query response |
-| kRiddleHUDComand_A_Reboot | System reboot |
-| Bluetooth_ConnectStart | BT connection initiated |
-| StartAutoConnect | Auto-connect triggered |
+See [`05_Reference/firmware_internals.md`](../05_Reference/firmware_internals.md) for the complete D-Bus signal reference table (`org.riddle` interface, HUDComand_* signals, kRiddleAudioSignal_* signals, etc.).
 
 ---
 

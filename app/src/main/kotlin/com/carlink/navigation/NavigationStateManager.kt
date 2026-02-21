@@ -55,7 +55,10 @@ object NavigationStateManager {
             return
         }
 
-        logNavi { "[NAVI] Received NaviJSON: keys=${payload.keys}, values=${payload.entries.joinToString { "${it.key}=${it.value}" }}" }
+        logNavi {
+            "[NAVI] Received NaviJSON: keys=${payload.keys}, " +
+                "values=${payload.entries.joinToString { "${it.key}=${it.value}" }}"
+        }
 
         val naviStatus = (payload["NaviStatus"] as? Number)?.toInt()
 
@@ -74,9 +77,13 @@ object NavigationStateManager {
             orderType = (payload["NaviOrderType"] as? Number)?.toInt() ?: current.orderType,
             roadName = (payload["NaviRoadName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.roadName,
             remainDistance = (payload["NaviRemainDistance"] as? Number)?.toInt() ?: current.remainDistance,
-            distanceToDestination = (payload["NaviDistanceToDestination"] as? Number)?.toInt() ?: current.distanceToDestination,
+            distanceToDestination =
+                (payload["NaviDistanceToDestination"] as? Number)?.toInt()
+                    ?: current.distanceToDestination,
             timeToDestination = (payload["NaviTimeToDestination"] as? Number)?.toInt() ?: current.timeToDestination,
-            destinationName = (payload["NaviDestinationName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.destinationName,
+            destinationName =
+                (payload["NaviDestinationName"] as? String)?.takeIf { it.isNotEmpty() }
+                    ?: current.destinationName,
             appName = (payload["NaviAPPName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.appName,
             turnAngle = (payload["NaviTurnAngle"] as? Number)?.toInt() ?: current.turnAngle,
             turnSide = (payload["NaviTurnSide"] as? Number)?.toInt() ?: current.turnSide,

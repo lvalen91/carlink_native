@@ -90,7 +90,11 @@ class CarlinkClusterSession : Session() {
                         navigationManager?.navigationEnded()
                         logNavi { "[CLUSTER] navigationEnded() called on session destroy" }
                     } catch (e: Exception) {
-                        logError("[CLUSTER] navigationEnded() failed on destroy: ${e.message}", tag = Logger.Tags.NAVI, throwable = e)
+                        logError(
+                            "[CLUSTER] navigationEnded() failed on destroy: ${e.message}",
+                            tag = Logger.Tags.NAVI,
+                            throwable = e,
+                        )
                     }
                     isNavigating = false
                 }
@@ -142,7 +146,11 @@ class CarlinkClusterSession : Session() {
                     navManager.navigationStarted()
                     isNavigating = true
                 } catch (e: Exception) {
-                    logError("[CLUSTER] navigationStarted() failed: ${e.message}", tag = Logger.Tags.NAVI, throwable = e)
+                    logError(
+                        "[CLUSTER] navigationStarted() failed: ${e.message}",
+                        tag = Logger.Tags.NAVI,
+                        throwable = e,
+                    )
                     return
                 }
             }
