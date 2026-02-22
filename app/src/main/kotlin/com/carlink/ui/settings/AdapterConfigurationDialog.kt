@@ -27,7 +27,9 @@ import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.DirectionsCar
 import androidx.compose.material.icons.filled.Hd
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Radio
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PhoneInTalk
@@ -123,6 +125,9 @@ fun AdapterConfigurationDialog(
     val savedGpsForwarding by adapterConfigPreference.gpsForwardingFlow.collectAsStateWithLifecycle(
         initialValue = false,
     )
+    val savedClusterNavigation by adapterConfigPreference.clusterNavigationFlow.collectAsStateWithLifecycle(
+        initialValue = false,
+    )
 
     // Get usable display dimensions based on current display mode
     // FULLSCREEN_IMMERSIVE: Use full display bounds (bars are hidden)
@@ -146,6 +151,15 @@ fun AdapterConfigurationDialog(
                 )
                 val w = bounds.width() - insets.left - insets.right
                 val h = bounds.height() - insets.bottom
+                Pair(w and 1.inv(), h and 1.inv())
+            }
+            DisplayMode.NAV_BAR_HIDDEN -> {
+                // Only subtract status bar (top), not navigation bar
+                val insets = windowMetrics.windowInsets.getInsetsIgnoringVisibility(
+                    android.view.WindowInsets.Type.statusBars()
+                )
+                val w = bounds.width()
+                val h = bounds.height() - insets.top
                 Pair(w and 1.inv(), h and 1.inv())
             }
             DisplayMode.SYSTEM_UI_VISIBLE -> {
@@ -178,6 +192,7 @@ fun AdapterConfigurationDialog(
     var selectedFps by remember { mutableStateOf(savedFps) }
     var selectedHandDrive by remember { mutableStateOf(savedHandDrive) }
     var selectedGpsForwarding by remember { mutableStateOf(savedGpsForwarding) }
+    var selectedClusterNavigation by remember { mutableStateOf(savedClusterNavigation) }
 
     // Sync local state when saved value loads (for initial load)
     LaunchedEffect(savedAudioSource) { selectedAudioSource = savedAudioSource }
@@ -189,6 +204,7 @@ fun AdapterConfigurationDialog(
     LaunchedEffect(savedFps) { selectedFps = savedFps }
     LaunchedEffect(savedHandDrive) { selectedHandDrive = savedHandDrive }
     LaunchedEffect(savedGpsForwarding) { selectedGpsForwarding = savedGpsForwarding }
+    LaunchedEffect(savedClusterNavigation) { selectedClusterNavigation = savedClusterNavigation }
 
     // Track if any changes were made
     // All adapter configuration changes require app restart
@@ -201,7 +217,8 @@ fun AdapterConfigurationDialog(
             selectedVideoResolution != savedVideoResolution ||
             selectedFps != savedFps ||
             selectedHandDrive != savedHandDrive ||
-            selectedGpsForwarding != savedGpsForwarding
+            selectedGpsForwarding != savedGpsForwarding ||
+            selectedClusterNavigation != savedClusterNavigation
 
     // Responsive dialog width - 60% of container width, clamped between 320dp and 600dp
     val windowInfo = LocalWindowInfo.current
@@ -338,8 +355,8 @@ fun AdapterConfigurationDialog(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             AudioSourceButton(
-                                label = "App",
-                                icon = Icons.Default.SettingsInputComponent,
+                                label = "Radio",
+                                icon = Icons.Default.Radio,
                                 isSelected = selectedMicSource == MicSourceConfig.APP,
                                 onClick = { selectedMicSource = MicSourceConfig.APP },
                                 modifier = Modifier.weight(1f),
@@ -356,7 +373,7 @@ fun AdapterConfigurationDialog(
                         Text(
                             text =
                                 when (selectedMicSource) {
-                                    MicSourceConfig.APP -> "This device captures mic input from Android/OS"
+                                    MicSourceConfig.APP -> "This device captures mic input via Android/OS"
                                     MicSourceConfig.PHONE -> "Phone uses its own mic (or adapter mic if present)"
                                 },
                             style = MaterialTheme.typography.bodySmall,
@@ -661,6 +678,44 @@ fun AdapterConfigurationDialog(
                         )
                     }
 
+                    // Cluster Navigation Configuration
+                    ConfigurationOptionCard(
+                        title = "Cluster Navigation",
+                        description = "Show CarPlay turn-by-turn on instrument cluster",
+                        icon = Icons.Default.Map,
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            AudioSourceButton(
+                                label = "Off",
+                                icon = Icons.Default.Map,
+                                isSelected = !selectedClusterNavigation,
+                                onClick = { selectedClusterNavigation = false },
+                                modifier = Modifier.weight(1f),
+                            )
+                            AudioSourceButton(
+                                label = "On",
+                                icon = Icons.Default.Map,
+                                isSelected = selectedClusterNavigation,
+                                onClick = { selectedClusterNavigation = true },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text =
+                                if (selectedClusterNavigation) {
+                                    "Enabled — CarPlay navigation shown on cluster (requires restart)"
+                                } else {
+                                    "Disabled — other navigation apps keep the cluster"
+                                },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colorScheme.primary,
+                        )
+                    }
+
                     // WiFi Band Configuration
                     ConfigurationOptionCard(
                         title = "WiFi Band",
@@ -813,7 +868,8 @@ fun AdapterConfigurationDialog(
                                     ", resolution=${selectedVideoResolution.toStorageString()}" +
                                     ", fps=${selectedFps.fps}" +
                                     ", handDrive=$selectedHandDrive" +
-                                    ", gpsForwarding=$selectedGpsForwarding",
+                                    ", gpsForwarding=$selectedGpsForwarding" +
+                                    ", clusterNav=$selectedClusterNavigation",
                                 tag = "UI",
                             )
                             scope.launch {
@@ -827,6 +883,7 @@ fun AdapterConfigurationDialog(
                                 adapterConfigPreference.setFps(selectedFps)
                                 adapterConfigPreference.setHandDrive(selectedHandDrive)
                                 adapterConfigPreference.setGpsForwarding(selectedGpsForwarding)
+                                adapterConfigPreference.setClusterNavigation(selectedClusterNavigation)
 
                                 // All adapter config changes require restart.
                                 // Schedule MainActivity launch before kill so the system

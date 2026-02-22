@@ -552,7 +552,8 @@ class CarlinkManager(
 
         // Determine initialization mode based on first-run state and pending changes
         val adapterConfigPref = AdapterConfigPreference.getInstance(context)
-        val initMode = adapterConfigPref.getInitializationMode()
+        val currentVersionCode = context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
+        val initMode = adapterConfigPref.getInitializationMode(currentVersionCode)
         val pendingChanges = adapterConfigPref.getPendingChangesSync()
 
         // Refresh user-configurable settings from preference store before starting
@@ -581,19 +582,20 @@ class CarlinkManager(
             )
         config = refreshedConfig // Update stored config for other uses
 
-        log("[INIT] Mode: ${adapterConfigPref.getInitializationInfo()}")
+        log("[INIT] Mode: ${adapterConfigPref.getInitializationInfo(currentVersionCode)}")
         log("[INIT] Audio mode: ${if (refreshedConfig.audioTransferMode) "BLUETOOTH" else "ADAPTER"}")
 
         setStatusText("Initializing adapter...")
         adapterDriver?.start(refreshedConfig, initMode.name, pendingChanges)
         setStatusText("Waiting for phone...")
 
-        // Mark first init completed and clear pending changes after successful start
+        // Mark first init completed, store version, and clear pending changes after successful start
         // This runs in a coroutine to handle the suspend functions
         CoroutineScope(Dispatchers.IO).launch {
             if (initMode == AdapterConfigPreference.InitMode.FULL) {
                 adapterConfigPref.markFirstInitCompleted()
             }
+            adapterConfigPref.updateLastInitVersionCode(currentVersionCode)
             if (pendingChanges.isNotEmpty()) {
                 adapterConfigPref.clearPendingChanges()
             }
@@ -652,6 +654,17 @@ class CarlinkManager(
         }
 
         setState(State.DISCONNECTED)
+    }
+
+    /**
+     * Disconnect the phone's CarPlay/AA session without stopping the adapter.
+     * Sends protocol command 0x0F (DISCONNECT_PHONE) only.
+     */
+    fun disconnectPhone() {
+        logInfo("[LIFECYCLE] disconnectPhone() — sending 0x0F to end phone session")
+        scope.launch(Dispatchers.IO) {
+            adapterDriver?.disconnectPhone()
+        }
     }
 
     /**
@@ -1307,9 +1320,11 @@ class CarlinkManager(
     }
 
     private fun processMediaMetadata(message: MediaDataMessage) {
-        // Route NaviJSON to NavigationStateManager for cluster display
+        // Route NaviJSON to NavigationStateManager for cluster display (only if enabled)
         if (message.type == MediaType.NAVI_JSON) {
-            NavigationStateManager.onNaviJson(message.payload)
+            if (AdapterConfigPreference.getInstance(context).getClusterNavigationSync()) {
+                NavigationStateManager.onNaviJson(message.payload)
+            }
             return
         }
 

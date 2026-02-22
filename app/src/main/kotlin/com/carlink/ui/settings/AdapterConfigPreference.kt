@@ -1,11 +1,14 @@
 package com.carlink.ui.settings
 
+import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -267,8 +270,12 @@ class AdapterConfigPreference private constructor(
         // GPS forwarding: true = forward vehicle GPS to CarPlay, false = phone uses own GPS
         private val KEY_GPS_FORWARDING = booleanPreferencesKey("gps_forwarding")
 
+        // Cluster navigation: true = show CarPlay turn-by-turn on instrument cluster
+        private val KEY_CLUSTER_NAVIGATION = booleanPreferencesKey("cluster_navigation_enabled")
+
         // Initialization tracking
         private val KEY_HAS_COMPLETED_FIRST_INIT = booleanPreferencesKey("has_completed_first_init")
+        private val KEY_LAST_INIT_VERSION_CODE = longPreferencesKey("last_init_version_code")
         private val KEY_PENDING_CHANGES = stringSetPreferencesKey("pending_changes")
 
         // SharedPreferences keys for sync cache (ANR prevention)
@@ -283,7 +290,9 @@ class AdapterConfigPreference private constructor(
         private const val SYNC_CACHE_KEY_FPS = "fps"
         private const val SYNC_CACHE_KEY_HAND_DRIVE = "hand_drive_mode"
         private const val SYNC_CACHE_KEY_GPS_FORWARDING = "gps_forwarding"
+        private const val SYNC_CACHE_KEY_CLUSTER_NAVIGATION = "cluster_navigation_enabled"
         private const val SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT = "has_completed_first_init"
+        private const val SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE = "last_init_version_code"
         private const val SYNC_CACHE_KEY_PENDING_CHANGES = "pending_changes"
 
         /**
@@ -597,6 +606,51 @@ class AdapterConfigPreference private constructor(
         }
     }
 
+    val clusterNavigationFlow: Flow<Boolean> =
+        dataStore.data.map { preferences ->
+            preferences[KEY_CLUSTER_NAVIGATION] ?: false
+        }
+
+    /**
+     * Get current cluster navigation configuration synchronously.
+     */
+    fun getClusterNavigationSync(): Boolean =
+        syncCache.getBoolean(SYNC_CACHE_KEY_CLUSTER_NAVIGATION, false)
+
+    /**
+     * Set cluster navigation configuration.
+     * This is a local app setting — does NOT call addPendingChange() (not an adapter config).
+     */
+    suspend fun setClusterNavigation(enabled: Boolean) {
+        try {
+            dataStore.edit { preferences ->
+                preferences[KEY_CLUSTER_NAVIGATION] = enabled
+            }
+            syncCache.edit().putBoolean(SYNC_CACHE_KEY_CLUSTER_NAVIGATION, enabled).apply()
+            logInfo("Cluster navigation preference saved: $enabled", tag = "AdapterConfig")
+        } catch (e: Exception) {
+            logError("Failed to save cluster navigation preference: $e", tag = "AdapterConfig")
+            throw e
+        }
+    }
+
+    /**
+     * Apply the cluster service component enabled/disabled state based on preference.
+     * Call this early in Activity.onCreate() so the state is set before Templates Host discovers it.
+     */
+    fun applyClusterComponentState(context: Context) {
+        val enabled = getClusterNavigationSync()
+        val newState = if (enabled)
+            PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+        else
+            PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+        context.packageManager.setComponentEnabledSetting(
+            ComponentName(context, "com.carlink.cluster.CarlinkClusterService"),
+            newState,
+            PackageManager.DONT_KILL_APP,
+        )
+    }
+
     data class UserConfig(
         /** Audio transfer mode: true = bluetooth, false = adapter (default) */
         val audioTransferMode: Boolean,
@@ -680,7 +734,9 @@ class AdapterConfigPreference private constructor(
                 preferences.remove(KEY_FPS)
                 preferences.remove(KEY_HAND_DRIVE)
                 preferences.remove(KEY_GPS_FORWARDING)
+                preferences.remove(KEY_CLUSTER_NAVIGATION)
                 preferences.remove(KEY_HAS_COMPLETED_FIRST_INIT)
+                preferences.remove(KEY_LAST_INIT_VERSION_CODE)
                 preferences.remove(KEY_PENDING_CHANGES)
             }
             // Clear sync cache
@@ -697,7 +753,9 @@ class AdapterConfigPreference private constructor(
                     remove(SYNC_CACHE_KEY_FPS)
                     remove(SYNC_CACHE_KEY_HAND_DRIVE)
                     remove(SYNC_CACHE_KEY_GPS_FORWARDING)
+                    remove(SYNC_CACHE_KEY_CLUSTER_NAVIGATION)
                     remove(SYNC_CACHE_KEY_HAS_COMPLETED_FIRST_INIT)
+                    remove(SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE)
                     remove(SYNC_CACHE_KEY_PENDING_CHANGES)
                 }.apply()
             logInfo(
@@ -740,6 +798,14 @@ class AdapterConfigPreference private constructor(
         } catch (e: Exception) {
             logError("Failed to mark first init completed: $e", tag = "AdapterConfig")
         }
+    }
+
+    fun getLastInitVersionCode(): Long =
+        syncCache.getLong(SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE, 0L)
+
+    suspend fun updateLastInitVersionCode(versionCode: Long) {
+        dataStore.edit { it[KEY_LAST_INIT_VERSION_CODE] = versionCode }
+        syncCache.edit().putLong(SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE, versionCode).apply()
     }
 
     /**
@@ -785,14 +851,17 @@ class AdapterConfigPreference private constructor(
     /**
      * Determine the initialization mode based on current state.
      *
+     * @param currentVersionCode The app's current versionCode for version-triggered full init
      * @return InitMode indicating what configuration to send
      */
-    fun getInitializationMode(): InitMode {
+    fun getInitializationMode(currentVersionCode: Long): InitMode {
         val hasCompletedFirstInit = hasCompletedFirstInitSync()
         val pendingChanges = getPendingChangesSync()
+        val lastInitVersion = getLastInitVersionCode()
 
         return when {
             !hasCompletedFirstInit -> InitMode.FULL
+            lastInitVersion != currentVersionCode -> InitMode.FULL
             pendingChanges.isNotEmpty() -> InitMode.MINIMAL_PLUS_CHANGES
             else -> InitMode.MINIMAL_ONLY
         }
@@ -801,11 +870,13 @@ class AdapterConfigPreference private constructor(
     /**
      * Get initialization info for logging.
      */
-    fun getInitializationInfo(): String {
-        val mode = getInitializationMode()
+    fun getInitializationInfo(currentVersionCode: Long): String {
+        val mode = getInitializationMode(currentVersionCode)
         val pendingChanges = getPendingChangesSync()
+        val lastInitVersion = getLastInitVersionCode()
         return when (mode) {
-            InitMode.FULL -> "FULL (first launch)"
+            InitMode.FULL -> if (!hasCompletedFirstInitSync()) "FULL (first launch)"
+                else "FULL (version $lastInitVersion → $currentVersionCode)"
             InitMode.MINIMAL_PLUS_CHANGES -> "MINIMAL + changes: $pendingChanges"
             InitMode.MINIMAL_ONLY -> "MINIMAL (no changes)"
         }

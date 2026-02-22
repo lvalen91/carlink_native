@@ -116,6 +116,7 @@
         <!-- Cluster Navigation CarAppService (headless — no UI on main display) -->
         <service
             android:name=".cluster.CarlinkClusterService"
+            android:enabled="false"
             android:exported="true"
             tools:ignore="ExportedService">
             <intent-filter>

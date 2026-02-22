@@ -39,6 +39,12 @@ enum class DisplayMode(
      * Maximum projection area. Swipe from edge to temporarily reveal system bars.
      */
     FULLSCREEN_IMMERSIVE(2),
+
+    /**
+     * Nav Bar Hidden - Only navigation bar/dock is hidden, status bar remains visible.
+     * Maximizes width/bottom area while keeping status indicators accessible.
+     */
+    NAV_BAR_HIDDEN(3),
     ;
 
     companion object {

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.app.ActivityManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
@@ -39,6 +40,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.carlink.cluster.ClusterBindingState
 import com.carlink.logging.FileLogManager
+import com.carlink.navigation.NavigationStateManager
 import com.carlink.logging.LogPreset
 import com.carlink.logging.Logger
 import com.carlink.logging.apply
@@ -144,6 +146,9 @@ class MainActivity : ComponentActivity() {
         // Initialize logging
         initializeLogging()
 
+        // Apply cluster service component state before Templates Host discovers it
+        AdapterConfigPreference.getInstance(this).applyClusterComponentState(this)
+
         // Load display mode preference and apply BEFORE calculating display dimensions
         // This ensures correct viewport sizing - fullscreen immersive uses full screen (1920x1080),
         // other modes use usable area excluding visible system bars
@@ -160,12 +165,16 @@ class MainActivity : ComponentActivity() {
         registerUsbDetachReceiver()
 
         // Launch CarAppActivity to trigger Templates Host → cluster binding chain.
-        // Delayed to avoid interrupting USB permission dialog on first connect.
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!isDestroyed && !isFinishing) {
-                launchCarAppActivity()
-            }
-        }, 4000)
+        // Skipped entirely when cluster navigation is disabled — no reason to start
+        // the CarAppActivity → RendererService → CarlinkClusterService chain.
+        if (AdapterConfigPreference.getInstance(this).getClusterNavigationSync()) {
+            // Delayed to avoid interrupting USB permission dialog on first connect.
+            Handler(Looper.getMainLooper()).postDelayed({
+                if (!isDestroyed && !isFinishing) {
+                    launchCarAppActivity()
+                }
+            }, 4000)
+        }
 
         // Set up Compose UI
         // carlinkManager is guaranteed non-null here since initializeCarlinkManager()
@@ -178,6 +187,7 @@ class MainActivity : ComponentActivity() {
                         carlinkManager = manager,
                         fileLogManager = fileLogManager,
                         displayMode = currentDisplayMode,
+                        onResetCluster = ::restartClusterBinding,
                     )
                 }
             }
@@ -217,8 +227,11 @@ class MainActivity : ComponentActivity() {
         // The "bring back" REORDER_TO_FRONT intent from launchCarAppActivity()
         // also arrives here (singleTop) — must NOT re-trigger the launch cycle.
         if (intent.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-            logInfo("[LIFECYCLE] onNewIntent: USB_DEVICE_ATTACHED — re-launching cluster binding", tag = "MAIN")
-            launchCarAppActivity()
+            // Only launch cluster binding if cluster navigation is enabled
+            if (AdapterConfigPreference.getInstance(this).getClusterNavigationSync()) {
+                logInfo("[LIFECYCLE] onNewIntent: USB_DEVICE_ATTACHED — re-launching cluster binding", tag = "MAIN")
+                launchCarAppActivity()
+            }
 
             // Auto-connect when adapter re-enumerates (e.g., after reboot or replug)
             val manager = carlinkManager
@@ -328,6 +341,15 @@ class MainActivity : ComponentActivity() {
                 safeInsetLeft = cutoutInsets.left
                 safeInsetRight = cutoutInsets.right
             }
+            DisplayMode.NAV_BAR_HIDDEN -> {
+                // Status bar visible (subtract from video), nav bar hidden (cutout exposed bottom/sides)
+                videoWidth = bounds.width()
+                videoHeight = bounds.height() - systemBarInsets.top
+                safeInsetTop = 0 // status bar covers top
+                safeInsetBottom = cutoutInsets.bottom
+                safeInsetLeft = cutoutInsets.left
+                safeInsetRight = cutoutInsets.right
+            }
             DisplayMode.FULLSCREEN_IMMERSIVE -> {
                 // Full screen, all cutout areas exposed
                 videoWidth = bounds.width()
@@ -371,8 +393,16 @@ class MainActivity : ComponentActivity() {
         // ViewArea/SafeArea must match OPEN message dimensions (safeArea ⊆ viewArea ⊆ display)
         val viewAreaData = buildViewAreaData(configWidth, configHeight)
         val safeAreaData = if (userSelectedResolution) {
-            // User-selected resolution: zero insets (cutouts handled by Android surface scaling)
-            buildSafeAreaData(configWidth, configHeight, 0, 0, 0, 0)
+            // Scale cutout insets from display coordinates to custom resolution coordinates
+            val scaleX = configWidth.toFloat() / evenWidth.toFloat()
+            val scaleY = configHeight.toFloat() / evenHeight.toFloat()
+            buildSafeAreaData(
+                configWidth, configHeight,
+                (safeInsetTop * scaleY).toInt(),
+                (safeInsetBottom * scaleY).toInt(),
+                (safeInsetLeft * scaleX).toInt(),
+                (safeInsetRight * scaleX).toInt(),
+            )
         } else {
             buildSafeAreaData(configWidth, configHeight, safeInsetTop, safeInsetBottom, safeInsetLeft, safeInsetRight)
         }
@@ -535,6 +565,14 @@ class MainActivity : ComponentActivity() {
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             }
 
+            DisplayMode.NAV_BAR_HIDDEN -> {
+                // Hide navigation bar only, keep status bar visible
+                windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
+                windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
+                windowInsetsController.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+
             DisplayMode.FULLSCREEN_IMMERSIVE -> {
                 // Hide all system bars for maximum projection area
                 windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
@@ -606,6 +644,29 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * Tears down the cluster binding chain and re-establishes it.
+     * Clears nav state → kills CarAppActivity task → waits for teardown → relaunches.
+     */
+    fun restartClusterBinding() {
+        logWarn("[CLUSTER] restartClusterBinding() — tearing down and re-establishing binding chain", tag = "MAIN")
+        NavigationStateManager.clear()
+        val am = getSystemService(ActivityManager::class.java)
+        for (appTask in am.appTasks) {
+            if (appTask.taskInfo.baseActivity?.className == "androidx.car.app.activity.CarAppActivity") {
+                logInfo("[CLUSTER] Finishing CarAppActivity task (taskId=${appTask.taskInfo.taskId})", tag = "MAIN")
+                appTask.finishAndRemoveTask()
+                break
+            }
+        }
+        Handler(Looper.getMainLooper()).postDelayed({
+            if (!isDestroyed && !isFinishing) {
+                logInfo("[CLUSTER] Re-launching CarAppActivity after teardown", tag = "MAIN")
+                launchCarAppActivity()
+            }
+        }, 2000)
+    }
+
+    /**
      * Unregisters the USB detachment BroadcastReceiver.
      */
     private fun unregisterUsbDetachReceiver() {
@@ -642,6 +703,7 @@ fun CarlinkApp(
     carlinkManager: CarlinkManager,
     fileLogManager: FileLogManager?,
     displayMode: DisplayMode,
+    onResetCluster: () -> Unit,
 ) {
     var showSettings by remember { mutableStateOf(false) }
 
@@ -683,6 +745,7 @@ fun CarlinkApp(
                     logInfo("[UI_NAV] Closing SettingsScreen overlay", tag = "UI")
                     showSettings = false
                 },
+                onResetCluster = onResetCluster,
             )
         }
     }

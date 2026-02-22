@@ -22,7 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -30,7 +30,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.DisplaySettings
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -39,8 +38,11 @@ import androidx.compose.material.icons.filled.PhoneDisabled
 import androidx.compose.material.icons.filled.PowerOff
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SettingsInputComponent
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.VideoSettings
+import androidx.compose.material.icons.filled.WebAsset
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -53,6 +55,7 @@ import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -92,6 +95,7 @@ fun SettingsScreen(
     carlinkManager: CarlinkManager,
     fileLogManager: FileLogManager?,
     onNavigateBack: () -> Unit,
+    onResetCluster: () -> Unit,
 ) {
     var selectedTab by remember { mutableStateOf(SettingsTab.CONTROL) }
     val context = LocalContext.current
@@ -132,7 +136,7 @@ fun SettingsScreen(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.systemBars),
+                    .windowInsetsPadding(WindowInsets.safeDrawing),
         ) {
             // Left sidebar with NavigationRail
             Column(
@@ -212,7 +216,7 @@ fun SettingsScreen(
                         .weight(1f),
             ) {
                 when (selectedTab) {
-                    SettingsTab.CONTROL -> ControlTabContent(carlinkManager)
+                    SettingsTab.CONTROL -> ControlTabContent(carlinkManager, onResetCluster)
                     SettingsTab.LOGS -> LogsTabContent(context, fileLogManager)
                 }
             }
@@ -221,7 +225,6 @@ fun SettingsScreen(
 }
 
 private enum class ButtonSeverity {
-    NORMAL, // Primary action (blue/primary)
     WARNING, // Warning action (tertiary/amber)
     DESTRUCTIVE, // Destructive action (error/red)
 }
@@ -229,10 +232,14 @@ private enum class ButtonSeverity {
 @Composable
 private fun ControlTabContent(
     carlinkManager: CarlinkManager,
+    onResetCluster: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val colorScheme = MaterialTheme.colorScheme
     var isProcessing by remember { mutableStateOf(false) }
+    var showResetClusterDialog by remember { mutableStateOf(false) }
+    var showClusterNavOffDialog by remember { mutableStateOf(false) }
     val isDeviceConnected = carlinkManager.state != CarlinkManager.State.DISCONNECTED
 
     val displayModePreference = remember { DisplayModePreference.getInstance(context) }
@@ -243,6 +250,7 @@ private fun ControlTabContent(
 
     val adapterConfigPreference = remember { AdapterConfigPreference.getInstance(context) }
     var showAdapterConfigDialog by remember { mutableStateOf(false) }
+    val clusterNavigationEnabled = remember { adapterConfigPreference.getClusterNavigationSync() }
 
     val windowInfo = LocalWindowInfo.current
     val density = LocalDensity.current
@@ -302,7 +310,7 @@ private fun ControlTabContent(
                         isProcessing = isProcessing,
                         onClick = {
                             logWarn("[UI_ACTION] Disconnect Phone button clicked", tag = "UI")
-                            carlinkManager.stop()
+                            carlinkManager.disconnectPhone()
                         },
                     )
 
@@ -338,6 +346,7 @@ private fun ControlTabContent(
                                 when (currentDisplayMode) {
                                     DisplayMode.SYSTEM_UI_VISIBLE -> Icons.Default.FullscreenExit
                                     DisplayMode.STATUS_BAR_HIDDEN -> Icons.Default.Layers
+                                    DisplayMode.NAV_BAR_HIDDEN -> Icons.Default.WebAsset
                                     DisplayMode.FULLSCREEN_IMMERSIVE -> Icons.Default.Fullscreen
                                 },
                             contentDescription = "Configure display mode",
@@ -354,17 +363,39 @@ private fun ControlTabContent(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    ControlButton(
-                        label = "Reset Video Decoder",
-                        icon = Icons.Default.VideoSettings,
-                        severity = ButtonSeverity.WARNING,
-                        enabled = !isProcessing,
-                        isProcessing = isProcessing,
-                        onClick = {
-                            logWarn("[UI_ACTION] Reset Video Decoder button clicked", tag = "UI")
-                            carlinkManager.resetVideoDecoder()
-                        },
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        ControlButton(
+                            label = "Reset Decoder",
+                            icon = Icons.Default.VideoSettings,
+                            severity = ButtonSeverity.WARNING,
+                            enabled = !isProcessing,
+                            isProcessing = isProcessing,
+                            onClick = {
+                                logWarn("[UI_ACTION] Reset Decoder button clicked", tag = "UI")
+                                carlinkManager.resetVideoDecoder()
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+
+                        ControlButton(
+                            label = "Reset Cluster",
+                            icon = Icons.Default.Speed,
+                            severity = ButtonSeverity.WARNING,
+                            enabled = !isProcessing,
+                            isProcessing = isProcessing,
+                            onClick = {
+                                if (clusterNavigationEnabled) {
+                                    showResetClusterDialog = true
+                                } else {
+                                    showClusterNavOffDialog = true
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -390,6 +421,63 @@ private fun ControlTabContent(
             }
 
         }
+    }
+
+    // Reset Cluster Confirmation Dialog
+    if (showResetClusterDialog) {
+        AlertDialog(
+            onDismissRequest = { showResetClusterDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Speed,
+                    contentDescription = null,
+                    tint = colorScheme.tertiary,
+                )
+            },
+            title = { Text("Reset Cluster?") },
+            text = {
+                Text("The cluster display will be reset. Helper App will reload and take focus momentarily.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        logWarn("[UI_ACTION] Reset Cluster confirmed", tag = "UI")
+                        showResetClusterDialog = false
+                        onResetCluster()
+                    },
+                ) {
+                    Text("Reset", color = colorScheme.tertiary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetClusterDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
+
+    // Cluster Navigation Off Info Dialog
+    if (showClusterNavOffDialog) {
+        AlertDialog(
+            onDismissRequest = { showClusterNavOffDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Speed,
+                    contentDescription = null,
+                    tint = colorScheme.onSurfaceVariant,
+                )
+            },
+            title = { Text("Cluster Navigation Off") },
+            text = {
+                Text("Cluster Navigation is disabled. Enable it in Adapter Configuration to use this feature.")
+            },
+            confirmButton = {
+                TextButton(onClick = { showClusterNavOffDialog = false }) {
+                    Text("OK")
+                }
+            },
+        )
     }
 
     // Adapter Configuration Dialog
@@ -483,6 +571,7 @@ private fun ControlButton(
     enabled: Boolean,
     isProcessing: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
@@ -492,7 +581,7 @@ private fun ControlButton(
                 onClick = onClick,
                 enabled = enabled && !isProcessing,
                 modifier =
-                    Modifier
+                    modifier
                         .fillMaxWidth()
                         .height(AutomotiveDimens.ButtonMinHeight),
                 colors =
@@ -537,7 +626,7 @@ private fun ControlButton(
                 onClick = onClick,
                 enabled = enabled && !isProcessing,
                 modifier =
-                    Modifier
+                    modifier
                         .fillMaxWidth()
                         .height(AutomotiveDimens.ButtonMinHeight),
                 colors =
@@ -576,43 +665,5 @@ private fun ControlButton(
             }
         }
 
-        ButtonSeverity.NORMAL -> {
-            FilledTonalButton(
-                onClick = onClick,
-                enabled = enabled && !isProcessing,
-                modifier =
-                    Modifier
-                        .fillMaxWidth()
-                        .height(AutomotiveDimens.ButtonMinHeight),
-                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp),
-            ) {
-                AnimatedContent(
-                    targetState = isProcessing,
-                    transitionSpec = {
-                        (fadeIn() + scaleIn()).togetherWith(fadeOut() + scaleOut())
-                    },
-                    label = "iconTransition",
-                ) { processing ->
-                    if (processing) {
-                        LoadingSpinner(
-                            size = 24.dp,
-                        )
-                    } else {
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = label,
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                )
-            }
-        }
     }
 }

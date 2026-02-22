@@ -9,6 +9,7 @@ import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.Template
 import androidx.car.app.navigation.NavigationManager
 import androidx.car.app.navigation.NavigationManagerCallback
+import androidx.car.app.navigation.model.MessageInfo
 import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -201,12 +202,17 @@ class ClusterMainSession : Session() {
     }
 
     /**
-     * Empty screen — no RoutingInfo, no video. Just a valid NavigationTemplate
-     * to satisfy Templates Host requirements for the main session.
+     * Relay screen — shows a brief identifying message while Templates Host binds
+     * the cluster session. Visible for ~1s before MainActivity returns to front.
      */
     private class RelayScreen(carContext: CarContext) : Screen(carContext) {
         override fun onGetTemplate(): Template {
             return NavigationTemplate.Builder()
+                .setNavigationInfo(
+                    MessageInfo.Builder("Carlink — Cluster Navigation Service")
+                        .setText("Main app should appear momentarily. If this screen persists, return to the app launcher and reopen Carlink.")
+                        .build()
+                )
                 .setActionStrip(
                     ActionStrip.Builder()
                         .addAction(Action.APP_ICON)

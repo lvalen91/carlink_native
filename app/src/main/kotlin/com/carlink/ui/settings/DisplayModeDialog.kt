@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.WebAsset
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -189,6 +190,13 @@ internal fun DisplayModeDialog(
                                 modifier = Modifier.weight(1f),
                             )
                             DisplayModeButton(
+                                label = "Hide Dock",
+                                icon = Icons.Default.WebAsset,
+                                isSelected = selectedMode == DisplayMode.NAV_BAR_HIDDEN,
+                                onClick = { selectedMode = DisplayMode.NAV_BAR_HIDDEN },
+                                modifier = Modifier.weight(1f),
+                            )
+                            DisplayModeButton(
                                 label = "Fullscreen",
                                 icon = Icons.Default.Fullscreen,
                                 isSelected = selectedMode == DisplayMode.FULLSCREEN_IMMERSIVE,
@@ -208,6 +216,10 @@ internal fun DisplayModeDialog(
 
                                     DisplayMode.STATUS_BAR_HIDDEN -> {
                                         "Status bar hidden, navigation bar visible. Extra vertical space."
+                                    }
+
+                                    DisplayMode.NAV_BAR_HIDDEN -> {
+                                        "Navigation bar hidden, status bar visible. Extra bottom space."
                                     }
 
                                     DisplayMode.FULLSCREEN_IMMERSIVE -> {
@@ -278,6 +290,14 @@ private fun applyDisplayModePreview(
             // Hide status bar only, keep navigation bar visible
             controller.hide(WindowInsetsCompat.Type.statusBars())
             controller.show(WindowInsetsCompat.Type.navigationBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+
+        DisplayMode.NAV_BAR_HIDDEN -> {
+            // Hide navigation bar only, keep status bar visible
+            controller.show(WindowInsetsCompat.Type.statusBars())
+            controller.hide(WindowInsetsCompat.Type.navigationBars())
             controller.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }

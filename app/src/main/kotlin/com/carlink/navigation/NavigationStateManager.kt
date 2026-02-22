@@ -27,6 +27,7 @@ data class NavigationState(
     val turnAngle: Int = 0,            // Turn angle in degrees
     val turnSide: Int = 0,             // 0=right-hand driving, 1=left-hand driving
     val junctionType: Int = 0,         // 0=intersection, 1=roundabout
+    val roundaboutExit: Int = 0,       // NaviRoundaboutExit (1-19, 0=not roundabout)
 ) {
     val isActive: Boolean get() = status == 1
     val isIdle: Boolean get() = status == 0
@@ -88,6 +89,7 @@ object NavigationStateManager {
             turnAngle = (payload["NaviTurnAngle"] as? Number)?.toInt() ?: current.turnAngle,
             turnSide = (payload["NaviTurnSide"] as? Number)?.toInt() ?: current.turnSide,
             junctionType = (payload["NaviJunctionType"] as? Number)?.toInt() ?: current.junctionType,
+            roundaboutExit = (payload["NaviRoundaboutExit"] as? Number)?.toInt() ?: current.roundaboutExit,
         )
 
         logNavi {
@@ -95,7 +97,8 @@ object NavigationStateManager {
                 "road=${merged.roadName}, remainDist=${merged.remainDistance}m, " +
                 "destDist=${merged.distanceToDestination}m, eta=${merged.timeToDestination}s, " +
                 "dest=${merged.destinationName}, app=${merged.appName}, " +
-                "turnSide=${merged.turnSide}, turnAngle=${merged.turnAngle}, junction=${merged.junctionType}"
+                "turnSide=${merged.turnSide}, turnAngle=${merged.turnAngle}, junction=${merged.junctionType}, " +
+                "roundaboutExit=${merged.roundaboutExit}"
         }
 
         _state.value = merged
@@ -105,5 +108,6 @@ object NavigationStateManager {
     fun clear() {
         logNavi { "[NAVI] State cleared (USB disconnect or session end)" }
         _state.value = NavigationState()
+        ManeuverMapper.clearCache()
     }
 }
