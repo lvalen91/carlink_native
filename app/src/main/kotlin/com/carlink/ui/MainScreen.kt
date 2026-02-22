@@ -92,7 +92,7 @@ fun MainScreen(
             val adapterHeight = surfaceState.height and 1.inv()
 
             logInfo(
-                "[CARLINK_RESOLUTION] Sending to adapter: ${adapterWidth}x$adapterHeight " +
+                "[CARLINK_RESOLUTION] Surface size: ${adapterWidth}x$adapterHeight " +
                     "(raw: ${surfaceState.width}x${surfaceState.height}, mode=$displayMode)",
                 tag = "UI",
             )
@@ -127,14 +127,17 @@ fun MainScreen(
     val colorScheme = MaterialTheme.colorScheme
 
     val baseModifier = Modifier.fillMaxSize().background(Color.Black)
-    val boxModifier =
-        if (displayMode == DisplayMode.FULLSCREEN_IMMERSIVE) {
-            baseModifier
-        } else {
-            baseModifier
-                .windowInsetsPadding(WindowInsets.systemBars)
-                .windowInsetsPadding(WindowInsets.displayCutout)
-        }
+    val boxModifier = when (displayMode) {
+        DisplayMode.FULLSCREEN_IMMERSIVE -> baseModifier
+        DisplayMode.SYSTEM_UI_VISIBLE -> baseModifier
+            .windowInsetsPadding(WindowInsets.systemBars)
+            .windowInsetsPadding(WindowInsets.displayCutout)
+        DisplayMode.STATUS_BAR_HIDDEN,
+        DisplayMode.NAV_BAR_HIDDEN -> baseModifier
+            .windowInsetsPadding(WindowInsets.systemBars)
+            // No displayCutout padding — video extends behind cutout,
+            // SafeArea tells CarPlay where to avoid placing UI elements
+    }
 
     Box(modifier = boxModifier) {
         VideoSurface(

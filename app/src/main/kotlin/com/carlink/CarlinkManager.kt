@@ -279,18 +279,18 @@ class CarlinkManager(
         val evenWidth = surfaceWidth and 1.inv()
         val evenHeight = surfaceHeight and 1.inv()
 
-        // Update config with actual surface dimensions ONLY if user didn't select a specific resolution
-        // When userSelectedResolution=true, honor the user's choice; otherwise use actual surface size
-        if (!config.userSelectedResolution && (config.width != evenWidth || config.height != evenHeight)) {
-            logInfo(
-                "[RES] Updating config from ${config.width}x${config.height} to ${evenWidth}x$evenHeight " +
-                    "(actual surface size, AUTO mode)",
-                tag = Logger.Tags.VIDEO,
-            )
-            config = config.copy(width = evenWidth, height = evenHeight)
-        } else if (config.userSelectedResolution) {
+        // Config resolution was pre-computed from stable WindowMetrics in MainActivity.
+        // Do NOT override with surface dimensions — SurfaceView size oscillates during
+        // Compose layout (systemBars insets apply asynchronously on AAOS).
+        if (config.userSelectedResolution) {
             logInfo(
                 "[RES] Using user-selected resolution ${config.width}x${config.height} " +
+                    "(surface: ${evenWidth}x$evenHeight)",
+                tag = Logger.Tags.VIDEO,
+            )
+        } else {
+            logInfo(
+                "[RES] Using pre-computed resolution ${config.width}x${config.height} " +
                     "(surface: ${evenWidth}x$evenHeight)",
                 tag = Logger.Tags.VIDEO,
             )
