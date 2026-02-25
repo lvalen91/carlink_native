@@ -246,25 +246,60 @@ OUTPUT_STOP (dt=5, at=1)
 ```
 
 ### Incoming Phone Call
+
+The same commands are used across captures, but the **ordering varies** between sessions. The adapter does not guarantee a fixed command sequence — the app must handle commands in any order.
+
+**Sequence A (Pi-Carplay Capture, Jan 2026):**
 ```
 INCOMING_CALL_INIT (dt=5, at=1)  ← Call notification
   ↓ ~300ms
 ALERT_START (dt=4, at=1)         ← Ringtone begins
 OUTPUT_START (dt=4, at=1)
-  ↓ [ringtone audio: dt=4, at=1]
-  ↓ [rings 7-13 seconds until answered]
+  ↓ [ringtone audio: dt=4, at=1, rings 7-13s]
 ALERT_STOP (dt=4, at=1)
 OUTPUT_STOP (dt=4, at=1)
   ↓ ~150ms
 INPUT_START (dt=5, at=1)         ← Mic activates
 INPUT_STOP (dt=5, at=1)          ← State transition
 OUTPUT_START (dt=5, at=1)        ← Call audio begins
-  ↓ [call audio IN: dt=5, at=1]
-  ↓ [mic data OUT: dt=5, at=3]
 PHONECALL_START (dt=5, at=1)     ← Call connected
   ↓ [call in progress]
 OUTPUT_STOP (dt=5, at=1)         ← Call ends
 ```
+
+**Sequence B (Live App Capture, Feb 2026):**
+```
+INCOMING_CALL_INIT (dt=5, at=1)  ← Call notification
+OUTPUT_START (dt=4, at=1)        ← Ringtone begins (no ALERT_START)
+  ↓ [ringtone audio: dt=4, at=1, rings ~6.7s]
+INPUT_CONFIG (dt=5, at=1)        ← Mic config (INPUT_START)
+PHONECALL_START (dt=5, at=1)     ← Call connected (no INPUT_START→INPUT_STOP transition)
+  ↓ [call in progress ~37s]
+  ↓ [OUTPUT_START/OUTPUT_STOP cycling every 3-10s]
+PHONECALL_STOP (dt=2, at=2)     ← Call ends
+PHONECALL_STOP (dt=2, at=2)     ← Duplicate, 199ms later
+```
+
+**Observed ordering differences:**
+
+| Phase | Sequence A | Sequence B |
+|-------|-----------|-----------|
+| Ring | ALERT_START → ring → ALERT_STOP | OUTPUT_START only |
+| Ring→call | INPUT_START → INPUT_STOP → OUTPUT_START | INPUT_CONFIG → PHONECALL_START |
+| During call | Stable | OUTPUT_START/STOP cycling every 3-10s |
+| Call end | Single OUTPUT_STOP | Duplicate PHONECALL_STOP (199ms apart) |
+
+The ordering likely varies based on firmware version, whether media was already playing, and host ack timing. Both use the same commands — the app must be state-driven, not sequence-driven.
+
+**OUTPUT_START/STOP Cycling:** During active phone calls, the adapter may send OUTPUT_START/OUTPUT_STOP pairs every 3-10 seconds. This is internal buffer management and does not indicate call audio interruption. The app should not tear down AudioTracks on these signals during an active call.
+
+**Mic Performance (Live Capture):**
+- Chunk sizes observed: 640 bytes (20ms, live) and 8204 bytes (Pi-Carplay) — both valid
+- Duration: 36,909ms | Total: 1,179,520 bytes | Overruns: 0
+
+**Call Audio Playback (Live Capture):**
+- 6 underruns + 107 zero-fills during 37s call
+- Format switch 48kHz→16kHz pool creation adds ~90ms latency at call start
 
 ### Outgoing Phone Call
 ```
@@ -370,7 +405,8 @@ All must be 0xFFFF for end marker detection
 | Siri | 3 | NAVI_STOP, INPUT_START, SIRI_START |
 | Incoming Call | 3 | INCOMING_CALL_INIT, ALERT_*, PHONECALL_START |
 | Outgoing Call | 3 | INPUT_*, PHONECALL_START |
-| **Total** | **21** | **All 15 commands verified** |
+| Incoming Call (Live) | 1 | INCOMING_CALL_INIT, PHONECALL_START/STOP, OUTPUT cycling |
+| **Total** | **22** | **All 15 commands verified + live behavioral differences** |
 
 ---
 
@@ -594,3 +630,4 @@ The OpenAuto SDK uses numeric focus types to signal audio focus changes:
 - 48kHz Evidence: `pi-carplay_raw_capture/audio/48Khz_playback/` (2025-12-29)
 - Android Auto Verification: Jan 2026 capture (Pixel 10, YouTube Music)
 - Captures: `/Users/zeno/.pi-carplay/usb-logs/`
+- Live Incoming Call: Feb 2026 AAOS emulator + CPC200-CCPA capture (adb logcat)

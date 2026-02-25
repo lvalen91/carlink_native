@@ -10,9 +10,11 @@ import com.carlink.logging.logInfo
 /**
  * Headless CarAppService for cluster navigation display only.
  *
- * This service is bound by Templates Host and provides:
- * - DISPLAY_TYPE_CLUSTER → CarlinkClusterSession (observes NavigationStateManager)
- * - DISPLAY_TYPE_MAIN → ClusterMainSession (zombie — empty template, no functionality)
+ * Always returns [ClusterMainSession] regardless of displayType. The first session
+ * created becomes the primary (owns NavigationManager); any subsequent session is
+ * passive. This matches GM AAOS behavior where only DISPLAY_TYPE_MAIN is created,
+ * and avoids the dual-session thrashing on the AAOS emulator where Templates Host
+ * creates both DISPLAY_TYPE_MAIN and DISPLAY_TYPE_CLUSTER.
  *
  * MainActivity remains the sole LAUNCHER and owns all USB/video/audio pipelines.
  * This service does NOT initialize CarlinkManager, video, audio, or USB.
@@ -31,9 +33,6 @@ class CarlinkClusterService : CarAppService() {
 
     override fun onCreateSession(sessionInfo: SessionInfo): Session {
         logInfo("[CLUSTER_SVC] Creating session: displayType=${sessionInfo.displayType}", tag = Logger.Tags.CLUSTER)
-        return when (sessionInfo.displayType) {
-            SessionInfo.DISPLAY_TYPE_CLUSTER -> CarlinkClusterSession()
-            else -> ClusterMainSession()
-        }
+        return ClusterMainSession()
     }
 }

@@ -144,3 +144,7 @@
 [78] :: Code Cleanup. New 'Reset Cluster' to refresh Nav Metadata service if issues arise. App Settings Page accounts for cutout/curve for control placement. Fixed custom resolution + Safe Area not working properly.
 [79] :: Force Full Adapter Init on version change. CarApp Component toggle (Controls Nav Metadata), default is now OFF. Warning about OFF state if 'Reset Cluster' button is pressed. New Display Mode that hides Dock Only, leaving Status Bar visible.
 [80] :: Removed surface-based config override, Testing for 'Squishing' of SurfaceView Fix. Curved Displays with Hidden SystemUI should scale properly.
+
+[81] :: New Nav Icons
+[82] :: Instr Cluster Nav Code Cleanup
+[83] :: Icon Thrashing fix, and more code cleanup

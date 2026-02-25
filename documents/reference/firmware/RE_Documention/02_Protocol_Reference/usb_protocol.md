@@ -276,36 +276,72 @@ Sent when `DashboardInfo` bit 2 is set and iPhone has active navigation. Contain
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `NaviStatus` | int | 0=inactive, 1=active, 2=calculating |
+| `NaviStatus` | int | 0=inactive/flush, 1=active |
 | `NaviTimeToDestination` | int | ETA in seconds |
 | `NaviDestinationName` | string | Destination name |
 | `NaviDistanceToDestination` | int | Total remaining distance (meters) |
 | `NaviAPPName` | string | Navigation app (e.g., "Apple Maps") |
 | `NaviRemainDistance` | int | Distance to next maneuver (meters) |
-| `NaviRoadName` | string | Current or next road name |
-| `NaviOrderType` | int | Turn order in route sequence |
-| `NaviManeuverType` | int | Maneuver type code |
+| `NaviRoadName` | string | Extracted from iAP2 ManeuverDescription (⚠ duplicated key bug) |
+| `NaviOrderType` | int | Turn order type (enum; observed 6, 16 — range wider than initially assumed) |
+| `NaviManeuverType` | int | CPManeuverType 0–53 |
+| `NaviTurnAngle` | int | Enum/type value, NOT degrees (only sent for non-roundabout turns) |
+| `NaviTurnSide` | int | Driving side (0=RHD, 1=LHD, 2=observed undocumented value) |
+| `NaviRoundaboutExit` | int | Exit number 1–19 (only sent for roundabout maneuvers) |
 
-**Example NaviJSON Payloads:**
+**Fields NOT forwarded (live-verified Feb 2026):**
+- `NaviJunctionType` — never appears in any observed NaviJSON message
+- `JunctionElementAngle` / `JunctionElementExitAngle` — dropped by adapter parser (ASSERT on dict types)
+- `AfterManeuverRoadName` — stripped
+- Lane guidance — stripped
+
+**Example NaviJSON Payloads (Live Capture Feb 2026):**
+
+Roundabout exit 1 (ManeuverIdx advance):
 ```json
-{"NaviStatus":1,"NaviTimeToDestination":480,"NaviDestinationName":"Speedway","NaviDistanceToDestination":6124,"NaviAPPName":"Apple Maps"}
+{"NaviRoadName":"W Main St","NaviRoadName":"W Main St","NaviOrderType":16,"NaviRoundaboutExit":1,"NaviManeuverType":28}
 ```
+
+Roundabout exit 2 (ManeuverIdx advance):
 ```json
-{"NaviRoadName":"Farrior Dr","NaviRoadName":"Start on Farrior Dr","NaviOrderType":1,"NaviManeuverType":11}
+{"NaviRoadName":"W Main St","NaviRoadName":"W Main St","NaviOrderType":16,"NaviRoundaboutExit":2,"NaviManeuverType":29}
 ```
+
+Right turn maneuver (ManeuverIdx advance):
 ```json
-{"NaviRemainDistance":26}
+{"NaviRoadName":"De Armoun Rd","NaviRoadName":"De Armoun Rd","NaviOrderType":6,"NaviTurnAngle":2,"NaviTurnSide":2,"NaviManeuverType":2}
 ```
+
+Distance countdown (~1/sec):
+```json
+{"NaviRemainDistance":239}
+```
+
+Route status (periodic):
+```json
+{"NaviStatus":1,"NaviRemainDistance":245}
+```
+
+**Multi-Roundabout Capture (W Main St Route, Feb 2026):**
+12 consecutive roundabouts captured. ALL had: `NaviOrderType=16`, `turnAngle=0`, `turnSide=0`, `junction=0`.
+Only CPTypes 28 (exit 1) and 29 (exit 2) observed. iPhone sent `paramCount=21` per 0x5201;
+adapter forwards only ~5 fields. AAOS cluster showed wrong icons for every roundabout due to
+missing exit angle data — generic glyph per exit number cannot represent actual roundabout geometry.
+
+**Message delivery pattern:** On ManeuverIdx change, adapter emits TWO _SendNaviJSON calls
+back-to-back: first with `NaviRemainDistance`, second with maneuver-specific fields. Distance-only
+updates are single messages at ~1/sec.
 
 **iAP2 Source Messages:**
 - `0x5200` StartRouteGuidanceUpdate - Adapter requests TBT data
-- `0x5201` RouteGuidanceUpdate - Route status from iPhone
-- `0x5202` RouteGuidanceManeuverUpdate - Turn instructions from iPhone
+- `0x5201` RouteGuidanceUpdate - Route status from iPhone (~1/sec, triggers ManeuverIdx advances)
+- `0x5202` RouteGuidanceManeuverUpdate - Full maneuver list burst on route start (~20 messages in 200ms)
 
 **Firmware Evidence (ARMiPhoneIAP2):**
 - JSON fields: `MediaSongName`, `MediaAlbumName`, `MediaArtistName`, `MediaAPPName`, `MediaSongDuration`, `MediaSongPlayTime`
 - Artwork: `mediaItemArtworkFileTransferIdentifier`, `CiAP2MediaPlayerEngine_Send_NowPlayingMeidaArtwork`
 - Navigation: `iAP2RouteGuidanceEngine`, `_SendNaviJSON`, `NaviStatus`, `NaviDestinationName`
+- Parser limitation: `iAP2UpdateEntity.cpp:314` ASSERTs on unknown dict/group field types, silently drops them
 
 ### Session Establishment (Encrypted Blob)
 

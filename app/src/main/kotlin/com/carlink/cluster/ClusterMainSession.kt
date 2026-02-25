@@ -30,30 +30,49 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 /**
- * Navigation relay session for DISPLAY_TYPE_MAIN.
+ * Navigation relay session for cluster display.
  *
- * This session exists to trigger the Templates Host binding chain:
- * 1. CarAppActivity binds to Templates Host → creates this session (DISPLAY_TYPE_MAIN)
- * 2. This session calls navigationStarted() → Templates Host creates cluster display
- * 3. Templates Host creates CarlinkClusterSession (DISPLAY_TYPE_CLUSTER)
+ * Templates Host may create multiple sessions from CarlinkClusterService (e.g.
+ * DISPLAY_TYPE_MAIN + DISPLAY_TYPE_CLUSTER on the AAOS emulator). Only the first
+ * instance (primary) owns the NavigationManager lifecycle — calling navigationStarted(),
+ * updateTrip(), and navigationEnded(). Any subsequent instance is passive (returns a
+ * static RelayScreen, no StateFlow observation, no NavigationManager calls) to avoid
+ * competing for Templates Host's single active-navigator slot.
  *
- * No video, no audio, no USB. Returns an empty NavigationTemplate.
- * The actual cluster UI is rendered by CarlinkClusterScreen in CarlinkClusterSession.
- * MainActivity owns all projection pipelines.
+ * On GM AAOS only DISPLAY_TYPE_MAIN is ever created, so the primary is always the
+ * sole session. On the emulator the second session becomes a no-op.
  */
 class ClusterMainSession : Session() {
 
     private var navigationManager: NavigationManager? = null
     private var scope: CoroutineScope? = null
     private var isNavigating = false
+    private var isPrimary = false
     /** Only call navigationEnded() after we've seen at least one active state transition to idle.
      *  Without this, the initial idle state from NavigationStateManager kills the binding chain
      *  before Templates Host can create the cluster session (displayType=1). */
     private var hasSeenActiveNav = false
 
+    companion object {
+        /** First live session wins; cleared on destroy so a fresh binding chain can take over. */
+        @Volatile
+        private var primarySession: ClusterMainSession? = null
+    }
+
     override fun onCreateScreen(intent: Intent): Screen {
         ClusterBindingState.sessionAlive = true
-        logInfo("[CLUSTER_MAIN] Navigation relay session screen created", tag = Logger.Tags.CLUSTER)
+
+        // Claim primary role if no other session holds it.
+        isPrimary = primarySession == null
+        if (isPrimary) {
+            primarySession = this
+            logInfo("[CLUSTER_MAIN] Primary session created — owns NavigationManager", tag = Logger.Tags.CLUSTER)
+        } else {
+            logInfo("[CLUSTER_MAIN] Secondary session created — passive (no NavigationManager calls)", tag = Logger.Tags.CLUSTER)
+            return RelayScreen(carContext)
+        }
+
+        // --- Everything below runs only for the primary session ---
 
         // Get NavigationManager — needed for navigationStarted() which triggers cluster creation
         try {
@@ -69,7 +88,6 @@ class ClusterMainSession : Session() {
 
         // Set NavigationManagerCallback BEFORE calling navigationStarted() — Templates Host
         // requires the callback to be set first, otherwise navigationStarted() throws.
-        // Matches CarlinkProjectionScreen init pattern in carlink_native.
         navigationManager?.setNavigationManagerCallback(object : NavigationManagerCallback {
             override fun onStopNavigation() {
                 logInfo("[CLUSTER_MAIN] onStopNavigation callback", tag = Logger.Tags.CLUSTER)
@@ -82,10 +100,8 @@ class ClusterMainSession : Session() {
         })
 
         // Call navigationStarted() IMMEDIATELY — this is the critical trigger that causes
-        // Templates Host to create ClusterTurnCardActivity on the cluster display, which
-        // in turn creates CarlinkClusterSession (DISPLAY_TYPE_CLUSTER).
-        // Without this, Templates Host never creates the cluster session.
-        // Matches CarlinkProjectionScreen:101 in carlink_native.
+        // Templates Host to create ClusterTurnCardActivity on the cluster display.
+        // Without this, Templates Host never creates the cluster display.
         try {
             navigationManager?.navigationStarted()
             isNavigating = true
@@ -104,24 +120,29 @@ class ClusterMainSession : Session() {
 
         lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onDestroy(owner: LifecycleOwner) {
-                ClusterBindingState.sessionAlive = false
-                logInfo("[CLUSTER_MAIN] Session destroyed — cleaning up", tag = Logger.Tags.CLUSTER)
-                if (isNavigating) {
-                    try {
-                        navigationManager?.navigationEnded()
-                        logNavi { "[CLUSTER_MAIN] navigationEnded() called on destroy" }
-                    } catch (e: Exception) {
-                        logError(
-                            "[CLUSTER_MAIN] navigationEnded() failed on destroy: ${e.message}",
-                            tag = Logger.Tags.CLUSTER,
-                            throwable = e,
-                        )
+                if (isPrimary) {
+                    primarySession = null
+                    logInfo("[CLUSTER_MAIN] Primary session destroyed — releasing NavigationManager ownership", tag = Logger.Tags.CLUSTER)
+                    if (isNavigating) {
+                        try {
+                            navigationManager?.navigationEnded()
+                            logNavi { "[CLUSTER_MAIN] navigationEnded() called on destroy" }
+                        } catch (e: Exception) {
+                            logError(
+                                "[CLUSTER_MAIN] navigationEnded() failed on destroy: ${e.message}",
+                                tag = Logger.Tags.CLUSTER,
+                                throwable = e,
+                            )
+                        }
+                        isNavigating = false
                     }
-                    isNavigating = false
+                    scope?.cancel()
+                    scope = null
+                    navigationManager = null
+                } else {
+                    logInfo("[CLUSTER_MAIN] Secondary session destroyed", tag = Logger.Tags.CLUSTER)
                 }
-                scope?.cancel()
-                scope = null
-                navigationManager = null
+                ClusterBindingState.sessionAlive = false
             }
         })
 
@@ -175,7 +196,8 @@ class ClusterMainSession : Session() {
                 navManager.updateTrip(trip)
                 logNavi {
                     "[CLUSTER_MAIN] Trip relayed: maneuver=${state.maneuverType}, " +
-                        "dist=${state.remainDistance}m, road=${state.roadName}"
+                        "dist=${state.remainDistance}m, road=${state.roadName}" +
+                        if (state.hasNextStep) ", nextManeuver=${state.nextManeuverType}, nextRoad=${state.nextRoadName}" else ""
                 }
             } catch (e: Exception) {
                 logError(

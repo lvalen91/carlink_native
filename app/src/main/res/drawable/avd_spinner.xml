@@ -26,7 +26,7 @@
                     android:name="spinner_path"
                     android:pathData="M24,6 A18,18 0 1,1 6,24"
                     android:strokeWidth="4"
-                    android:strokeColor="#6750A4"
+                    android:strokeColor="#FFFFFFFF"
                     android:strokeLineCap="round"
                     android:fillColor="#00000000" />
             </group>

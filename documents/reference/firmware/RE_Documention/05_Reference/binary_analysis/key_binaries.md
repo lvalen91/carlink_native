@@ -578,8 +578,9 @@ From `HudiAP2Session_CarPlay.cpp`, logged as `"Message from iPhone: 0x%04X %s"`:
 
 **Inner types**: `StartGuidanceItems`, `StopGuidanceItems`, `RouteGuidanceItems`, `RouteGuidanceManeuverItems`
 **JSON output**: `_SendNaviJSON` (sends to HUD as JSON string)
+**ManeuverIdx tracking**: Adapter maintains current maneuver index; advances on 0x5201 updates from iPhone
 
-**RouteGuidanceState** (top-level):
+**RouteGuidanceState** (top-level, from 0x5201 RouteGuidanceUpdate):
 
 | Field | Description |
 |---|---|
@@ -593,18 +594,54 @@ From `HudiAP2Session_CarPlay.cpp`, logged as `"Message from iPhone: 0x%04X %s"`:
 | `RouteGuidanceManeuverCurrentList` / `ManeuverCount` | Maneuver list |
 | `RouteGuidanceVisibleInApp` | Is guidance visible |
 
-**RouteGuidanceManeuverItems** (per-maneuver):
+**RouteGuidanceManeuverItems** (per-maneuver, from 0x5202 RouteGuidanceManeuverUpdate):
 
-| Field | Description |
-|---|---|
-| `ManeuverDescription` | Text description |
-| `AfterManeuverRoadName` | Road name after turn |
-| `DistanceBetweenManeuver` / `DisplayStr` / `DisplayUnits` | Distance between maneuvers |
-| `DrivingSide` | Left/Right driving side |
-| `JunctionType` / `JunctionElementAngle` / `JunctionElementExitAngle` | Junction details |
+| Field | Forwarded? | Description |
+|---|---|---|
+| `ManeuverDescription` | **Partial** — extracted as `NaviRoadName` | Text description of maneuver |
+| `AfterManeuverRoadName` | **NO** — stripped | Road name after completing turn |
+| `DistanceBetweenManeuver` / `DisplayStr` / `DisplayUnits` | **NO** — stripped | Distance between maneuvers |
+| `DrivingSide` | **YES** — as `NaviTurnSide` | 0=RHD, 1=LHD (observed value 2 — undocumented) |
+| `JunctionType` | **NO** — stripped (never appears in NaviJSON despite field existing) | Junction type |
+| `JunctionElementAngle` | **NO** — triggers `iAP2UpdateEntity.cpp:314` ASSERT, dropped | Per-spoke angular position |
+| `JunctionElementExitAngle` | **NO** — triggers ASSERT, dropped | Exit spoke angle |
+
+**iAP2 Parser Limitation (Live-Verified Feb 2026):**
+The `iAP2UpdateEntity.cpp` parser at line 314 asserts on iAP2 dictionary/group field types
+it doesn't recognize, logging `### [ASSERT] iAP2UpdateEntity.cpp:314 "", "dict"` and silently
+dropping the data. This was observed on multiple 0x5202 messages during route initialization.
+The `JunctionElementAngle`/`JunctionElementExitAngle` fields are structured as iAP2 group types
+and are silently discarded by this parser limitation.
 
 **NaviJSON broadcast fields** (sent to HUD/MiddleMan):
 `NaviStatus`, `NaviRoadName`, `NaviOrderType`, `NaviTurnAngle`, `NaviTurnSide`, `NaviRoundaboutExit`, `NaviManeuverType`, `NaviTimeToDestination`, `NaviDestinationName`, `NaviDistanceToDestination`, `NaviAPPName`, `NaviRemainDistance`
+
+**NaviJSON field presence by maneuver type (Live-Verified Feb 2026, 2 routes, 13+ roundabouts):**
+
+| Field | Roundabout exit 1 (28) | Roundabout exit 2 (29) | Right Turn (2) | Distance Update |
+|---|---|---|---|---|
+| `NaviRoadName` | YES (duplicated key bug) | YES (duplicated key bug) | YES (duplicated key bug) | — |
+| `NaviManeuverType` | YES (=28) | YES (=29) | YES (=2) | — |
+| `NaviOrderType` | YES (=16) | YES (=16) | YES (=6) | — |
+| `NaviRoundaboutExit` | YES (=1) | YES (=2) | — | — |
+| `NaviTurnAngle` | **=0** | **=0** | YES (=2, enum not degrees) | — |
+| `NaviTurnSide` | **=0** | **=0** | YES (=2, undocumented value) | — |
+| `NaviJunctionType` | **=0 / NOT SENT** | **=0 / NOT SENT** | **NOT SENT** | — |
+| `NaviRemainDistance` | — | — | — | YES |
+
+**Multi-roundabout capture (W Main St, Feb 2026):** 12 consecutive roundabouts, ALL had
+turnAngle=0, turnSide=0, junction=0. Only exit 1 (CPType 28) and exit 2 (CPType 29) observed.
+Both map to identical AAOS `Maneuver.TYPE=34` (ROUNDABOUT_ENTER_AND_EXIT_CCW).
+iPhone sent paramCount=21 per 0x5201 message — adapter forwards ~5 fields.
+
+**Adapter Processing Flow (Live-Verified Feb 2026):**
+1. Route start → iPhone sends burst of ~20 `0x5202` messages (~200ms) with full maneuver list
+2. Adapter stores `ManeuverDescription[]` array indexed by position
+3. During navigation → iPhone sends `0x5201` every ~1s with distance/ETA updates
+4. When iPhone advances to next maneuver → `0x5201` triggers `update ManeuverIdx: N`
+5. On ManeuverIdx change → adapter emits TWO `_SendNaviJSON` calls:
+   - First: `{"NaviRemainDistance": N}` (distance to new maneuver)
+   - Second: `{"NaviRoadName":..., "NaviManeuverType":..., ...}` (maneuver-specific fields)
 
 ### CiAP2PowerEngine — Complete Fields
 

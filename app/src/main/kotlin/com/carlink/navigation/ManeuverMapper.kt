@@ -7,25 +7,25 @@ import androidx.core.graphics.drawable.IconCompat
 import com.carlink.logging.Logger
 import com.carlink.logging.logNavi
 import com.carlink.logging.logWarn
-import java.io.File
 
 /**
  * Maps CarPlay CPManeuverType values (0-53) to AAOS Car App Library Maneuver.TYPE_* constants
- * and provides bitmap maneuver icons for cluster display.
+ * and provides resource-based maneuver icons for cluster display.
  *
  * Source: LIVI translateNavigation.ts (verified against iAP2 spec "Table 15-16").
  * Icon mapping cross-referenced with GM RouteStateMachine.mapManeuverType() from
  * decompiled DelayedWKSApp to ensure cluster icon compatibility.
  *
- * All icons are rendered programmatically by ManeuverIconRenderer (Canvas/Path) and
- * delivered via createWithBitmap(). The ClusterIconShimProvider intercepts Templates Host's
- * icon caching calls, enabling tier-1 ManeuverIcon delivery to the cluster.
+ * Icons use createWithResource() for stable IPC hashing. The ClusterIconShimProvider
+ * intercepts Templates Host's icon caching calls, enabling tier-1 ManeuverIcon delivery
+ * to the cluster.
  *
  * NaviTurnSide controls U-turn direction (LEFT vs RIGHT) and roundabout rotation (CW vs CCW).
  */
 object ManeuverMapper {
 
-    private var rendererInitialized = false
+    /** Cache built Maneuver objects by (cpType shl 4) or turnSide to avoid icon thrashing. */
+    private val maneuverCache = HashMap<Int, Maneuver>()
 
     /**
      * Map a CPManeuverType + turnSide to a Maneuver.TYPE_* constant.
@@ -104,42 +104,47 @@ object ManeuverMapper {
         return exitNumber
     }
 
-    /** Evict memory caches on disconnect. Disk cache persists for reuse across sessions. */
+    /** Evict maneuver cache on disconnect. */
     fun clearCache() {
-        ManeuverIconRenderer.clearMemoryCache()
-    }
-
-    /** Ensure ManeuverIconRenderer disk cache is initialized (lazy, idempotent). */
-    private fun ensureRendererInit(context: Context) {
-        if (!rendererInitialized) {
-            ManeuverIconRenderer.init(File(context.filesDir, "maneuver_icons"))
-            rendererInitialized = true
-        }
+        maneuverCache.clear()
     }
 
     /**
-     * Build a Maneuver with a bitmap icon for GM cluster display.
-     *
-     * Uses createWithBitmap() — the ClusterIconShimProvider intercepts Templates Host's
-     * icon caching calls, enabling tier-1 ManeuverIcon delivery to the cluster.
+     * Build a Maneuver with a resource icon for GM cluster display.
      *
      * @param state Current navigation state
-     * @param context Context for initializing the disk cache directory
-     * @return Maneuver with type and bitmap icon set
+     * @param context Context for loading VectorDrawable resources
+     * @return Maneuver with type and resource icon set
      */
     fun buildManeuver(state: NavigationState, context: Context): Maneuver {
-        ensureRendererInit(context)
-        val type = mapManeuverType(state.maneuverType, state.turnSide)
+        return buildManeuverForType(state.maneuverType, state.turnSide, context)
+    }
+
+    /**
+     * Build a Maneuver from explicit CPManeuverType and turnSide values.
+     *
+     * Used by [TripBuilder] for the next-step maneuver where the fields come from
+     * [NavigationState.nextManeuverType] rather than the current state.
+     */
+    fun buildManeuverForType(cpType: Int, turnSide: Int, context: Context): Maneuver {
+        val cacheKey = (cpType shl 4) or turnSide
+        maneuverCache[cacheKey]?.let { return it }
+
+        val type = mapManeuverType(cpType, turnSide)
         val builder = Maneuver.Builder(type)
 
-        getRoundaboutExitNumber(state.maneuverType)?.let {
+        getRoundaboutExitNumber(cpType)?.let {
             builder.setRoundaboutExitNumber(it)
         }
 
-        val bitmap = ManeuverIconRenderer.render(state.maneuverType, state.turnSide)
-        val icon = CarIcon.Builder(IconCompat.createWithBitmap(bitmap)).build()
+        // Use resource icon — hashes by (packageName, resId), stable across IPC.
+        // createWithBitmap() uses Bitmap.identityHashCode which changes on every
+        // IPC deserialization, causing Templates Host to generate a new iconId
+        // every ~1s distance update → ClusterIconShimProvider cache thrashing.
+        val resId = ManeuverIconRenderer.drawableForManeuver(cpType)
+        val icon = CarIcon.Builder(IconCompat.createWithResource(context, resId)).build()
         builder.setIcon(icon)
 
-        return builder.build()
+        return builder.build().also { maneuverCache[cacheKey] = it }
     }
 }

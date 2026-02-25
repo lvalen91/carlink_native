@@ -61,15 +61,14 @@ class DualStreamAudioManager(
     private val logCallback: LogCallback,
     private val audioConfig: AudioConfig = AudioConfig.DEFAULT,
 ) {
-    // AudioTracks: Media (all non-nav audio) + Navigation
-    @Volatile private var mediaTrack: AudioTrack? = null
+    // Media pool: pre-created AudioTrack+buffer per format (eliminates ~220ms switch gap)
+    private val mediaSlots = mutableMapOf<AudioFormatConfig, MediaSlot>()
+    @Volatile private var activeMediaSlot: MediaSlot? = null
+    @Volatile private var activeMediaFormat: AudioFormatConfig? = null
+
+    // Navigation: single track (format doesn't change mid-session)
     @Volatile private var navTrack: AudioTrack? = null
-
-    // Ring buffers for USB jitter compensation
-    @Volatile private var mediaBuffer: AudioRingBuffer? = null
     @Volatile private var navBuffer: AudioRingBuffer? = null
-
-    @Volatile private var mediaFormat: AudioFormatConfig? = null
     @Volatile private var navFormat: AudioFormatConfig? = null
 
     private var mediaVolume: Float = 1.0f
@@ -80,7 +79,6 @@ class DualStreamAudioManager(
     private var playbackThread: AudioPlaybackThread? = null
     private val isRunning = AtomicBoolean(false)
 
-    private var mediaUnderruns: Int = 0
     private var navUnderruns: Int = 0
     private var writeCount: Long = 0
     private var zeroPacketsFiltered: Long = 0
@@ -95,25 +93,39 @@ class DualStreamAudioManager(
     private val windowMediaResiduals = AtomicLong(0)
     private val windowNavResiduals = AtomicLong(0)
     private val windowZeroFiltered = AtomicLong(0)
-    private var prevMediaOverflow = 0
     private var prevNavOverflow = 0
-    private var prevMediaUnderruns = 0
     private var prevNavUnderruns = 0
 
     private val bufferMultiplier = audioConfig.bufferMultiplier
-    private val playbackChunkSize = audioConfig.sampleRate * 2 * 2 * 5 / 1000
     private val prefillThresholdMs = audioConfig.prefillThresholdMs
     private val underrunRecoveryThreshold = 10
     private val minBufferLevelMs = 50 // Reduced from 100ms - USB P99 jitter only 7ms
-
-    @Volatile private var mediaStarted = false
 
     @Volatile private var navStarted = false
 
     @Volatile private var navStartTime: Long = 0
 
-    @Volatile private var mediaPendingPlay = false
     @Volatile private var navPendingPlay = false
+
+    /**
+     * Per-format media slot: owns AudioTrack + ring buffer + playback state.
+     * Pool keyed by AudioFormatConfig (data class equality: FORMAT_2==FORMAT_4 → same slot).
+     */
+    private class MediaSlot(
+        val format: AudioFormatConfig,
+        var track: AudioTrack?,
+        val buffer: AudioRingBuffer,
+        var started: Boolean = false,
+        var pendingPlay: Boolean = false,
+        var residualOffset: Int = 0,
+        var residualCount: Int = 0,
+        var underruns: Int = 0,
+        var draining: Boolean = false,
+        val tempBuffer: ByteArray,
+        // Stats delta tracking
+        var prevOverflow: Int = 0,
+        var prevUnderruns: Int = 0,
+    )
 
     // Minimum playback duration before allowing stop (fixes premature cutoff - Sessions 1-2)
     private val minNavPlayDurationMs = 300
@@ -350,7 +362,7 @@ class DualStreamAudioManager(
                 // All non-nav audio (media, Siri, phone call, alert) → media track
                 windowMediaRx.incrementAndGet()
                 ensureMediaTrack(decodeType)
-                mediaBuffer?.write(data, dataOffset, dataLength) ?: -1
+                activeMediaSlot?.buffer?.write(data, dataOffset, dataLength) ?: -1
             }
         }
     }
@@ -362,7 +374,9 @@ class DualStreamAudioManager(
             duckLevel = targetVolume.coerceIn(0.0f, 1.0f)
 
             val effectiveVolume = if (isDucked) mediaVolume * duckLevel else mediaVolume
-            mediaTrack?.setVolume(effectiveVolume)
+            for (slot in mediaSlots.values) {
+                slot.track?.setVolume(effectiveVolume)
+            }
 
             if (isDucked) {
                 log("[AUDIO] Media ducked to ${(duckLevel * 100).toInt()}%")
@@ -466,12 +480,10 @@ class DualStreamAudioManager(
             }
             playbackThread = null
 
-            releaseMediaTrack()
+            releaseAllMediaSlots()
             releaseNavTrack()
 
-            mediaBuffer?.clear()
             navBuffer?.clear()
-            mediaBuffer = null
             navBuffer = null
 
             log("[AUDIO] DualStreamAudioManager released")
@@ -484,31 +496,84 @@ class DualStreamAudioManager(
         val format = AudioFormats.fromDecodeType(decodeType)
 
         synchronized(lock) {
-            // Resume paused track (Siri tone fix)
-            mediaTrack?.let { track ->
-                if (track.playState == AudioTrack.PLAYSTATE_PAUSED && mediaFormat == format && !mediaPendingPlay) {
-                    mediaPendingPlay = true
-                    mediaStarted = false
+            val currentSlot = activeMediaSlot
+
+            // Same format fast-path: resume paused track if needed (Siri tone fix)
+            if (currentSlot != null && currentSlot.format == format) {
+                val track = currentSlot.track
+                if (track != null && track.playState == AudioTrack.PLAYSTATE_PAUSED && !currentSlot.pendingPlay) {
+                    currentSlot.pendingPlay = true
+                    currentSlot.started = false
                     log("[AUDIO] Resumed paused media track (same format ${format.sampleRate}Hz)")
-                    return
+                }
+                return
+            }
+
+            // Format switch: drain current slot if playing with buffered data
+            if (currentSlot != null) {
+                val track = currentSlot.track
+                if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING &&
+                    currentSlot.buffer.availableForRead() > 0
+                ) {
+                    currentSlot.draining = true
+                    log(
+                        "[AUDIO] Media format switch: draining " +
+                            "${currentSlot.format.sampleRate}Hz/${currentSlot.format.channelCount}ch",
+                    )
+                } else {
+                    // Nothing to drain, pause immediately
+                    try {
+                        if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                            track.pause()
+                        }
+                    } catch (_: Exception) {}
+                    currentSlot.draining = false
+                    currentSlot.started = false
+                    currentSlot.pendingPlay = false
                 }
             }
 
-            if (mediaFormat != format) {
-                log("[AUDIO] Media format change: ${mediaFormat?.sampleRate ?: 0}Hz -> ${format.sampleRate}Hz")
-                releaseMediaTrack()
-                mediaFormat = format
-
-                mediaBuffer =
-                    AudioRingBuffer(
-                        capacityMs = audioConfig.mediaBufferCapacityMs,
-                        sampleRate = format.sampleRate,
-                        channels = format.channelCount,
-                    )
-
-                mediaTrack = createAudioTrack(format, AudioStreamType.MEDIA)
-                mediaPendingPlay = true
+            // Get or create target slot (lazy creation per format)
+            val targetSlot = mediaSlots.getOrPut(format) {
+                val buffer = AudioRingBuffer(
+                    capacityMs = audioConfig.mediaBufferCapacityMs,
+                    sampleRate = format.sampleRate,
+                    channels = format.channelCount,
+                )
+                val chunkSize = format.sampleRate * format.channelCount * 2 * 5 / 1000
+                val slot = MediaSlot(
+                    format = format,
+                    track = createAudioTrack(format, AudioStreamType.MEDIA),
+                    buffer = buffer,
+                    tempBuffer = ByteArray(chunkSize * 20),
+                )
+                log("[AUDIO] Pool: created ${format.sampleRate}Hz/${format.channelCount}ch slot")
+                slot
             }
+
+            // Clear stale data and reset state for activation
+            targetSlot.buffer.clear()
+            targetSlot.pendingPlay = true
+            targetSlot.started = false
+            targetSlot.residualCount = 0
+            targetSlot.residualOffset = 0
+            targetSlot.draining = false
+
+            // Recreate dead track (ERROR_DEAD_OBJECT recovery)
+            if (targetSlot.track == null) {
+                targetSlot.track = createAudioTrack(format, AudioStreamType.MEDIA)
+                log("[AUDIO] Pool: recreated dead ${format.sampleRate}Hz/${format.channelCount}ch track")
+            }
+
+            activeMediaSlot = targetSlot
+            activeMediaFormat = format
+
+            val prevRate = currentSlot?.format?.sampleRate ?: 0
+            val poolHit = mediaSlots.size > 1
+            log(
+                "[AUDIO] Media format switch: ${prevRate}Hz -> " +
+                    "${format.sampleRate}Hz/${format.channelCount}ch (${if (poolHit) "pool hit" else "new"})",
+            )
         }
     }
 
@@ -641,30 +706,27 @@ class DualStreamAudioManager(
         }
     }
 
-    private fun releaseMediaTrack() {
-        try {
-            mediaTrack?.let { track ->
-                // Nest stop() in its own try-catch so release() always runs.
-                // AudioTrack.stop() can throw IllegalStateException if native state
-                // changed between the playState check and the call (TOCTOU race with
-                // audio HAL during CPC200 disconnect or format switch). AOSP's own
-                // AudioTrack.release() uses this same pattern internally.
-                try {
-                    if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                        track.stop()
+    private fun releaseAllMediaSlots() {
+        for (slot in mediaSlots.values) {
+            try {
+                slot.track?.let { track ->
+                    try {
+                        if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                            track.stop()
+                        }
+                    } catch (e: Exception) {
+                        log("[AUDIO] WARN: Failed to stop media track (${slot.format.sampleRate}Hz): ${e.message}")
                     }
-                } catch (e: Exception) {
-                    log("[AUDIO] WARN: Failed to stop media track: ${e.message}")
+                    track.release()
                 }
-                track.release()
+            } catch (e: Exception) {
+                log("[AUDIO] ERROR: Failed to release media track (${slot.format.sampleRate}Hz): ${e.message}")
             }
-        } catch (e: Exception) {
-            log("[AUDIO] ERROR: Failed to release media track: ${e.message}")
+            slot.buffer.clear()
         }
-        mediaTrack = null
-        mediaFormat = null
-        mediaStarted = false
-        mediaPendingPlay = false
+        mediaSlots.clear()
+        activeMediaSlot = null
+        activeMediaFormat = null
     }
 
     private fun releaseNavTrack() {
@@ -696,16 +758,10 @@ class DualStreamAudioManager(
 
     /** Playback thread (URGENT_AUDIO priority). Separate buffers per stream for safety. */
     private inner class AudioPlaybackThread : Thread("AudioPlayback") {
-        // Sized for bulk transfer: fill AudioTrack deeply per wake on constrained AAOS
-        private val mediaTempBuffer = ByteArray(playbackChunkSize * 20)
-        private val navTempBuffer = ByteArray(playbackChunkSize * 20)
+        // Nav temp buffer (sized for max nav format: 48kHz stereo, 100ms bulk)
+        private val navTempBuffer = ByteArray(audioConfig.sampleRate * 2 * 2 / 10)
 
-        // Residual tracking for partial WRITE_NON_BLOCKING returns.
-        // Per Android docs, non-blocking write may return fewer bytes than requested
-        // when the AudioTrack's internal buffer is partially full. Unwritten bytes
-        // are retried on the next loop iteration to prevent audio discontinuities.
-        private var mediaResidualOffset = 0
-        private var mediaResidualCount = 0
+        // Residual tracking for nav partial WRITE_NON_BLOCKING returns
         private var navResidualOffset = 0
         private var navResidualCount = 0
 
@@ -717,131 +773,173 @@ class DualStreamAudioManager(
                 try {
                     var didWork = false
 
-                    mediaBuffer?.let { buffer ->
-                        mediaTrack?.let { track ->
-                            if (track.playState == AudioTrack.PLAYSTATE_PLAYING || mediaPendingPlay) {
-                                val currentFillMs = buffer.fillLevelMs()
+                    // === Media: process all pool slots ===
+                    val slotsSnapshot: List<MediaSlot>
+                    val currentActive: MediaSlot?
+                    synchronized(lock) {
+                        slotsSnapshot = mediaSlots.values.toList()
+                        currentActive = activeMediaSlot
+                    }
 
-                                // Pre-fill before first playback
-                                if (!mediaStarted) {
-                                    if (currentFillMs < prefillThresholdMs) return@let
-                                    mediaStarted = true
-                                    if (mediaPendingPlay) {
-                                        // Pre-load AudioTrack buffer while STOPPED/PAUSED
-                                        // before play() so AudioFlinger finds data on first pull
-                                        var preloaded = 0
-                                        while (buffer.fillLevelMs() > minBufferLevelMs) {
-                                            val avail = buffer.availableForRead()
-                                            if (avail <= 0) break
-                                            val bytesRead = buffer.read(
-                                                mediaTempBuffer, 0,
-                                                minOf(avail, mediaTempBuffer.size),
-                                            )
-                                            if (bytesRead <= 0) break
-                                            val written = track.write(
-                                                mediaTempBuffer, 0, bytesRead,
-                                                AudioTrack.WRITE_NON_BLOCKING,
-                                            )
-                                            if (written <= 0) break
-                                            windowMediaPlayed.addAndGet(written.toLong())
-                                            preloaded += written
-                                            if (written < bytesRead) {
-                                                mediaResidualOffset = written
-                                                mediaResidualCount = bytesRead - written
-                                                break
-                                            }
+                    for (slot in slotsSnapshot) {
+                        val track = slot.track ?: continue
+                        val isActive = slot === currentActive
+                        if (track.playState != AudioTrack.PLAYSTATE_PLAYING &&
+                            !slot.pendingPlay && !slot.draining
+                        ) continue
+
+                        val buffer = slot.buffer
+                        val currentFillMs = buffer.fillLevelMs()
+                        val effectiveMinBufMs = if (slot.draining) 0 else minBufferLevelMs
+
+                        // Pre-fill before first playback (active slot only)
+                        if (!slot.started) {
+                            if (isActive) {
+                                if (currentFillMs < prefillThresholdMs) continue
+                                slot.started = true
+                                if (slot.pendingPlay) {
+                                    var preloaded = 0
+                                    while (buffer.fillLevelMs() > effectiveMinBufMs) {
+                                        val avail = buffer.availableForRead()
+                                        if (avail <= 0) break
+                                        val bytesRead = buffer.read(
+                                            slot.tempBuffer, 0,
+                                            minOf(avail, slot.tempBuffer.size),
+                                        )
+                                        if (bytesRead <= 0) break
+                                        val written = track.write(
+                                            slot.tempBuffer, 0, bytesRead,
+                                            AudioTrack.WRITE_NON_BLOCKING,
+                                        )
+                                        if (written <= 0) break
+                                        windowMediaPlayed.addAndGet(written.toLong())
+                                        preloaded += written
+                                        if (written < bytesRead) {
+                                            slot.residualOffset = written
+                                            slot.residualCount = bytesRead - written
+                                            break
                                         }
-                                        track.play()
-                                        mediaPendingPlay = false
-                                        mediaUnderruns = track.underrunCount
                                     }
-                                    log(
-                                        "[AUDIO] Media pre-fill complete: " +
-                                            "${currentFillMs}ms buffered, starting playback"
-                                    )
+                                    track.play()
+                                    slot.pendingPlay = false
+                                    slot.underruns = track.underrunCount
                                 }
+                                log(
+                                    "[AUDIO] Media pre-fill complete " +
+                                        "(${slot.format.sampleRate}Hz/${slot.format.channelCount}ch): " +
+                                        "${currentFillMs}ms buffered, starting playback",
+                                )
+                            } else if (slot.draining) {
+                                // Draining slot with no data: complete immediately
+                                if (buffer.availableForRead() == 0 && slot.residualCount == 0) {
+                                    slot.draining = false
+                                    try {
+                                        if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause()
+                                    } catch (_: Exception) {}
+                                    log("[AUDIO] Drain complete (${slot.format.sampleRate}Hz), track paused (empty)")
+                                    continue
+                                }
+                            } else {
+                                continue
+                            }
+                        }
 
-                                // Retry residual from prior partial WRITE_NON_BLOCKING
-                                if (mediaResidualCount > 0) {
+                        // Retry residual from prior partial WRITE_NON_BLOCKING
+                        if (slot.residualCount > 0) {
+                            val written = track.write(
+                                slot.tempBuffer, slot.residualOffset,
+                                slot.residualCount, AudioTrack.WRITE_NON_BLOCKING,
+                            )
+                            if (written < 0) {
+                                slot.residualCount = 0
+                                handleTrackError("MEDIA", written, slot)
+                                continue
+                            }
+                            if (written > 0) {
+                                windowMediaPlayed.addAndGet(written.toLong())
+                                slot.residualOffset += written
+                                slot.residualCount -= written
+                                didWork = true
+                            }
+                        }
+
+                        // Skip new reads while residual pending or below min buffer
+                        if (slot.residualCount > 0 || currentFillMs <= effectiveMinBufMs) {
+                            if (slot.draining && buffer.availableForRead() == 0 && slot.residualCount == 0) {
+                                slot.draining = false
+                                try {
+                                    if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause()
+                                } catch (_: Exception) {}
+                                log("[AUDIO] Drain complete (${slot.format.sampleRate}Hz), track paused")
+                            }
+                            continue
+                        }
+
+                        val available = buffer.availableForRead()
+                        if (available > 0) {
+                            val bytesPerMs =
+                                slot.format.sampleRate * slot.format.channelCount * 2 / 1000
+                            val maxReadableMs = currentFillMs - effectiveMinBufMs
+                            val maxReadableBytes = maxReadableMs * bytesPerMs
+                            val toRead = minOf(
+                                available, slot.tempBuffer.size,
+                                maxReadableBytes.coerceAtLeast(0),
+                            )
+
+                            if (toRead > 0) {
+                                val bytesRead = buffer.read(slot.tempBuffer, 0, toRead)
+                                if (bytesRead > 0) {
                                     val written = track.write(
-                                        mediaTempBuffer, mediaResidualOffset,
-                                        mediaResidualCount, AudioTrack.WRITE_NON_BLOCKING,
+                                        slot.tempBuffer, 0, bytesRead,
+                                        AudioTrack.WRITE_NON_BLOCKING,
                                     )
                                     if (written < 0) {
-                                        mediaResidualCount = 0
-                                        handleTrackError("MEDIA", written)
-                                        return@let
+                                        handleTrackError("MEDIA", written, slot)
+                                        continue
                                     }
                                     if (written > 0) {
                                         windowMediaPlayed.addAndGet(written.toLong())
-                                        mediaResidualOffset += written
-                                        mediaResidualCount -= written
-                                        didWork = true
                                     }
-                                }
-
-                                // Maintain minimum buffer to absorb jitter;
-                                // also skip new reads while residual is pending (AudioTrack full)
-                                if (mediaResidualCount > 0 || currentFillMs <= minBufferLevelMs) return@let
-
-                                val available = buffer.availableForRead()
-                                if (available > 0) {
-                                    val bytesPerMs =
-                                        (mediaFormat?.sampleRate ?: audioConfig.sampleRate) *
-                                            (mediaFormat?.channelCount ?: 2) * 2 / 1000
-                                    val maxReadableMs = currentFillMs - minBufferLevelMs
-                                    val maxReadableBytes = maxReadableMs * bytesPerMs
-                                    val toRead = minOf(available, mediaTempBuffer.size, maxReadableBytes.coerceAtLeast(0))
-
-                                    if (toRead > 0) {
-                                        val bytesRead = buffer.read(mediaTempBuffer, 0, toRead)
-                                        if (bytesRead > 0) {
-                                            val written =
-                                                track.write(
-                                                    mediaTempBuffer,
-                                                    0,
-                                                    bytesRead,
-                                                    AudioTrack.WRITE_NON_BLOCKING,
-                                                )
-                                            if (written < 0) {
-                                                handleTrackError("MEDIA", written)
-                                                return@let
-                                            }
-                                            if (written > 0) {
-                                                windowMediaPlayed.addAndGet(written.toLong())
-                                            }
-                                            if (written < bytesRead) {
-                                                mediaResidualOffset = written
-                                                mediaResidualCount = bytesRead - written
-                                                windowMediaResiduals.incrementAndGet()
-                                            }
-                                            if (written > 0) didWork = true
-                                        }
+                                    if (written < bytesRead) {
+                                        slot.residualOffset = written
+                                        slot.residualCount = bytesRead - written
+                                        windowMediaResiduals.incrementAndGet()
                                     }
-                                }
-
-                                val underruns = track.underrunCount
-                                if (underruns > mediaUnderruns) {
-                                    val newUnderruns = underruns - mediaUnderruns
-                                    mediaUnderruns = underruns
-                                    log(
-                                        "[AUDIO_UNDERRUN] Media underrun detected: " +
-                                            "+$newUnderruns (total: $underruns)",
-                                    )
-
-                                    // Recovery: If many underruns and buffer critically low, reset pre-fill
-                                    if (newUnderruns >= underrunRecoveryThreshold && buffer.fillLevelMs() < 50) {
-                                        mediaStarted = false
-                                        log(
-                                            "[AUDIO_RECOVERY] Resetting media pre-fill due to " +
-                                                "$newUnderruns underruns, buffer=${buffer.fillLevelMs()}ms",
-                                        )
-                                    }
+                                    if (written > 0) didWork = true
                                 }
                             }
                         }
+
+                        // Underrun detection
+                        val underruns = track.underrunCount
+                        if (underruns > slot.underruns) {
+                            val newUnderruns = underruns - slot.underruns
+                            slot.underruns = underruns
+                            log(
+                                "[AUDIO_UNDERRUN] Media underrun " +
+                                    "(${slot.format.sampleRate}Hz): +$newUnderruns (total: $underruns)",
+                            )
+                            if (newUnderruns >= underrunRecoveryThreshold && buffer.fillLevelMs() < 50) {
+                                slot.started = false
+                                log(
+                                    "[AUDIO_RECOVERY] Resetting media pre-fill " +
+                                        "(${slot.format.sampleRate}Hz): $newUnderruns underruns, " +
+                                        "buffer=${buffer.fillLevelMs()}ms",
+                                )
+                            }
+                        }
+
+                        // Check drain completion after processing
+                        if (slot.draining && buffer.availableForRead() == 0 && slot.residualCount == 0) {
+                            slot.draining = false
+                            try {
+                                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause()
+                            } catch (_: Exception) {}
+                            log("[AUDIO] Drain complete (${slot.format.sampleRate}Hz), track paused")
+                        }
                     }
 
+                    // === Navigation: single track (unchanged) ===
                     navBuffer?.let { buffer ->
                         navTrack?.let { track ->
                             if (track.playState == AudioTrack.PLAYSTATE_PLAYING || navPendingPlay) {
@@ -981,25 +1079,50 @@ class DualStreamAudioManager(
                         val nRes = windowNavResiduals.getAndSet(0)
                         val zf = windowZeroFiltered.getAndSet(0)
 
-                        val mFill = mediaBuffer?.fillLevelMs() ?: 0
-                        val nFill = navBuffer?.fillLevelMs() ?: 0
-                        val mOvf = (mediaBuffer?.overflowCount ?: 0) - prevMediaOverflow
-                        val nOvf = (navBuffer?.overflowCount ?: 0) - prevNavOverflow
-                        val mUrun = mediaUnderruns - prevMediaUnderruns
-                        val nUrun = navUnderruns - prevNavUnderruns
-
-                        prevMediaOverflow = mediaBuffer?.overflowCount ?: 0
-                        prevNavOverflow = navBuffer?.overflowCount ?: 0
-                        prevMediaUnderruns = mediaUnderruns
-                        prevNavUnderruns = navUnderruns
-
+                        // Media: per-slot stats
+                        val statsActive = activeMediaSlot
+                        var mOvf = 0
+                        var mUrun = 0
                         val sb = StringBuilder()
                         sb.append("Media[Rx:").append(mRx)
                             .append(" Play:").append(mPlay / 1024).append("KB")
-                            .append(" Buf:").append(mFill).append("ms")
-                            .append(" Ovf:").append(mOvf)
+
+                        if (slotsSnapshot.isNotEmpty()) {
+                            sb.append(" active:")
+                                .append(statsActive?.format?.sampleRate ?: "none").append("Hz")
+                            for (slot in slotsSnapshot) {
+                                val fill = slot.buffer.fillLevelMs()
+                                val state = when {
+                                    slot === statsActive -> "ACTIVE"
+                                    slot.draining -> "DRAIN"
+                                    else -> "IDLE"
+                                }
+                                sb.append(" ").append(slot.format.sampleRate).append("Hz:")
+                                    .append(fill).append("ms(").append(state).append(")")
+
+                                val ovfDelta = slot.buffer.overflowCount - slot.prevOverflow
+                                slot.prevOverflow = slot.buffer.overflowCount
+                                mOvf += ovfDelta
+
+                                val urunDelta = slot.underruns - slot.prevUnderruns
+                                slot.prevUnderruns = slot.underruns
+                                mUrun += urunDelta
+                            }
+                        } else {
+                            sb.append(" Buf:0ms")
+                        }
+
+                        sb.append(" Ovf:").append(mOvf)
                             .append(" Urun:").append(mUrun)
                         if (mRes > 0) sb.append(" Res:").append(mRes)
+
+                        // Nav stats (unchanged)
+                        val nFill = navBuffer?.fillLevelMs() ?: 0
+                        val nOvf = (navBuffer?.overflowCount ?: 0) - prevNavOverflow
+                        val nUrun = navUnderruns - prevNavUnderruns
+                        prevNavOverflow = navBuffer?.overflowCount ?: 0
+                        prevNavUnderruns = navUnderruns
+
                         sb.append("] Nav[Rx:").append(nRx)
                             .append(" Play:").append(nPlay / 1024).append("KB")
                             .append(" Buf:").append(nFill).append("ms")
@@ -1026,25 +1149,30 @@ class DualStreamAudioManager(
         private fun handleTrackError(
             streamType: String,
             errorCode: Int,
+            slot: MediaSlot? = null,
         ) {
             when (errorCode) {
                 AudioTrack.ERROR_DEAD_OBJECT -> {
                     log("[AUDIO] $streamType AudioTrack dead, releasing for recreation")
                     synchronized(lock) {
-                        when (streamType) {
-                            "MEDIA" -> {
-                                try { mediaTrack?.release() } catch (_: Exception) {}
-                                mediaTrack = null
-                                mediaFormat = null
-                                mediaStarted = false
-                                mediaPendingPlay = false
-                            }
-                            "NAV" -> {
-                                try { navTrack?.release() } catch (_: Exception) {}
-                                navTrack = null
-                                navFormat = null
-                                navStarted = false
-                                navPendingPlay = false
+                        if (slot != null) {
+                            // Pool slot: null track, leave in pool for recreation on next activation
+                            try { slot.track?.release() } catch (_: Exception) {}
+                            slot.track = null
+                            slot.started = false
+                            slot.pendingPlay = false
+                            slot.draining = false
+                            slot.residualCount = 0
+                        } else {
+                            // NAV path (unchanged)
+                            when (streamType) {
+                                "NAV" -> {
+                                    try { navTrack?.release() } catch (_: Exception) {}
+                                    navTrack = null
+                                    navFormat = null
+                                    navStarted = false
+                                    navPendingPlay = false
+                                }
                             }
                         }
                     }

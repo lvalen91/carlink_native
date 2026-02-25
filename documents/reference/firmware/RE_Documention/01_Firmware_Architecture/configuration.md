@@ -440,68 +440,179 @@ Offset  Size  Field
 0x14    N     JSON payload (null-terminated)
 ```
 
-**NaviJSON Payload Fields:**
+**NaviJSON Payload Fields (Live-Capture Verified Feb 2026):**
 
-| Field | Type | Description | Example |
-|-------|------|-------------|---------|
-| `NaviStatus` | int | Navigation state: 0=inactive, 1=active, 2=calculating | `1` |
-| `NaviTimeToDestination` | int | ETA in seconds | `480` (8 minutes) |
-| `NaviDestinationName` | string | Destination name | `"Speedway"` |
-| `NaviDistanceToDestination` | int | Total distance in meters | `6124` |
-| `NaviAPPName` | string | Navigation app name | `"Apple Maps"` |
-| `NaviRemainDistance` | int | Distance to next maneuver (meters) | `26` |
-| `NaviRoadName` | string | Current/next road name | `"Farrior Dr"` |
-| `NaviOrderType` | int | Turn order in route | `1` |
-| `NaviManeuverType` | int | Maneuver type code | `11` (start) |
+| Field | Type | Observed Values | Description |
+|-------|------|-----------------|-------------|
+| `NaviStatus` | int | 0, 1 | Navigation state: 0=inactive/flush, 1=active |
+| `NaviTimeToDestination` | int | 1200, 1260 | ETA in seconds |
+| `NaviDestinationName` | string | `"Lyn Ary Park"` | Destination name |
+| `NaviDistanceToDestination` | int | 18952, 19097 | Total distance in meters |
+| `NaviAPPName` | string | `"Apple Maps"` | Navigation app name |
+| `NaviRemainDistance` | int | 0–484 | Distance to next maneuver (meters) |
+| `NaviRoadName` | string | `"Elmore Rd"` | Extracted from `ManeuverDescription` (see note) |
+| `NaviOrderType` | int | 6, 16 | Turn order type (enum, NOT 0–6 as previously assumed) |
+| `NaviManeuverType` | int | 2, 11, 28, 29 | CPManeuverType 0–53 (see Table 15-16) |
+| `NaviTurnAngle` | int | 0, 2 | Enum/type value, NOT degrees (=0 for roundabouts, =2 for right turns) |
+| `NaviTurnSide` | int | 0, 2 | Driving side (0=RHD, 1=LHD, 2=observed but undocumented). =0 for all roundabouts on US route. |
+| `NaviRoundaboutExit` | int | 1, 2 | Roundabout exit number 1–19 (only sent for roundabout maneuvers) |
 
-**Example Payloads (from capture):**
+**IMPORTANT — Fields NOT forwarded by adapter (live-capture confirmed):**
+- `NaviJunctionType` — NEVER sent in any observed message. Always absent from JSON.
+- `NaviTurnAngle` — NOT sent for roundabout maneuvers (only for regular turns).
+- `JunctionElementAngle` / `JunctionElementExitAngle` — stripped by adapter (see Data Loss section).
+- `AfterManeuverRoadName` — stripped.
+- Lane guidance data — stripped.
 
-Route Status Update:
+**NaviRoadName Duplication Bug:** The adapter firmware duplicates `NaviRoadName` in the JSON output:
 ```json
-{"NaviStatus":1,"NaviTimeToDestination":480,"NaviDestinationName":"Speedway","NaviDistanceToDestination":6124,"NaviAPPName":"Apple Maps"}
+{"NaviRoadName":"Elmore Rd","NaviRoadName":"Elmore Rd","NaviOrderType":16,"NaviRoundaboutExit":1,"NaviManeuverType":28}
+```
+This is a firmware bug — the key appears twice with the same value.
+
+**Example Payloads (Live Capture Feb 2026 — Lyn Ary Park Route):**
+
+Route Status Update (from 0x5201):
+```json
+{"NaviStatus":1,"NaviRemainDistance":245}
 ```
 
-Turn-by-Turn Maneuver:
+Roundabout Maneuver (exit 1, from ManeuverIdx advance):
 ```json
-{"NaviRoadName":"Farrior Dr","NaviRoadName":"Start on Farrior Dr","NaviOrderType":1,"NaviManeuverType":11}
+{"NaviRoadName":"Elmore Rd","NaviRoadName":"Elmore Rd","NaviOrderType":16,"NaviRoundaboutExit":1,"NaviManeuverType":28}
 ```
 
-Distance Update:
+Right Turn Maneuver (from ManeuverIdx advance):
 ```json
-{"NaviRemainDistance":26}
+{"NaviRoadName":"De Armoun Rd","NaviRoadName":"De Armoun Rd","NaviOrderType":6,"NaviTurnAngle":2,"NaviTurnSide":2,"NaviManeuverType":2}
 ```
 
-**Data Flow (Capture Verified):**
+Distance Update (~1/sec):
+```json
+{"NaviRemainDistance":239}
+```
+
+**Data Flow (Live-Capture Verified Feb 2026):**
 ```
 iPhone (Apple Maps)
     │
     ├─► iAP2 StartRouteGuidanceUpdate (0x5200) ◄── Adapter requests TBT data
     │
-    ├─► iAP2 RouteGuidanceUpdate (0x5201) ──────► Route status updates
+    ├─► iAP2 RouteGuidanceUpdate (0x5201) ──────► Route status updates (~1/sec)
+    │        Contains: distance, ETA, route state
+    │        Triggers: ManeuverIdx advance when current maneuver passed
     │
-    └─► iAP2 RouteGuidanceManeuverUpdate (0x5202) ► Turn-by-turn instructions
+    └─► iAP2 RouteGuidanceManeuverUpdate (0x5202) ► Full maneuver list (burst on route start)
+             Contains: ManeuverDescription, AfterManeuverRoadName, DrivingSide,
+                       JunctionType, JunctionElementAngle, JunctionElementExitAngle
+             ⚠ Adapter extracts ONLY: ManeuverDescription → NaviRoadName
+             ⚠ JunctionElement* fields trigger iAP2UpdateEntity.cpp:314 ASSERT and are DROPPED
             │
             ▼
     Adapter (iAP2RouteGuidanceEngine)
             │
-            ├─► _SendNaviJSON() ─── Converts iAP2 to JSON
+            ├─► Receives 0x5202 burst: stores ManeuverDescription[] indexed by ManeuverIdx
+            │       Log: "use ManeuverDescription as roadName: Elmore Rd"
+            │
+            ├─► On 0x5201 with ManeuverIdx change:
+            │       Log: "update ManeuverIdx: 1"
+            │       Emits TWO _SendNaviJSON calls:
+            │         1. {"NaviRemainDistance": N}  (distance to new maneuver)
+            │         2. {"NaviRoadName":..., "NaviManeuverType":..., ...}  (maneuver fields)
+            │
+            ├─► On 0x5201 distance-only updates:
+            │       Emits: {"NaviRemainDistance": N}  (countdown ~1/sec)
+            │
+            └─► _SendNaviJSON() ─── Writes JSON to USB MEDIA_DATA (0x2A, subtype 200)
             │
             ▼
-    USB Message Type 0x2A (DashBoard_DATA)
+    USB Message Type 0x2A (MEDIA_DATA, subtype NAVI_JSON=200)
             │
             ▼
     Host Application
 ```
 
-**Adapter Log Evidence:**
+**Data Loss Analysis (Live-Capture Evidence Feb 2026):**
+
+The adapter's `iAP2RouteGuidanceEngine` processes 0x5202 messages through `iAP2UpdateEntity.cpp`.
+When it encounters iAP2 dictionary/group field types it doesn't understand, it triggers:
+```
+### [ASSERT] iAP2UpdateEntity.cpp:314 "", "dict"
+```
+and silently drops the data. These asserts were observed on multiple 0x5202 maneuver messages
+during route setup. The dropped fields likely include `JunctionElementAngle` and
+`JunctionElementExitAngle` — structured iAP2 group types containing per-spoke angular data.
+
+**Impact on roundabout rendering (confirmed with multi-roundabout capture Feb 2026):**
+The adapter forwards only the exit ordinal (NaviRoundaboutExit + NaviManeuverType) with NO
+junction geometry. In a capture of 12 consecutive roundabouts on W Main St, ALL had
+turnAngle=0, turnSide=0, junction=0. Only CPTypes 28 (exit 1) and 29 (exit 2) were observed,
+both mapping to the same AAOS `Maneuver.TYPE=34` (ROUNDABOUT_ENTER_AND_EXIT_CCW).
+The AAOS cluster displayed wrong icons for every roundabout because:
+1. No exit angle data → AAOS picks a generic glyph per exit number
+2. "Exit 2" on a 4-spoke roundabout (~180° straight through) renders identically to
+   "exit 2" on a 6-spoke roundabout (~120° partial turn)
+3. The iPhone sends `paramCount=21` per 0x5201 and `LaneGuidance` data — all stripped
+
+**Adapter Log Evidence (Live Feb 2026):**
 ```
 [iAP2Engine] Enable iAP2 iAP2RouteGuidanceEngine Capability
 [iAP2Engine] Send_changes:StartRouteGuidanceUpdate(0x5200), msgLen: 18
 [CiAP2Session_CarPlay] Message from iPhone: 0x5201 RouteGuidanceUpdate
 [CiAP2Session_CarPlay] Message from iPhone: 0x5202 RouteGuidanceManeuverUpdate
-[iAP2RouteGuidanceEngine] use ManeuverDescription as roadName: Start on Farrior Dr
+### [ASSERT] iAP2UpdateEntity.cpp:314 "", "dict"
+### [ASSERT] iAP2UpdateEntity.cpp:314 "", "dict"
+[iAP2RouteGuidanceEngine] use ManeuverDescription as roadName: Elmore Rd
 [iAP2RouteGuidanceEngine] _SendNaviJSON:
+{"NaviRoadName":"Elmore Rd","NaviRoadName":"Elmore Rd","NaviOrderType":16,"NaviRoundaboutExit":1,"NaviManeuverType":28}
+[iAP2RouteGuidanceEngine] update ManeuverIdx: 1
 ```
+
+**Route Maneuver List (Live Capture — Lyn Ary Park Route, 20 maneuvers):**
+The iPhone sent 20 0x5202 messages in a ~200ms burst at route start:
+```
+Idx  ManeuverDescription              CPType
+0    Proceed to the route             11 (proceedToRoute)
+1    Elmore Rd                        28 (roundaboutExit1)
+2    De Armoun Rd                      2 (right)
+3    Brayton Dr                        ? (not observed at runtime)
+4    Seward Hwy North                  ?
+5    Seward Hwy North                  ?
+6    Merge onto 1 New Seward Hwy       ?
+7    E Northern Lights Blvd            ?
+8    Turnagain Pkwy                    ?
+9    Illiamna Ave                      ?
+10   Foraker Dr                        ?
+11   Foraker Dr                        ?
+12   Prepare to park your car          ?
+13   Prepare to park your car          ?
+14   Take a slight right turn          ?
+15   Take a left                       ?
+16   Take a left                       ?
+17   On your right: Lyn Ary Park       ?
+18   On your right: Lyn Ary Park       ?
+19   (empty)                           ?
+```
+
+**Route Maneuver List (Live Capture — W Main St Roundabout Route, 24 maneuvers):**
+12 of 24 maneuvers captured. ALL roundabouts, every one on W Main St:
+```
+Adapter  App Time   CPType  Exit  Road           Start Dist
+Idx 1    14:57:11   29      2     W 131st St     467m
+Idx 2    14:57:42   29      2     W Main St      1555m
+Idx 3    14:59:09   28      1     W Main St      1582m
+Idx 4    15:00:22   29      2     W Main St      310m
+Idx 5    15:00:39   29      2     W Main St      1198m
+Idx 6    15:01:36   29      2     W Main St      570m
+Idx 7    15:01:45   29      2     W Main St      272m
+Idx 8    15:02:18   29      2     W Main St      463m
+Idx 9    15:02:41   29      2     W Main St      347m
+Idx 10   15:03:31   29      2     W Main St      757m
+Idx 11   15:04:06   29      2     W Main St      741m
+Idx 12   15:05:19   29      2     E Main St      —
+```
+All had: turnAngle=0, turnSide=0, junction=0, NaviOrderType=16.
+iPhone sent paramCount=21 per 0x5201 (adapter forwards ~5 fields).
 
 **Requirements for Navigation Data:**
 1. Set `DashboardInfo` with bit 2 enabled (value 4, 5, 6, or 7)
