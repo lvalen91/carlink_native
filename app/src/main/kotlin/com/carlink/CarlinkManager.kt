@@ -968,7 +968,6 @@ class CarlinkManager(
 
                 // Start frame interval for CarPlay
                 // This periodic keyframe request keeps video streaming stable
-                // Protocol specifies FRAME command every 5 seconds during session
                 ensureFrameIntervalRunning()
 
                 // Enable GPS forwarding for CarPlay navigation (only if enabled in settings)
@@ -1525,7 +1524,7 @@ class CarlinkManager(
     }
 
     /**
-     * Ensures the periodic keyframe request is running for CarPlay connections.
+     * Ensures the periodic keyframe request is running for video projection sessions.
      *
      * Safe to call multiple times - will not create duplicate jobs.
      * Uses coroutines for better lifecycle management and error handling.
@@ -1539,9 +1538,9 @@ class CarlinkManager(
         val phoneType = currentPhoneType
         val jobActive = frameIntervalJob?.isActive == true
 
-        // Only for CarPlay (wired and wireless) - using 2s keyframe interval for faster recovery
+        // Only for CarPlay (wired/wireless) — AA does not use periodic keyframe requests
         if (phoneType != PhoneType.CARPLAY && phoneType != PhoneType.CARPLAY_WIRELESS) {
-            logDebug("[FRAME_INTERVAL] Skipping - phoneType=$phoneType (not CarPlay)", tag = Logger.Tags.VIDEO)
+            logDebug("[FRAME_INTERVAL] Skipping - phoneType=$phoneType (no video projection)", tag = Logger.Tags.VIDEO)
             return
         }
 

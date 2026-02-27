@@ -72,7 +72,9 @@ import com.carlink.logging.apply
 import com.carlink.logging.logError
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -123,8 +125,8 @@ internal fun LogsTabContent(
         }
 
     val loggingPreferences = remember { LoggingPreferences.getInstance(context) }
-    val isLoggingEnabled by loggingPreferences.loggingEnabledFlow.collectAsStateWithLifecycle(initialValue = true)
-    val currentLogLevel by loggingPreferences.logLevelFlow.collectAsStateWithLifecycle(initialValue = LogPreset.NORMAL)
+    val isLoggingEnabled by loggingPreferences.loggingEnabledFlow.collectAsStateWithLifecycle(initialValue = false)
+    val currentLogLevel by loggingPreferences.logLevelFlow.collectAsStateWithLifecycle(initialValue = LogPreset.SILENT)
 
     val isDebugBuild =
         remember {
@@ -333,23 +335,25 @@ internal fun LogsTabContent(
                                         return@LogFileItem
                                     }
 
-                                    // Flush pending writes before export to ensure complete data
-                                    fileLogManager.flush()
-
                                     pendingExportFile = file
                                     isExporting = true
 
-                                    try {
-                                        createDocumentLauncher.launch(file.name)
-                                    } catch (e: Exception) {
-                                        // Reset state if launcher fails (no activity to handle intent)
-                                        logError(
-                                            "[FILE_EXPORT] Failed to launch document picker: ${e.message}",
-                                            tag = "FILE_LOG",
-                                        )
-                                        Toast.makeText(context, "Cannot open file picker", Toast.LENGTH_SHORT).show()
-                                        pendingExportFile = null
-                                        isExporting = false
+                                    // Flush pending writes off main thread, then launch picker
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            fileLogManager.flush()
+                                        }
+                                        try {
+                                            createDocumentLauncher.launch(file.name)
+                                        } catch (e: Exception) {
+                                            logError(
+                                                "[FILE_EXPORT] Failed to launch document picker: ${e.message}",
+                                                tag = "FILE_LOG",
+                                            )
+                                            Toast.makeText(context, "Cannot open file picker", Toast.LENGTH_SHORT).show()
+                                            pendingExportFile = null
+                                            isExporting = false
+                                        }
                                     }
                                 },
                             )

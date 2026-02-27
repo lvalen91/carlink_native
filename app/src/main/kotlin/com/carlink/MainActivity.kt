@@ -40,12 +40,14 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.carlink.cluster.ClusterBindingState
 import com.carlink.logging.FileLogManager
+import com.carlink.logging.LoggingPreferences
 import com.carlink.navigation.NavigationStateManager
 import com.carlink.logging.LogPreset
 import com.carlink.logging.Logger
 import com.carlink.logging.apply
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
+import kotlinx.coroutines.flow.first
 import com.carlink.protocol.AdapterConfig
 import com.carlink.protocol.KnownDevices
 import com.carlink.ui.MainScreen
@@ -280,6 +282,19 @@ class MainActivity : ComponentActivity() {
         // Debug: NORMAL (standard logging)
         if (!isDebugBuild) {
             LogPreset.SILENT.apply()
+        }
+
+        // Auto-restore user's log preset and file logging from previous session.
+        // Must restore preset BEFORE enabling file logging — otherwise SILENT
+        // filters everything and the log file stays header-only.
+        CoroutineScope(Dispatchers.IO).launch {
+            val prefs = LoggingPreferences.getInstance(this@MainActivity)
+            val preset = prefs.logLevelFlow.first()
+            preset.apply()
+            val enabled = prefs.loggingEnabledFlow.first()
+            if (enabled) {
+                fileLogManager?.enable()
+            }
         }
 
         logInfo("Carlink Native starting - version $appVersion", tag = "MAIN")

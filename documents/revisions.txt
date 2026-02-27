@@ -148,3 +148,4 @@
 [81] :: New Nav Icons
 [82] :: Instr Cluster Nav Code Cleanup
 [83] :: Icon Thrashing fix, and more code cleanup
+[84] :: Log File export fixes

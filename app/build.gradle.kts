@@ -7,12 +7,20 @@ android {
     namespace = "com.carlink"
     compileSdk = 36
 
+//###############################################
+//###############################################
+//###############################################
+
     defaultConfig {
         applicationId = "zeno.carlink"
         minSdk = 32
         targetSdk = 36
-        versionCode = 83
+        versionCode = 84
         versionName = "1.0.0"
+
+//###############################################
+//###############################################
+//###############################################
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -66,7 +66,6 @@ enum class LogPreset(
 fun LogPreset.apply() {
     when (this) {
         LogPreset.SILENT -> {
-            Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, false)
             Logger.setLogLevel(Logger.LogLevel.INFO, false)
             Logger.setLogLevel(Logger.LogLevel.WARN, false)
@@ -76,7 +75,6 @@ fun LogPreset.apply() {
         }
 
         LogPreset.MINIMAL -> {
-            Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, false)
             Logger.setLogLevel(Logger.LogLevel.INFO, false)
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
@@ -90,7 +88,6 @@ fun LogPreset.apply() {
         }
 
         LogPreset.NORMAL -> {
-            Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, false)
             Logger.setLogLevel(Logger.LogLevel.INFO, true)
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
@@ -101,7 +98,6 @@ fun LogPreset.apply() {
         }
 
         LogPreset.DEBUG -> {
-            Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, true)
             Logger.setLogLevel(Logger.LogLevel.INFO, true)
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
@@ -112,7 +108,6 @@ fun LogPreset.apply() {
         }
 
         LogPreset.PERFORMANCE -> {
-            Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, false)
             Logger.setLogLevel(Logger.LogLevel.INFO, true)
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
@@ -129,7 +124,6 @@ fun LogPreset.apply() {
         }
 
         LogPreset.RX_MESSAGES -> {
-            Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, true)
             Logger.setLogLevel(Logger.LogLevel.INFO, true)
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
@@ -139,7 +133,6 @@ fun LogPreset.apply() {
         }
 
         LogPreset.VIDEO_ONLY -> {
-            Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, true)
             Logger.setLogLevel(Logger.LogLevel.INFO, true)
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
@@ -161,7 +154,6 @@ fun LogPreset.apply() {
         }
 
         LogPreset.AUDIO_ONLY -> {
-            Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, true)
             Logger.setLogLevel(Logger.LogLevel.INFO, true)
             Logger.setLogLevel(Logger.LogLevel.WARN, true)
@@ -183,7 +175,6 @@ fun LogPreset.apply() {
         }
 
         LogPreset.PIPELINE_DEBUG -> {
-            Logger.setLogEnabled(true)
             Logger.setLogLevel(Logger.LogLevel.DEBUG, true)
             Logger.setLogLevel(Logger.LogLevel.INFO, true)
             Logger.setLogLevel(Logger.LogLevel.WARN, true)

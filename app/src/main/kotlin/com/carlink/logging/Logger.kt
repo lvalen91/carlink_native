@@ -89,6 +89,7 @@ object Logger {
 
     private val enabledTags = ConcurrentHashMap<String, Boolean>()
     private val listeners = CopyOnWriteArrayList<LogListener>()
+    @Volatile
     private var minLevel = Level.DEBUG
 
     init {
@@ -115,17 +116,10 @@ object Logger {
         minLevel = level
     }
 
-    private var logEnabled = true
     private val logLevelEnabled =
         ConcurrentHashMap<LogLevel, Boolean>().apply {
             LogLevel.entries.forEach { put(it, true) }
         }
-
-    fun setLogEnabled(enabled: Boolean) {
-        logEnabled = enabled
-    }
-
-    fun isLogEnabled(): Boolean = logEnabled
 
     fun setLogLevel(
         level: LogLevel,
@@ -188,17 +182,19 @@ object Logger {
             Tags.USB_RAW,
             Tags.AUDIO_DEBUG,
             Tags.ERROR_RECOVERY,
+            Tags.NAVI,
+            Tags.CLUSTER,
+            Tags.ICON_SHIM,
+            Tags.VIDEO_USB,
+            Tags.VIDEO_RING_BUFFER,
+            Tags.VIDEO_CODEC,
+            Tags.VIDEO_SURFACE,
+            Tags.VIDEO_PERF,
+            Tags.AUDIO_PERF,
         ).forEach { tag ->
             enabledTags[tag] = true
         }
     }
-
-    fun getLoggingStatus(): Map<String, Any> =
-        mapOf(
-            "enabled" to logEnabled,
-            "levels" to logLevelEnabled.toMap(),
-            "tags" to enabledTags.toMap(),
-        )
 
     fun addListener(listener: LogListener) {
         listeners.add(listener)

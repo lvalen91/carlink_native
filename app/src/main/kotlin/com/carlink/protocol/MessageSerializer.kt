@@ -246,8 +246,13 @@ object MessageSerializer {
     ): ByteArray {
         val actualSyncTime = syncTime ?: (System.currentTimeMillis() / 1000)
 
-        // Android Auto Resolution Selection Algorithm
-        // AA supports only 3 resolutions: 800x480, 1280x720, 1920x1080
+        // Android Auto H.264 stream resolution selection.
+        // Google AA only supports 3 fixed H.264 resolutions: 800x480, 1280x720, 1920x1080.
+        // androidAutoSizeW/H must match one of these so the phone fills the frame completely.
+        // The adapter forwards the H.264 stream as-is (no encode/decode). The host app then
+        // stretches the frame to fill the display surface. Sending the actual display
+        // dimensions (e.g. 2400x960) causes the phone to letterbox a wide UI inside the
+        // narrower H.264 frame, which is worse than the slight stretch from 16:9→2.5:1.
         val (aaWidth, aaHeight) =
             when {
                 config.width >= 1920 && config.height >= 1080 -> Pair(1920, 1080)

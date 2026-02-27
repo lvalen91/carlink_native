@@ -44,7 +44,7 @@ class LoggingPreferences private constructor(
 
     val loggingEnabledFlow: Flow<Boolean> =
         dataStore.data.map { preferences ->
-            preferences[KEY_LOGGING_ENABLED] ?: true
+            preferences[KEY_LOGGING_ENABLED] ?: false
         }
 
     suspend fun setLogLevel(level: LogPreset) {

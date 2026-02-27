@@ -13,12 +13,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
 /** Persistent log storage with 5MB rotation, 7-day retention, and async writes. */
 @Suppress("StaticFieldLeak")
-class FileLogManager(
+class FileLogManager internal constructor(
     context: Context,
     private val sessionPrefix: String = "carlink",
     private val appVersion: String = "1.0.0",
@@ -58,6 +59,7 @@ class FileLogManager(
     private val queueSize = AtomicInteger(0)
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val isEnabled = AtomicBoolean(false)
+    private val lastDropWarningMs = AtomicLong(0L)
     private val dateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US)
         .withZone(ZoneId.systemDefault())
     private val fileDateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss", Locale.US)
@@ -91,6 +93,7 @@ class FileLogManager(
         Logger.addListener(this)
         cleanOldLogs()
 
+        android.util.Log.i("CARLINK", "[FILE_LOG] Enabled — file: ${currentLogFile?.name}")
         logInfo("File logging enabled: ${currentLogFile?.name}", tag = Logger.Tags.FILE_LOG)
     }
 
@@ -105,16 +108,18 @@ class FileLogManager(
             closeWriterLocked()
         }
 
+        android.util.Log.i("CARLINK", "[FILE_LOG] Disabled — writer closed")
         logInfo("File logging disabled", tag = Logger.Tags.FILE_LOG)
     }
 
     fun release() {
+        android.util.Log.i("CARLINK", "[FILE_LOG] Releasing — shutting down executor")
         disable()
         executor.shutdown()
         try {
             if (!executor.awaitTermination(SHUTDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 executor.shutdownNow()
-                android.util.Log.w("CARLINK", "FileLogManager executor did not terminate gracefully")
+                android.util.Log.w("CARLINK", "[FILE_LOG] Executor did not terminate gracefully")
             }
         } catch (e: InterruptedException) {
             executor.shutdownNow()
@@ -166,7 +171,15 @@ class FileLogManager(
         timestamp: Long,
     ) {
         if (!isEnabled.get()) return
-        if (queueSize.get() >= MAX_QUEUE_SIZE) return  // backpressure: drop under flood
+        if (queueSize.get() >= MAX_QUEUE_SIZE) {
+            // Throttled warning: at most once per 5s
+            val now = System.currentTimeMillis()
+            val last = lastDropWarningMs.get()
+            if (now - last >= 5000L && lastDropWarningMs.compareAndSet(last, now)) {
+                android.util.Log.w("CARLINK", "[FILE_LOG] Queue full ($MAX_QUEUE_SIZE) — dropping log messages")
+            }
+            return
+        }
 
         val formattedTime = dateFormat.format(Instant.ofEpochMilli(timestamp))
         val levelStr = level.name.first()
@@ -208,11 +221,12 @@ class FileLogManager(
                             closeWriterLocked()
                             createNewLogFileLocked()
                             writeHeaderLocked()
+                            android.util.Log.i("CARLINK", "[FILE_LOG] Rotated — new file: ${currentLogFile?.name}")
                         }
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("CARLINK", "Failed to flush log queue: ${e.message}")
+                android.util.Log.e("CARLINK", "[FILE_LOG] Failed to flush log queue: ${e.message}")
             }
         }
     }
@@ -265,7 +279,7 @@ class FileLogManager(
             currentWriter?.flush()
             currentWriter?.close()
         } catch (e: Exception) {
-            android.util.Log.w("CARLINK", "Writer close error: ${e.message}")
+            android.util.Log.w("CARLINK", "[FILE_LOG] Writer close error: ${e.message}")
         }
         currentWriter = null
     }
