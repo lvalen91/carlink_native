@@ -226,7 +226,7 @@ if (FastConnect && mac_matches(LastConnectedDevice)) {
 | `TtsPacketLen` | `TtsPacketLen` | 200-40000 | 200 | Nav voice USB bulk size |
 | `VrPacketLen` | `VrPacketLen` | 200-40000 | 200 | Siri mic USB bulk size |
 | `TtsVolumGain` | `TtsVolumGain` | 0-1 | 0 | Boost nav voice gain |
-| `VrVolumGain` | `VrVolumGain` | 0-1 | 0 | Boost call voice gain |
+| `VrVolumGain` | `VrVolumGain` | 0-1 | 0 | Boost VR (voice recognition) mic gain |
 
 ---
 

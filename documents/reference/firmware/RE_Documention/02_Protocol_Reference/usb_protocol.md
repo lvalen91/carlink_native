@@ -616,7 +616,7 @@ For the complete per-ID command listing, see `command_ids.md`. For per-command b
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `androidWorkMode` | int | Enable Android Auto daemon (0/1) - resets on disconnect |
+| `androidWorkMode` | int | Phone link daemon mode: 0=Idle, 1=AA, 2=CarLife, 3=Mirror, 4=HiCar, 5=ICCOA — resets to 0 on disconnect |
 | `androidAutoSizeW` | int | Android Auto video width (also in Display/Video above) |
 | `androidAutoSizeH` | int | Android Auto video height (also in Display/Video above) |
 
@@ -735,7 +735,7 @@ UPLOAD FILE Length Error!!!   - Size validation exists
 | `/tmp/gnss_info` | NMEA text | GPS data for CarPlay navigation -- see GnssData (0x29) section below for full pipeline |
 | `/tmp/carplay_mode` | Value | CarPlay mode setting |
 | `/tmp/manual_disconnect` | Flag | Manual disconnect trigger |
-| `/etc/android_work_mode` | 0 or 1 | **Critical**: Enables Android Auto daemon |
+| `/etc/android_work_mode` | 0-5 | **Critical**: Phone link daemon mode selector (0=Idle, 1=AA, 2=CarLife, 3=Mirror, 4=HiCar, 5=ICCOA) |
 | `/tmp/carlogo.png` | PNG data | Custom car logo (copied to `/etc/boa/images/`) |
 | `/tmp/hwfs.tar.gz` | Archive | **Auto-extracted to /tmp** via `tar -xvf` |
 | `/tmp/*Update.img` | Firmware | Triggers OTA update process |

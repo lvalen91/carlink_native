@@ -189,7 +189,7 @@ Audio/video buffer size in milliseconds. AppleCarPlay binary enforces a 500ms fl
 ## USB / Connection Settings
 
 ### AutoResetUSB
-**Type:** Toggle (0/1) | **Default:** 0
+**Type:** Toggle (0/1) | **Default:** 1
 
 | Value | Behavior |
 |-------|----------|
@@ -232,7 +232,7 @@ Consumer: `start_aoa.sh` → writes to `/sys/module/g_android_accessory/paramete
 | 1 | Compatible mode - longer ACK timeouts, smaller messages |
 
 ### WiredConnect
-**Type:** Toggle (0/1) | **Default:** 0
+**Type:** Toggle (0/1) | **Default:** 1
 
 | Value | Behavior |
 |-------|----------|
@@ -1112,7 +1112,7 @@ Host applications configure navigation video via BoxSettings JSON:
 
 | JSON Field | Type | Description |
 |------------|------|-------------|
-| `androidWorkMode` | int | Enable Android Auto daemon (0/1) |
+| `androidWorkMode` | int | Phone link daemon mode: 0=Idle, 1=AndroidAuto, 2=CarLife, 3=AndroidMirror, 4=HiCar, 5=ICCOA |
 
 ### Adapter to Host Fields **[Adapter→Host]**
 
@@ -1144,28 +1144,40 @@ Host applications configure navigation video via BoxSettings JSON:
 
 ---
 
-## AndroidWorkMode Deep Dive **[Android Auto only]**
+## AndroidWorkMode Deep Dive — 6-Mode Phone Link Daemon Selector
 
-### Critical Discovery (Dec 2025)
+### Overview
 
-`AndroidWorkMode` controls whether the adapter starts the Android Auto daemon. **This is a dynamic toggle, not a persistent setting.**
+`AndroidWorkMode` is a **multi-mode phone link daemon selector**, not a simple on/off toggle. Writing a value 0-5 to `/etc/android_work_mode` triggers `OnAndroidWorkModeChanged` in ARMadb-driver, which stops the current mode's daemon and starts the new one via `/script/phone_link_deamon.sh <ModeName> start/stop &`.
+
+### Mode Table
+
+| Value | Mode | Daemon Process | Start Method |
+|-------|------|---------------|-------------|
+| 0 | Idle / Disconnect | (kills running mode) | Direct |
+| 1 | AndroidAuto | `ARMAndroidAuto` + `hfpd` | `phone_link_deamon.sh AndroidAuto start &` |
+| 2 | CarLife | `CarLife` | `phone_link_deamon.sh CarLife start &` |
+| 3 | AndroidMirror | `ARMandroid_Mirror` | Direct fork/exec (not via script) |
+| 4 | HiCar | `ARMHiCar` + 9 shared libs | `phone_link_deamon.sh HiCar start &` |
+| 5 | ICCOA | `iccoa` | `phone_link_deamon.sh ICCOA start &` |
 
 ### Behavior
 
 | Event | AndroidWorkMode Value | Effect |
 |-------|----------------------|--------|
 | Host sends `android_work_mode=1` | `0 → 1` | `Start Link Deamon: AndroidAuto` |
-| Phone disconnects | `1 → 0` (firmware auto-reset) | Android Auto daemon stops |
-| Host reconnects | Must re-send `android_work_mode=1` | Daemon restarts |
+| Host sends `android_work_mode=4` | `1 → 4` | Stops AA, `Start Link Deamon: HiCar` |
+| Phone disconnects | `N → 0` (firmware auto-reset) | Running daemon stops |
+| Host reconnects | Must re-send mode value | Daemon restarts |
 
 ### How to Set via Host App
 
-**File Path:** `/etc/android_work_mode`
+**File Path:** `/etc/android_work_mode` (4-byte binary int, persistent)
 **Protocol:** `SendFile` (type 0x99) with 4-byte payload
 
 ```typescript
-// Example
-new SendBoolean(true, '/etc/android_work_mode')
+// CarLink sends mode 1 (AndroidAuto) — the only mode needed for this app
+new SendBoolean(true, '/etc/android_work_mode')  // maps to integer 1
 ```
 
 **Firmware Log Evidence:**
@@ -1189,6 +1201,8 @@ Start Link Deamon: AndroidAuto
 - `AndroidWorkMode` in riddle.conf: May show `1` if previously set
 - **Runtime state:** Always resets to `0` on phone disconnect
 - Host app must send on **every connection**, not just first time
+
+**CORRECTION (2026-02-28):** Previous version described AndroidWorkMode as a binary 0/1 toggle for Android Auto only. Binary analysis of ARMadb-driver confirms it is a 6-mode selector — format strings `/script/phone_link_deamon.sh %s start &` with mode names `ICCOA`, `CarLife`, `AndroidMirror` as standalone `.rodata` strings, plus `AndroidAuto` and `HiCar` resolved via DAT pointer table. Modes 2-5 are for other Carlinkit products sharing the same firmware codebase.
 
 ---
 
@@ -1790,7 +1804,7 @@ This section documents which configuration keys can be set via USB protocol mess
 | ChargeMode | /tmp/charge_mode | Charging behavior |
 | CustomBoxName | /etc/box_name | Device name |
 | AirPlay config | /etc/airplay.conf | AirPlay settings |
-| AndroidWorkMode | /etc/android_work_mode | AA daemon enable |
+| AndroidWorkMode | /etc/android_work_mode | Phone link daemon mode (0-5: Idle/AA/CarLife/Mirror/HiCar/ICCOA) |
 | CustomCarLogo | /etc/icon_*.png | Logo images |
 
 ---

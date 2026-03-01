@@ -65,7 +65,7 @@ It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
 | 9 | NeedKeyFrame | 0 | 0-1 | `autoRefresh` | Active IDR request on decode errors |
 | 44 | RepeatKeyframe | 0 | 0-1 | `RepeatKeyFrame` | Cached IDR resend on underrun |
 | 55 | SendEmptyFrame | 1 | 0-1 | `emptyFrame` | Timing packets during gaps |
-| 23 | VideoBitRate | 0 | 0-20 | `bitRate` | H.264 bitrate 0-20 (adaptive) |
+| 23 | VideoBitRate | 0 | 0-20 | `bitRate` | H.264 bitrate cap level: 0=auto (adaptive), 1-20=fixed cap. Mapped to bps in ARMadb-driver |
 | 14 | CustomFrameRate | 0 | 0-60 | `fps` | FPS override, 0=auto (~30) |
 | 25 | VideoResolutionWidth | 0 | 0-4096 | `resolutionWidth` | Video width override, 0=auto |
 | 24 | VideoResolutionHeight | 0 | 0-4096 | `resolutionHeight` | Video height override, 0=auto |
@@ -73,7 +73,7 @@ It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
 | 1 | MediaQuality | 1 | 0-1 | `mediaSound` | Audio sample rate: 0=44.1kHz, 1=48kHz |
 | 43 | MicType | 0 | 0-2 | `micType` | Mic: 0=car, 1=box, 2=phone |
 | 46 | MicMode | 0 | 0-4 | `MicMode` | WebRTC NS mode |
-| 13 | MicGainSwitch | 0 | 0-1 | `micGain` | Mic gain boost toggle |
+| 13 | MicGainSwitch | 0 | 0-1 | `micGain` | WebRTC AGC (automatic gain control): 0=AGC off, 1=AGC enabled. NOT simple analog gain |
 | 10 | EchoLatency | 320 | 20-2000 | `echoDelay` | Echo cancel delay; 320=sentinel |
 | 48 | MediaPacketLen | 200 | 200-20000 | `MediaPacketLen` | Media audio USB bulk size |
 | 49 | TtsPacketLen | 200 | 200-40000 | `TtsPacketLen` | TTS audio USB bulk size |
@@ -82,7 +82,7 @@ It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
 | 52 | VrVolumGain | 0 | 0-1 | `VrVolumGain` | VR volume boost (bool) |
 | 36 | CallQuality | 1 | 0-2 | `CallQuality` | Call quality: ==2 for high |
 | 37 | VoiceQuality | 1 | 0-2 | — | VR quality: ==2 for high |
-| 33 | NaviAudio | 0 | 0-2 | `NaviAudio` | Nav audio routing toggle |
+| 33 | NaviAudio | 0 | 0-2 | `NaviAudio` | Nav audio mixing: 0=mixed with media, 1=separate USB channel, 2=adapter-side ducking |
 | 65 | NaviVolume | 0 | 0-100 | `naviVolume` | Nav audio volume level |
 | 54 | SendHeartBeat | 1 | 0-1 | `heartBeat` | USB keepalive — **NEVER OFF** |
 | 62 | FastConnect | 0 | 0-1 | `fastConnect` | Skip BT scan (4-cond gate) |
@@ -93,34 +93,34 @@ It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
 | 57 | USBConnectedMode | 0 | 0-2 | `connectedMode` | USB gadget functions: 0=mtp+adb, 1=mtp, 2=adb (start_mtp.sh) |
 | 58 | USBTransMode | 0 | 0-1 | `transMode` | USB ZLP: 0=off, 1=enable zero-length packet (start_aoa.sh, AA only) |
 | 63 | WiredConnect | 1 | 0-1 | — | Wired fallback (default=1) |
-| 0 | iAP2TransMode | 0 | 0-1 | `syncMode` | iAP2 transport mode (most-referenced key) |
+| 0 | iAP2TransMode | 0 | 0-1 | `syncMode` | iAP2 link-layer framing mode: 0=standard, 1=compatible (most-referenced key, 61 xrefs) |
 | 53 | CarLinkType | 30 | 1-30 | `carLinkType` | Protocol class by PID [1-30] |
 | 67 | AutoConnectInterval | 0 | 0-60 | — | Reconnect timer interval |
 | 16 | BackgroundMode | 0 | 0-1 | `bgMode` | Hide adapter connection UI |
 | 31 | ScreenDPI | 0 | 0-480 | `ScreenDPI` | Display DPI → /tmp/screen_dpi |
-| 60 | LogoType | 0 | 0-3 | — | Boot logo via cp airplay_*.conf |
-| 22 | CustomCarLogo | 0 | 0-1 | — | Logo upload with system() |
+| 60 | LogoType | 0 | 0-3 | — | CarPlay device icon on iPhone: 0=default, 1=car OEM (airplay_car.conf), 2=brand, 3=none (airplay_none.conf). Set via cmd 0x09 |
+| 22 | CustomCarLogo | 0 | 0-1 | — | Custom boot logo upload: 0=factory, 1=custom PNG. Uses system() for file ops (injection risk) |
 | 59 | ReturnMode | 0 | 0-1 | `returnMode` | Back button behavior |
 | 34 | ScreenPhysicalW | 0 | 0-1000 | `screenPhysicalW` | Display width mm (AirPlay) |
 | 35 | ScreenPhysicalH | 0 | 0-1000 | `screenPhysicalH` | Display height mm (AirPlay) |
 | 27 | AndroidWorkMode | 1 | 1-5 | `androidWorkMode` | 6 phone link modes |
-| 17 | HudGPSSwitch | 1 | 0-1 | `gps` | GPS forwarding to phone via iAP2 |
+| 17 | HudGPSSwitch | 0 | 0-1 | `gps` | GPS forwarding master gate: 0=disabled (factory default), 1=enable NMEA via iAP2. Requires GNSSCapability>0 |
 | 70 | GNSSCapability | 0 | 0-65535 | `GNSSCapability` | 16-bit NMEA mask (3=GPS) |
 | 71 | DashboardInfo | 1 | 0-7 | `DashboardInfo` | 3-bit: Media|Vehicle|Route |
 | 77 | DuckPosition | 0 | 0-2 | `DockPosition` | Dock: 0=L, 1=R, 2=bottom |
-| 19 | WiFiChannel | 36 | 1-165 | `wifiChannel` | WiFi ch; triggers WiFi+BT restart |
+| 19 | WiFiChannel | 0 | 0-200 | `wifiChannel` | WiFi ch: 0=auto, 1-14=2.4GHz, 36-165=5GHz. Invalid→fallback 36. Triggers async WiFi+BT restart |
 | 76 | WiFiP2PMode | 0 | 0-1 | — | 0=SoftAP (hostapd), 1=WiFi Direct P2P GO (wpa_cli p2p_group_add, SSID=DIRECT-*) |
-| 75 | UseUartBLE | 0 | 0-1 | — | UART BLE transport toggle |
-| 45 | BtAudio | 0 | 0-1 | `BtAudio` | BT audio mode toggle |
+| 75 | UseUartBLE | 0 | 0-1 | — | BLE software path: 0=kernel HCI stack (hci0), 1=direct UART I/O (RiddleBluetoothService_Interface_UartBLE) |
+| 45 | BtAudio | 0 | 0-1 | `BtAudio` | Audio transport: 0=USB bulk PCM (default), 1=Bluetooth A2DP source. Set by host cmd 22/23 |
 | 4 | LogMode | 1 | 0-1 | — | Log verbosity, cached at first call |
 | 5 | BoxConfig_UI_Lang | 0 | 0-65535 | `lang` | UI language index into LangList |
 | 3 | UdiskMode | 1 | 0-1 | `Udisk` | USB storage: 0=off, 1=on (loads modules) |
-| 18 | CarDate | 0 | 0-65535 | — | Vehicle date for session metadata |
+| 18 | CarDate | 0 | 0-1 | — | Time sync enable: 0=adapter RTC/NTP, 1=accept syncTime from host BoxSettings (+8h CST offset) |
 | 20 | AutoPlauMusic | 0 | 0-1 | `autoPlay` | Auto-start music on connect |
 | 38 | AutoUpdate | 1 | 0-1 | `autoUpdate` | OTA auto-update toggle |
 | 40 | BoxSupportArea | 0 | 0-1 | — | Region flag: 0=Global (default iAP2), 1=China (zh lang hint, HiCar context) |
-| 61 | BackRecording | 0 | 0-1 | `backRecording` | Background recording toggle |
-| 69 | HiCarConnectMode | 0 | 0-1 | `HiCarConnectMode` | HiCar connection mode |
+| 61 | BackRecording | 0 | 0-1 | `backRecording` | Background mic for voice wake-word ("Hey Siri"/"OK Google") detection when CarPlay/AA backgrounded |
+| 69 | HiCarConnectMode | 0 | 0-1 | `HiCarConnectMode` | HiCar discovery mode: 0=QR+PIN pairing, 1=BLE-only fast reconnect (inferred, ARMHiCar+bluetoothDaemon) |
 | 73 | DayNightMode | 2 | 0-2 | `DayNightMode` | Theme: 0=auto, 1=day, 2=night |
 | 28 | CarDrivePosition | 0 | 0-1 | `drivePosition` | Drive side: 0=L, 1=R; theme |
 | 12 | UseBTPhone | 0 | 0-1 | `btCall` | BT phone call routing |
@@ -1988,8 +1988,10 @@ wired = GetBoxConfig("WiredConnect");   // index 63
 ### Per-Value Behavior
 | Value | Behavior |
 |-------|----------|
-| 0 (default) | Standard iAP2 transport. Uses default USB HID-based iAP2 transport layer for Apple device communication. |
-| 1 | Alternate iAP2 transport. Switches to an alternative transport mechanism (likely Bluetooth-based iAP2 or EAP-based). |
+| 0 (default) | Standard iAP2 link-layer framing. Default SYN negotiation parameters for iAP2 session setup (applies to both USB and BT transports). |
+| 1 | Compatible iAP2 link-layer framing. Alternate SYN negotiation parameters — likely longer `cumulativeAckTimeout` and smaller `maxRecvPacketLen` (inferred from adjacent iAP2 link params in ARMiPhoneIAP2: `linkVersion`, `maxOutstandingPackets`, `cumulativeAckTimeout`, `maxRetrans`, `maxCumulativeAck`, `maxRecvPacketLen`, `retransTimeout`). Used for compatibility with timing-sensitive iPhone models/iOS versions. |
+
+**CORRECTION (2026-02-28):** Previous description claimed 0="USB HID-based transport" and 1="Bluetooth-based or EAP-based transport". This was **disproven** by cross-binary xrefs: ARMiPhoneIAP2 (USB iAP2, 8 xrefs) and bluetoothDaemon (BT iAP2, 8 xrefs) both read this key equally, meaning it cannot select between transports. Both USB and BT medium classes (`HudiAP2Medium_USB.cpp`, `HudiAP2Medium_BT.cpp`) are compiled into ARMiPhoneIAP2 and transport selection is handled by class polymorphism, not this config key. The JSON alias `syncMode` refers to SYN/SYNACK link-layer synchronization, not transport selection. No "EAP" strings exist in any relevant binary. |
 
 ### Cross-Binary Xrefs
 | Binary | Function | Address | Direction |
@@ -3738,9 +3740,10 @@ if (*cached_level <= param_1) {
 
 | Value | Mode | USB behavior |
 |-------|------|-------------|
-| 0 | Disabled | No USB mass storage gadget |
-| 1 | USB Mass Storage | Adapter exposes internal storage as USB disk to host |
-| 2 | MTP (Media Transfer Protocol) | Adapter exposes as MTP device (cmd handler accepts value 2 beyond declared range max=1) |
+| 0 | Disabled | No USB storage gadget. USB link exclusively for adapter protocol traffic (CarPlay/AA data, video, audio, touch). |
+| 1 (default) | USB Mass Storage | `start_accessory_mass_storage.sh` creates 8MB RAM-backed FAT32 image (`/tmp/ram_fat32.img`), copies `BoxHelper.apk` onto it, loop-mounts to `/dev/loop1`, binds to `lun0/file`, sets USB gadget functions to `accessory,mass_storage`. Host sees additional USB disk interface. |
+
+**CORRECTION (2026-02-28):** Previous table included a fabricated "Value 2 = MTP" row. Binary verification found **zero** `g_mtp`, `modprobe g_mtp`, or MTP-related strings in any ARMadb-driver binary. MTP functionality is handled by USBConnectedMode (Key #57) via `start_mtp.sh`, not UdiskMode. The mass storage gadget uses the existing `g_android_accessory` composite module's `f_mass_storage` function, not a separate `g_mass_storage` kernel module. |
 
 ### String Locations (r2)
 
@@ -3758,27 +3761,24 @@ if (*cached_level <= param_1) {
 - Calls `system()` to load/unload kernel modules for USB gadget
 - Writes shared memory `HU_USBDEVICE_INFO` with device configuration
 
-### Pseudocode (simplified)
-```c
-void FUN_00021cb0(int param_1) {
-    BoxLog(6, "UsbManager", "Init USB device");
-    int dev_type = GetDeviceType();  // FUN_000693e8
-    // Validate device type
-    if (dev_type == 0xff || dev_type == expected_type) {
-        // Read shared memory for current USB state
-        // Compare with stored state
-        // If changed: unload old gadget module, load new one
-        // system("rmmod g_mass_storage") or system("rmmod g_mtp")
-        // system("modprobe g_mass_storage ...") or system("modprobe g_mtp ...")
-    }
-}
+### Pseudocode (simplified from start_accessory_mass_storage.sh)
+```bash
+# When UdiskMode=1 (from start_accessory.sh check):
+dd if=/dev/zero of=/tmp/ram_fat32.img bs=8M count=1
+mkfs.fat -s 128 -n APK /tmp/ram_fat32.img
+losetup /dev/loop1 /tmp/ram_fat32.img
+mount /dev/loop1 /tmp/mnt_udisk
+cp /usr/bin/BoxHelper.apk /tmp/mnt_udisk/
+echo /dev/loop1 > /sys/class/android_usb_accessory/f_mass_storage/lun0/file
+echo accessory,mass_storage > /sys/class/android_usb_accessory/functions
 ```
 
 ### Side Effects
 - **WARNING:** USB storage mode interferes with Android Auto! Mounting mass storage stops the AA service
 - From MEMORY.md: "USB storage detection stops AA service -- deploy to /tmp via SSH, not /mnt/UPAN"
-- Changing this key involves kernel module load/unload -- can cause brief USB disconnect
-- Mode 2 (MTP) requires the mtp-server binary (added in 2023.09+ firmware)
+- The `HUDComand_D_Ready` (0xFD) handler calls `fcn.00023dce` to flush/release the RAM disk after display init
+- The `HUDComand_A_ResetUSB` (0xCE) handler checks for `/tmp/ram_fat32.img` existence as part of USB gadget disable
+- `UDiskPassThrough` (Key #26) is DEAD — all USB disk behavior is governed entirely by UdiskMode
 
 ---
 
@@ -4056,30 +4056,37 @@ This is likely a **PASS-THROUGH** key consumed by `ARMAndroidAuto` (the OpenAuto
 
 | Value | Effect |
 |-------|--------|
-| 0 | Standard HiCar connection mode |
-| 1 | Alternative HiCar connection mode |
+| 0 (default) | QR code + PIN code pairing flow — `HiCarGetConnectQRCode` generates URL saved to `/tmp/hicar_qrcode_url`, `CMD_CONNECTION_URL` sends to HU display, user scans QR or enters `Connection_PINCODE` on Huawei phone (inferred from string adjacency in ARMHiCar) |
+| 1 | BLE-only / fast reconnect pairing — likely skips QR code generation (`rm -f /tmp/hicar_qrcode_url` precedes HiCarConnectMode in string table), may change BLE advertising parameters (`minInterval`/`maxInterval`) for nearby discovery via `libnearby.so` (inferred, decompilation wall) |
+
+**NOTE (2026-02-28):** Per-value behavior is inferred from string adjacency analysis, NOT from decompiled control flow. The exact branching logic remains unconfirmed. All runtime captures show value 0; value 1 has never been observed in captures.
 
 ### String Locations (r2)
 
 | Binary | Address | Context |
 |--------|---------|---------|
-| ARMadb | `0x0006c8d3` | In mapping table: `"HiCarConnectMode"` |
-| BT Daemon | `0x0005ec80` (izz) | BT config region |
+| ARMadb | `0x0006c8d3` | BoxSettings mapping table entry [23]: `"HiCarConnectMode" -> "HiCarConnectMode"` (self-mapped) |
+| ARMHiCar | `0x72950` (A15W) | MSDP event handler region — adjacent to `"Delete all hicar auth record!!!"`, `"HiCarGetConnectQRCode"`, `"/tmp/hicar_qrcode_url"`, `"BLE_ADV_ENABLE"` |
+| ARMHiCar | (2nd occurrence) | riddleCfg config table entry |
+| BT Daemon | `0x0005ec80` (izz) | riddleCfg config table region; `EnableHiCarBLEAdvertising`/`DisableHiCarBLEAdvertising` D-Bus methods in same binary |
 
 ### Cross-Binary Behavior
 
-**ARMadb-driver** -- Mapping table entry [23]: `"HiCarConnectMode" -> "HiCarConnectMode"` (self-mapped, `boxsettings_full_decomp.txt:67`). Set via generic BoxSettings path.
+**ARMHiCar** (primary consumer) -- 2 occurrences. The functional reference sits in the MSDP event handler region alongside HiCar connection lifecycle strings (`HiCarInit`, `HiCarRegisterListener`, QR code generation, PIN code handling, BLE advertising control). ARMHiCar's BLE driver (`driver_ble.c`) uses raw HCI commands: `hcitool -i hci0 cmd 0x08 0x000A 0x01` (adv enable), with configurable `minInterval`/`maxInterval`.
+
+**ARMadb-driver** -- BoxSettings mapping table entry [23]: set via generic path. Also included in `CMD_BOX_INFO` JSON response sent to host app (`"HiCarConnectMode":0` observed in all TTY captures).
 
 **bluetoothDaemon** -- `FUN_00014444` (`bluetoothDaemon...decomps.txt:411-418`)
 - **FUNCTION NOT FOUND** at address `0x00014444` -- Ghidra could not decompile
-- However, the string xref at `0x0006ec80` confirms the key is referenced in bluetoothDaemon
-- Likely consumed during BT pairing to select between standard BLE advertising vs HiCar-specific discovery
+- String xref at `0x0006ec80` is in riddleCfg config table region (config library, not functional code)
+- D-Bus methods `EnableHiCarBLEAdvertising`/`DisableHiCarBLEAdvertising` exist in this binary's `RiddleBluetoothService_Interface_Control::OnDbusMessage` handler
+- Likely provides BLE advertising service called by ARMHiCar over D-Bus
 
 ### Side Effects
 - HiCar is Huawei's car connectivity protocol (alternative to CarPlay for Huawei phones)
-- This key affects the BT advertising and service discovery parameters
+- ARMHiCar supports three transports: USB (`CHiCarUSBDiscover`), WiFi (`CHiCarWiFiDiscover`), BLE (driver_ble.c)
 - Only relevant for Huawei/HarmonyOS devices
-- The `hwSecret` was disabled in 2025.10 firmware, which may affect HiCar auth
+- CarLinkType values 7=HiCar Wired, 8=HiCar Wireless control transport selection (separate from this key)
 
 ---
 
@@ -5751,7 +5758,7 @@ Source: server.cgi FUN_00014040 (web API serializer)
 | `SpsPpsMode` | SpsPpsMode | get+set | Video / H.264 |
 | `TtsPacketLen` | TtsPacketLen | get+set | Audio |
 | `TtsVolumGain` | TtsVolumGain | get+set | Audio |
-| `Udisk` | UdiskMode | get+set | System / Branding |
+| `Udisk` | UdiskMode | get+set | Connection / USB |
 | `VrPacketLen` | VrPacketLen | get+set | Audio |
 | `VrVolumGain` | VrVolumGain | get+set | Audio |
 | `autoConn` | NeedAutoConnect | get+set | Connection / USB |
