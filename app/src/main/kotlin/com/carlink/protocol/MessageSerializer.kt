@@ -268,8 +268,8 @@ object MessageSerializer {
                 put("androidAutoSizeH", aaHeight)
                 put("mediaSound", 1) // 48kHz only
                 put("callQuality", config.callQuality) // 0=normal, 1=clear, 2=HD
-                put("WiFiChannel", 161) // 5GHz channel 161 (optimal low interference)
-                put("wifiChannel", 161) // Both keys for compatibility
+                put("WiFiChannel", 40) // 5GHz channel 40
+                put("wifiChannel", 40) // Both keys for compatibility
                 put("wifiName", config.boxName)
                 put("btName", config.boxName)
                 put("boxName", config.boxName)

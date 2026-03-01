@@ -203,19 +203,25 @@ D-Bus: `HUDComand_A_ResetUSB` signal, logged as `"$$$ ResetUSB from HU"`.
 ### USBConnectedMode
 **Type:** Select (0-2) | **Default:** 0
 
-| Value | Behavior |
-|-------|----------|
-| 0 | Standard USB 2.0 enumeration timing |
-| 1 | Extended descriptor delays for slow head units |
-| 2 | Compatibility mode - slower handshake, retries on failure |
+USB gadget function selection — controls what the adapter exposes to the host via USB.
+Consumer: `start_mtp.sh` → writes to `/sys/class/android_usb_accessory/android0/functions`.
+
+| Value | Functions | Behavior |
+|-------|-----------|----------|
+| 0 | `mtp,adb` | Both MTP (file transfer) and ADB (debug) exposed to host |
+| 1 | `mtp` | MTP only — no ADB debug interface |
+| 2 | `adb` | ADB only — no MTP file transfer |
 
 ### USBTransMode
 **Type:** Select (0/1) | **Default:** 0
 
+USB Zero-Length Packet mode for AOA (Android Auto) bulk transfers.
+Consumer: `start_aoa.sh` → writes to `/sys/module/g_android_accessory/parameters/accZLP`.
+
 | Value | Behavior |
 |-------|----------|
-| 0 | Normal - standard bulk transfer sizes |
-| 1 | Compact - smaller packets for limited buffers |
+| 0 | Standard bulk transfers — no ZLP termination |
+| 1 | Enable ZLP — fixes stalling on host USB controllers that require zero-length packet termination |
 
 ### iAP2TransMode
 **Type:** Select (0/1) | **Default:** 0
@@ -1433,7 +1439,7 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | VoiceQuality | 1 | 0 | 2 | Internal | **BUGGY** - see below |
 | AutoUpdate | 1 | 0 | 1 | Web UI |
 | LastBoxUIType | 1 | 0 | 2 | Internal | **DEAD KEY** — zero runtime xrefs |
-| BoxSupportArea | 0 | 0 | 1 | Internal |
+| BoxSupportArea | 0 | 0 | 1 | Internal | Region flag: 0=Global, 1=China. Affects iAP2 identification (zh hint). See deep analysis |
 | HNPInterval | 10 | 0 | 1000 | Internal | **DEAD KEY** — zero runtime xrefs |
 | lightType | 3 | 1 | 3 | Web UI | **DEAD KEY** — zero runtime xrefs |
 | MicType | 0 | 0 | 2 | Web UI |
@@ -1450,8 +1456,8 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | SendHeartBeat | 1 | 0 | 1 | Internal |
 | SendEmptyFrame | 1 | 0 | 1 | Internal |
 | autoDisplay | 1 | 0 | 2 | Web UI | **PASS-THROUGH** — written by host, never read via GetBoxConfig |
-| USBConnectedMode | 0 | 0 | 2 | Web UI |
-| USBTransMode | 0 | 0 | 1 | Web UI |
+| USBConnectedMode | 0 | 0 | 2 | Web UI | USB gadget functions: 0=mtp+adb, 1=mtp, 2=adb. See start_mtp.sh |
+| USBTransMode | 0 | 0 | 1 | Web UI | USB ZLP for AOA: 0=off, 1=on. Fixes bulk stalls. See start_aoa.sh |
 | ReturnMode | 0 | 0 | 1 | Web UI |
 | LogoType | 0 | 0 | 3 | Web UI |
 | BackRecording | 0 | 0 | 1 | Internal |
@@ -1469,7 +1475,7 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | DayNightMode | 2 | 0 | 2 | Web UI | 0=Auto (host cmds 16/17), 1=Force Day, 2=Force Night |
 | InternetHotspots | 0 | 0 | 1 | Internal | **DEAD KEY** — zero runtime xrefs |
 | UseUartBLE | 0 | 0 | 1 | Internal | 0=USB HCI BLE, 1=UART HCI BLE (hardware-dependent) |
-| WiFiP2PMode | 0 | 0 | 1 | Internal | 0=SoftAP, 1=WiFi Direct (requires WiFi restart) |
+| WiFiP2PMode | 0 | 0 | 1 | Internal | 0=SoftAP (hostapd), 1=WiFi Direct P2P GO (wpa_cli, SSID=DIRECT-*). Requires WiFi restart. See deep analysis |
 | DuckPosition | 0 | 0 | 2 | Internal | 0=Left (LHD), 1=Right (RHD), 2=Bottom. Maps to `viewAreaStatusBarEdge` |
 | AdvancedFeatures | 0 | 0 | 1 | Internal | Boolean. Enables naviScreen (0x2C stream). See detailed section above |
 
@@ -1800,8 +1806,8 @@ This section documents which configuration keys can be set via USB protocol mess
 | USBProduct | USB descriptor - set at driver init |
 | USBManufacturer | USB descriptor - set at driver init |
 | USBSerial | USB descriptor - set at driver init |
-| USBConnectedMode | Low-level USB mode |
-| USBTransMode | Transfer mode (bulk/isoch) |
+| USBConnectedMode | USB gadget functions (mtp/adb selection) |
+| USBTransMode | USB ZLP for AOA (Android Auto bulk transfers) |
 | AutoResetUSB | USB error recovery behavior |
 
 #### Video Processing (Internal Encoder Settings)

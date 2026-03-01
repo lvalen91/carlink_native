@@ -90,8 +90,8 @@ It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
 | 2 | MediaLatency | 1000 | 300-2000 | `mediaDelay` | Audio/video buffer ms (default 1000) |
 | 6 | BoxConfig_DelayStart | 0 | 0-120 | `startDelay` | Delay before USB init [0-120]s |
 | 68 | AutoResetUSB | 1 | 0-1 | `AutoResetUSB` | USB power-cycle (default=1) |
-| 57 | USBConnectedMode | 0 | 0-2 | `connectedMode` | USB conn mode (no runtime xref) |
-| 58 | USBTransMode | 0 | 0-1 | `transMode` | USB xfer mode (no runtime xref) |
+| 57 | USBConnectedMode | 0 | 0-2 | `connectedMode` | USB gadget functions: 0=mtp+adb, 1=mtp, 2=adb (start_mtp.sh) |
+| 58 | USBTransMode | 0 | 0-1 | `transMode` | USB ZLP: 0=off, 1=enable zero-length packet (start_aoa.sh, AA only) |
 | 63 | WiredConnect | 1 | 0-1 | — | Wired fallback (default=1) |
 | 0 | iAP2TransMode | 0 | 0-1 | `syncMode` | iAP2 transport mode (most-referenced key) |
 | 53 | CarLinkType | 30 | 1-30 | `carLinkType` | Protocol class by PID [1-30] |
@@ -109,7 +109,7 @@ It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
 | 71 | DashboardInfo | 1 | 0-7 | `DashboardInfo` | 3-bit: Media|Vehicle|Route |
 | 77 | DuckPosition | 0 | 0-2 | `DockPosition` | Dock: 0=L, 1=R, 2=bottom |
 | 19 | WiFiChannel | 36 | 1-165 | `wifiChannel` | WiFi ch; triggers WiFi+BT restart |
-| 76 | WiFiP2PMode | 0 | 0-1 | — | WiFi P2P/SoftAP mode |
+| 76 | WiFiP2PMode | 0 | 0-1 | — | 0=SoftAP (hostapd), 1=WiFi Direct P2P GO (wpa_cli p2p_group_add, SSID=DIRECT-*) |
 | 75 | UseUartBLE | 0 | 0-1 | — | UART BLE transport toggle |
 | 45 | BtAudio | 0 | 0-1 | `BtAudio` | BT audio mode toggle |
 | 4 | LogMode | 1 | 0-1 | — | Log verbosity, cached at first call |
@@ -118,7 +118,7 @@ It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
 | 18 | CarDate | 0 | 0-65535 | — | Vehicle date for session metadata |
 | 20 | AutoPlauMusic | 0 | 0-1 | `autoPlay` | Auto-start music on connect |
 | 38 | AutoUpdate | 1 | 0-1 | `autoUpdate` | OTA auto-update toggle |
-| 40 | BoxSupportArea | 0 | 0-1 | — | Feature bitmask for host |
+| 40 | BoxSupportArea | 0 | 0-1 | — | Region flag: 0=Global (default iAP2), 1=China (zh lang hint, HiCar context) |
 | 61 | BackRecording | 0 | 0-1 | `backRecording` | Background recording toggle |
 | 69 | HiCarConnectMode | 0 | 0-1 | `HiCarConnectMode` | HiCar connection mode |
 | 73 | DayNightMode | 2 | 0-2 | `DayNightMode` | Theme: 0=auto, 1=day, 2=night |
@@ -1811,29 +1811,52 @@ iVar7 = GetBoxConfig("AutoResetUSB");   // index 68
 | ARMadb addr | 0x00080dea |
 
 ### Per-Value Behavior
-| Value | Behavior |
-|-------|----------|
-| 0 (default) | Standard USB connection mode. Normal USB gadget descriptor presented to host. |
-| 1 | Extended mode. Modified USB descriptors (likely additional interfaces or alternate settings). |
-| 2 | Compatibility mode. Simplified USB descriptor for older/quirky head units. |
+
+| Value | USB Functions | Effect |
+|-------|--------------|--------|
+| 0 (default) | `mtp,adb` | Adapter exposes both MTP (file transfer) and ADB (debug) to the host |
+| 1 | `mtp` | MTP only — no ADB debug interface |
+| 2 | `adb` | ADB only — no MTP file transfer |
+
+### Shell Script Evidence (definitive)
+
+**`start_mtp.sh` lines 14-26** — the runtime consumer:
+```bash
+mode=mtp,adb
+setMode=`riddleBoxCfg -g USBConnectedMode`
+case $setMode in
+    0) mode=mtp,adb ;;
+    1) mode=mtp ;;
+    2) mode=adb ;;
+esac
+echo $mode > /sys/class/android_usb_accessory/android0/functions
+echo 1 > /sys/class/android_usb_accessory/android0/enable
+```
+
+This writes directly to the `g_android_accessory.ko` kernel module's sysfs interface,
+controlling the adapter's USB device-side (gadget) descriptor — what functions
+the adapter advertises to the host head unit when plugged in via USB.
+
+The script also configures VID/PID from `USBVID`/`USBPID` config keys and
+device name from `CustomBoxName`, then starts `mtp-server`.
 
 ### Cross-Binary Xrefs
 | Binary | Function | Address | Direction |
 |--------|----------|---------|-----------|
 | ARMadb | 0 direct xrefs | -- | Config table only |
 | server.cgi | FUN_00014040 | 0x0001468e | get (web API) |
+| start_mtp.sh | `riddleBoxCfg -g` | -- | Shell script consumer (definitive) |
 
 ### Analysis
-USBConnectedMode has **zero direct code xrefs** in all four decompiled binaries (ARMadb, AppleCarPlay, ARMiPhoneIAP2, bluetoothDaemon). The string exists in the config table at index 57 but is never loaded via `GetBoxConfig("USBConnectedMode")` by name. This means it is either:
-1. Read by config index number (not string) in non-decompiled code paths
-2. Read by a binary not in the analysis set (e.g., the USB gadget driver or a kernel module)
-3. A placeholder for a feature not yet implemented in firmware 2025.10.15
-
-The server.cgi web API does expose it for reading/writing, confirming it is a valid config key that can be set.
+Zero direct code xrefs in all decompiled binaries — the key is consumed exclusively
+by the `start_mtp.sh` shell script during USB gadget initialization, not by
+application code. The server.cgi web API exposes it for reading/writing via
+the `connectedMode` JSON field.
 
 ### Side Effects
-- **Requires reboot** to take effect (USB gadget descriptors are set at init time).
-- No observed behavioral difference in firmware 2025.10.15 between modes 0/1/2 based on decompilation alone.
+- Requires reboot to take effect (USB gadget functions are set at init time)
+- Value 2 (adb-only) enables SSH-like debug access over USB without MTP
+- Value 1 (mtp-only) hides the debug interface from the head unit
 
 ---
 
@@ -1851,23 +1874,55 @@ The server.cgi web API does expose it for reading/writing, confirming it is a va
 | ARMadb addr | 0x00080dfb |
 
 ### Per-Value Behavior
-| Value | Behavior |
-|-------|----------|
-| 0 (default) | Standard USB transfer mode (likely bulk transfers). |
-| 1 | Alternative transfer mode (likely isochronous or interrupt for lower latency). |
+
+| Value | ZLP Mode | Effect |
+|-------|----------|--------|
+| 0 (default) | Off | Standard USB bulk transfers — no zero-length packet termination |
+| 1 | On | Enables ZLP on `g_android_accessory` kernel module (`accZLP=1`) |
+
+### Shell Script Evidence (definitive)
+
+**`start_aoa.sh` lines 13-17** — the runtime consumer:
+```bash
+useZLP=`riddleBoxCfg -g USBTransMode`
+if [ $useZLP -eq 1 ]; then
+    echo "Open ZLP Mode"
+    echo 1 > /sys/module/g_android_accessory/parameters/accZLP
+fi
+```
+
+This writes to the `g_android_accessory.ko` kernel module parameter `accZLP`,
+enabling Zero-Length Packet termination for USB bulk transfers during Android
+Open Accessory (AOA) mode (Android Auto).
+
+**What ZLP does**: In USB bulk transfers, a Zero-Length Packet signals the end
+of a transfer whose size is an exact multiple of the max packet size (512 bytes
+for USB 2.0 HS). Without ZLP, the host USB controller cannot distinguish
+"transfer complete at exactly 512n bytes" from "more data coming" and may hang
+waiting. Some host USB controllers require ZLP for correct bulk transfer
+termination.
+
+**When to enable (value 1)**: If the head unit's USB host controller has strict
+ZLP requirements and Android Auto bulk transfers are stalling or timing out.
+This is a compatibility fix for specific head units, not a performance setting.
 
 ### Cross-Binary Xrefs
 | Binary | Function | Address | Direction |
 |--------|----------|---------|-----------|
 | ARMadb | 0 direct xrefs | -- | Config table only |
 | server.cgi | FUN_00014040 | 0x000146b4 | get (web API) |
+| start_aoa.sh | `riddleBoxCfg -g` | -- | Shell script consumer (definitive) |
 
 ### Analysis
-Same situation as USBConnectedMode: zero direct code xrefs in all decompiled binaries. The string is in the config table and exposed via web API but never read by name in the analyzed functions. The max=1 (not 2 as stated in the question) per the riddleBoxCfg config table confirms it is a boolean toggle.
+Zero direct code xrefs in all decompiled binaries — the key is consumed exclusively
+by the `start_aoa.sh` shell script during AOA (Android Auto) USB gadget
+initialization. The `start_aoa.sh` script sets VID=0x18d1 PID=0x2d00 (Google
+AOA) and function=`accessory`, used for Android Auto wired connections.
 
 ### Side Effects
-- Likely requires reboot (USB transport configuration happens at init).
-- May affect USB throughput/latency characteristics but no direct evidence in decompiled code.
+- Only affects AOA mode (Android Auto wired), not CarPlay or MTP/ADB
+- Requires reboot to take effect (AOA gadget init runs once at boot)
+- Enabling on head units that don't need ZLP has no negative effect (harmless)
 
 ---
 
@@ -3382,49 +3437,88 @@ This is a **hot-change** key: modifying it triggers an immediate WiFi+BT restart
 
 ### [76] WiFiP2PMode — Deep Analysis
 
-**Key ID:** 76  
-**Default:** 0  
+**Key ID:** 76
+**Default:** 0
 **Range:** [0,1]
 
 ### Per-Value Behavior Table
 
-| Value | Effect |
-|-------|--------|
-| 0 | WiFi infrastructure/softAP mode (standard hotspot) |
-| 1 | WiFi P2P (WiFi Direct) mode |
+| Value | Mode | WiFi Daemon | SSID Pattern | Phone Discovery |
+|-------|------|-------------|--------------|-----------------|
+| 0 | SoftAP (infrastructure) | `hostapd` via `/etc/hostapd.conf` | Plain SSID from `/etc/wifi_name` | Phone joins as standard WiFi client |
+| 1 | WiFi Direct (P2P GO) | `wpa_supplicant` + `wpa_cli p2p_group_add` | `DIRECT-<wifi_name>` (spaces stripped) | Phone discovers via Wi-Fi Direct P2P |
 
-### String Locations (r2)
+### Shell Script Evidence (definitive)
 
-| Binary | Address | Context |
-|--------|---------|---------|
-| IAP2 | `0x000744a1` | Adjacent to `"/wpa_supplicant"`, `"DIRECT-%sWifiP"` |
+**`start_bluetooth_wifi.sh` lines 76-126** — the runtime consumer:
+```bash
+# Line 77: Read config and select mode
+riddleBoxCfg -g WiFiP2PMode |grep 1 && mode=P2P || mode=AP
+
+# Lines 81-83: P2P prefixes SSID with "DIRECT-"
+if [ "$mode" == "P2P" ];then
+    ssid="DIRECT-`cat /etc/wifi_name|sed 's/ //g'`"
+fi
+
+# Lines 114-126: Mode determines which daemon runs
+if [ "$mode" == "AP" ]; then
+    startprocess hostapd 'hostapd /etc/hostapd.conf -B'
+else
+    echo "Use P2P as AP"
+    wpa_cli -i wlan0 p2p_group_add ssid=$ssid passphrase=$passwd freq=$freq
+fi
+```
+
+**`wpa_supplicant.conf`** — P2P group-owner parameters (used when mode=P2P):
+```
+p2p_go_vht=1              # VHT (802.11ac) in GO mode
+p2p_go_intent=15           # Max intent = always become Group Owner
+p2p_listen_reg_class=81    # 2.4 GHz listen
+p2p_listen_channel=6       # Listen on ch 6
+p2p_oper_reg_class=115     # 5 GHz operating
+p2p_oper_channel=149       # Operate on ch 149
+country=CN
+```
+
+**`remove_unnecessary_file.sh` lines 40-42** — fallback/recovery:
+```bash
+if [ -e /usr/sbin/wpa_supplicant.bak ]; then
+    riddleBoxCfg -s WiFiP2PMode 0
+    mv /usr/sbin/wpa_supplicant.bak /usr/sbin/wpa_supplicant
+fi
+```
+If a backup wpa_supplicant exists (failed P2P migration), resets to SoftAP mode.
+
+### Hardware Override
+
+**NXP WiFi cards** (`moal.ko` driver) force P2P regardless of config (lines 94-98):
+```bash
+# nxp wifi card only support STA+P2P, P2P interface not support AP
+if [ -e /usr/sbin/wpa_supplicant ] && [ -e /tmp/moal.ko ] && [ "$mode" == "AP" ]; then
+    echo "Force change mode to P2P"
+    mode=P2P
+fi
+```
+The CPC200-CCPA uses a Realtek RTL88x2CS, not NXP, so both modes are available.
 
 ### Cross-Binary Behavior
 
-**ARMiPhoneIAP2** -- `FUN_0001a054` (`ARMiPhoneIAP2...decomps.txt:944-1016`)
-- Destructor/cleanup function for WiFi P2P session object
-- Xref at `0x2b884` in `CiAP2WiFiConfigEngine.virtual_8`
-- When `WiFiP2PMode==1`, the adapter advertises as a WiFi Direct group owner with SSID pattern `DIRECT-<suffix>WifiP...`
-- Controls wpa_supplicant configuration mode -- P2P vs AP mode
+**ARMiPhoneIAP2** -- `CiAP2WiFiConfigEngine` class:
+- `CiAP2WiFiConfigEngine.virtual_8` at xref `0x2b884` consumes WiFiP2PMode
+- Controls which WiFi configuration parameters are sent to iPhone during iAP2 WiFi setup
+- `FUN_0001a054` is the destructor/cleanup for WiFi P2P session objects
+- String `WiFiChannel` at `0x64340` (IAP2 unpacked) confirms WiFi config is read in this binary
+- WiFiP2PMode key name does NOT appear as a string in the IAP2 binary — it is consumed indirectly via the shell script path or through ARMadb-driver's config infrastructure
 
-**ARMadb-driver** -- Not directly consumed; passed through to IAP2 via generic config path.
-
-### Pseudocode
-```c
-// In CiAP2WiFiConfigEngine session setup
-int p2p = GetBoxConfig("WiFiP2PMode");
-if (p2p == 1) {
-    // Configure wpa_supplicant for P2P group owner mode
-    // SSID = "DIRECT-<suffix>"
-} else {
-    // Configure as standard AP/softAP
-}
-```
+**ARMadb-driver** -- Config table entry only. Consumed at runtime via `riddleBoxCfg -g WiFiP2PMode` in shell scripts, not directly by binary code.
 
 ### Side Effects
-- Requires WiFi restart to take effect
-- P2P mode may have different channel negotiation behavior
-- Affects how the phone discovers and connects to the adapter WiFi
+- Requires full WiFi restart (`close_bluetooth_wifi.sh` + `start_bluetooth_wifi.sh`) to take effect
+- Mode change detected at lines 106-111: if current mode differs, triggers close+restart cycle
+- SoftAP uses `hostapd` (standalone AP daemon); P2P uses `wpa_supplicant` (P2P group owner via `wpa_cli`)
+- P2P mode forces `DIRECT-` SSID prefix per Wi-Fi Alliance P2P spec
+- IP address is `192.168.50.2` (default) or `192.168.43.1` (if ARMHiCar present)
+- WiFi password and channel are shared between both modes
 
 ---
 
@@ -3829,50 +3923,92 @@ The OTA update mechanism in ARMadb-driver checks for `*Update.img` files via `st
 **Key ID:** 40
 **Default:** 0
 **Range:** [0,1]
+**Category:** Regional config (OEM/Branding factory setting, SSH-only)
 
 ### Per-Value Behavior Table
 
-| Value | Region | Protocol behavior |
-|-------|--------|-------------------|
-| 0 | Default/Global | Standard iAP2 identification |
-| 1 | China | Chinese-specific protocol extensions (HiCar, WeChat) |
+| Value | Region | Protocol behavior | Confidence |
+|-------|--------|-------------------|------------|
+| 0 | Default/Global | Standard iAP2 identification | Verified (default) |
+| 1 | China | Chinese market iAP2 parameters | Strong (binary evidence below) |
 
-### String Locations (r2)
+### Binary Evidence
 
-| Binary | Address | Context |
-|--------|---------|---------|
-| ARMadb | `0x00070d2d` (.rodata) | Config string |
-| IAP2 | `0x0006fbde` | Adjacent to `"zh###### IAP2 ."` |
+**1. String adjacency in ARMiPhoneIAP2 (unpacked) — hex dump at `0x5fa3e`:**
+```
+0005fa3e: 426f 7853 7570 706f 7274 4172 6561 007a  BoxSupportArea.z
+0005fa4e: 6800 2323 2323 2323 2049 4150 3220 5363  h.###### IAP2 Sc
+0005fa5e: 6865 6475 6c44 6f6e 6520 7374 6174 3a20  hedulDone stat:
+```
+Three consecutive null-terminated strings in .rodata:
+1. `BoxSupportArea\0` (config key argument to GetBoxConfig)
+2. `zh\0` (ISO 639-1 language code for Chinese)
+3. `###### IAP2 SchedulDone stat: %s\n\0` (debug log)
+
+The `"zh"` literal immediately following `"BoxSupportArea"` indicates they are used in the same or adjacent function in the source — compiler places string literals in .rodata in source order within a translation unit.
+
+**2. Source file context — `HudiAP2Server.cpp`:**
+```
+0005faa1: /home/sky/Hewei/HiCarPackage/HeweiPackTools/FakeCarPlayDevice/
+          PlatformPOSIX/../Sources/ARMiPhoneIAP2/HudiAP2Server.cpp
+```
+The function reading BoxSupportArea lives in the iAP2 server module. The path reveals:
+- **Vendor:** DongGuan HeWei Communication Technologies (Huawei subsidiary, "Hewei" = dev codename)
+- **Project:** HiCarPackage — Huawei's car connectivity platform
+- **Purpose:** FakeCarPlayDevice — CarPlay protocol emulation/adapter layer
+
+**3. Cross-binary presence:**
+
+| Binary | Address (unpacked) | Context |
+|--------|-------------------|---------|
+| ARMiPhoneIAP2 | `0x5fa3e` | Code reference — adjacent to `"zh"`, in `HudiAP2Server.cpp` |
+| ARMadb-driver | `0x6e481` | Config table entry only (sequential with HNPInterval, lightType...) |
+| ARMHiCar | `0x1d3b0` | Config table entry only (sequential with HNPInterval, lightType...) |
+
+BoxSupportArea appears in the **config table** of all three binaries but is only **actively consumed by code** in ARMiPhoneIAP2 (only one string instance vs config table entries in the others).
+
+**4. HiCar ecosystem context in same binary:**
+```
+0x728fc  Delete all hicar auth record!!!
+0x72950  HiCarConnectMode
+0x72c54  HeweiSpotField-1-CPU_Start
+0x72cf8  /tmp/boa/logs/hicar.log
+0x69aab  com.hewei.low-priority-root-queue
+0x69acd  com.hewei.root-queue
+0x5f8b0  43CCarPlay_MiddleManInterface_iAP2InternalUse
+```
+The firmware natively supports both CarPlay and HiCar, with BoxSupportArea gating region-specific behavior.
+
+### What "Area" Means
+
+Despite the name containing "Area", this is a **geographical region** flag, NOT a display/screen area setting. Confirmed by:
+- `configuration.md` categorizes it under "OEM/Branding (Factory Settings)" as "Regional config"
+- No relationship to ViewArea/SafeArea (those use file-based config at `/etc/RiddleBoxData/HU_*_INFO`)
+- The adjacent `"zh"` string is a language/region code, not a dimension
 
 ### Cross-Binary Behavior
 
-**ARMiPhoneIAP2** -- `FUN_00016eb0` at `0x00016f30` (`ARMiPhoneIAP2...decomps.txt:790-837`):
-- Config keys: `BoxSupportArea:get, AutoPlauMusic:get`
-- Function writes data to a file descriptor (USB pipe to host)
-- Prepends a command byte to the payload and writes via `write()` syscall
-- Retries up to 1000 times with 5ms sleep between attempts
-- This is a data transport function, not the consumer itself
+**ARMiPhoneIAP2** — actively consumed:
+- Read via `GetBoxConfig("BoxSupportArea")` in `HudiAP2Server.cpp`
+- Used during iAP2 server initialization/session setup
+- Adjacent `"zh"` string suggests value=1 sets a Chinese language hint in iAP2 identification
+- `CiAP2Session_CarPlay` class (source at `0x60ae3`) handles CarPlay session — likely downstream consumer
 
-Xref at `0x14cb4` in `CiAP2Session_CarPlay.virtual_12` confirms: BoxSupportArea is read during CarPlay session initialization to select region-specific protocol parameters.
-
-### Pseudocode
-```c
-// During iAP2 session setup
-int area = GetBoxConfig("BoxSupportArea");
-if (area == 1) {
-    // Enable Chinese market features
-    // Set language hint to "zh"
-    // Enable HiCar compatibility layer
-} else if (area == 2) {
-    // EU compliance: different privacy handling
-}
-// Affects which iAP2 identification parameters are sent to the phone
-```
+**ARMadb-driver / ARMHiCar** — config table entry only; not directly consumed by code in these binaries.
 
 ### Side Effects
-- Affects iAP2 identification exchange -- wrong region may cause CarPlay setup failures
-- Region 1 (China) enables HiCar as an alternative to CarPlay
+- Affects iAP2 identification exchange — wrong region may cause CarPlay setup failures
 - Must be set BEFORE session establishment
+- Not configurable via BoxSettings JSON or Web UI — SSH/riddleBoxCfg only
+- Persistent across reboots (stored in `/etc/riddle.conf`)
+
+### Confidence Assessment
+- **VERIFIED:** String `"zh"` is byte-adjacent to `"BoxSupportArea"` in IAP2 binary .rodata
+- **VERIFIED:** Source file is `HudiAP2Server.cpp` from Huawei/HiCar codebase
+- **VERIFIED:** Categorized as "Regional config" in firmware architecture docs
+- **VERIFIED:** Present in ARMHiCar binary (China-market connectivity)
+- **INFERRED:** Value 1 enables Chinese market features (strong inference from zh + HiCar context)
+- **UNVERIFIABLE:** Original decompilation files (`ARMiPhoneIAP2...decomps.txt`) no longer exist; specific function pseudocode and xref addresses from prior analysis cannot be independently re-verified without re-running Ghidra/r2
 
 ---
 
