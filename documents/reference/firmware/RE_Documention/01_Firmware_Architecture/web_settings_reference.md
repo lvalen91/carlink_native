@@ -273,7 +273,7 @@ The following settings must be queried directly via `riddleBoxCfg -g <key>`:
 | Improved Fluency | `ImprovedFluency` | 0=Off, 1=On | **DEAD KEY** — no runtime effect (see firmware hook column above) |
 | Knob Mode | `KnobMode` | 0=Off, 1=On |
 | Mouse Mode | `MouseMode` | 0=Touch, 1=Cursor |
-| Advanced Features | `AdvancedFeatures` | 0=Off, 1=On (Unknown effect) |
+| Advanced Features | `AdvancedFeatures` | 0=Off, 1=On (enables naviScreen — extra 0x2C video stream for instrument cluster). Boolean, NOT bitmask. |
 | Custom Car Logo | `CustomCarLogo` | 0=Default, 1=Custom |
 
 ### Replacement Web Interface Solution

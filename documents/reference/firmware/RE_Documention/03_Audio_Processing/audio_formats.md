@@ -55,7 +55,7 @@ Audio Types:
 - Media: 48kHz stereo (decodeType=4) or 44.1kHz stereo (decodeType=1,2)
 - Navigation: 48kHz stereo (decodeType=4) or 44.1kHz stereo (decodeType=2)
 - Alerts: 48kHz stereo (decodeType=4)
-- Phone Call: 8kHz or 16kHz mono (decodeType=3 or 5)
+- Phone Call: 16kHz mono (decodeType=5). Note: 8kHz (decodeType=3) exists in firmware code but is vestigial — never observed in 22+ capture sessions.
 
 Processing: Minimal - primarily pass-through with format signaling
 ```
@@ -87,8 +87,8 @@ Processing Applied:
 
 Expected Mic Format (WebRTC validated):
 - Siri: 16kHz mono (decodeType=5)
-- Phone Call: 8kHz or 16kHz mono (decodeType=3 or 5)
-- NOTE: Only 8kHz and 16kHz are accepted by WebRTC AECM
+- Phone Call: 16kHz mono (decodeType=5). Note: 8kHz (decodeType=3) accepted by WebRTC AECM binary but is vestigial — configuring for it has no effect, and it was never observed in any capture session.
+- NOTE: Only 8kHz and 16kHz pass WebRTC AECM validation; in practice only 16kHz is used
 ```
 
 ---
@@ -231,25 +231,29 @@ The firmware's `ConfigFileUtils` fails to translate the host app's `callQuality`
 
 ### 1. Phone Call Sample Rate
 
-**Finding:** The firmware WebRTC processing supports **both** 8kHz and 16kHz for phone calls.
+**Finding:** The firmware WebRTC binary accepts both 8kHz and 16kHz, but **only 16kHz is used in practice**.
 
 **Binary evidence (0x2dfa2):**
-- WebRtcAecm_Init explicitly accepts 8000 Hz OR 16000 Hz
-- Both rates are equally valid from a firmware perspective
-- The sample rate is determined dynamically based on audio context
+- WebRtcAecm_Init code paths accept 8000 Hz OR 16000 Hz
+- 4 AEC call sites pass 8000, 20 call sites pass 16000
+- The 8kHz code paths are **vestigial** — never triggered in 22+ capture sessions
+
+**Why 8kHz is dead code:**
+1. The `CallQuality→VoiceQuality` translation has a firmware bug (see above), so configuring for 8kHz has no effect
+2. Modern iPhones (iOS 16+) always negotiate 16kHz (wideband) for CarPlay telephony
+3. Attempting to configure `CallQuality=0` (which would theoretically request narrowband 8kHz) produces the error `"apk callQuality value transf box value error"` and is never applied
 
 **Observation from carlink_native:**
 ```kotlin
 AudioCommand.AUDIO_PHONECALL_START -> {
-    startMicrophoneCapture(decodeType = 5, audioType = 3)  // 16kHz
+    startMicrophoneCapture(decodeType = 5, audioType = 3)  // 16kHz — the only rate ever observed
 }
-// decodeType=3 (8kHz) is also valid for phone calls
 ```
 
 **Implications:**
-- Using 16kHz for phone calls is **supported** by the firmware
-- The choice between 8kHz and 16kHz may depend on phone/CarPlay negotiation
-- Host apps should use the `decodeType` specified in the adapter's AudioData command
+- Host apps should use **16kHz mono** (decodeType=5) for all phone call microphone audio
+- While the binary accepts 8kHz at the WebRTC AECM level, no configuration or phone negotiation triggers it
+- Host apps should still parse `decodeType` from the adapter's AudioData command for forward compatibility
 
 ### 2. Audio Format from Adapter Must Be Used
 
@@ -321,7 +325,7 @@ The firmware can write debug PCM files:
 **Answer: Minimal processing / Pass-through**
 - Audio is received from CarPlay/AndroidAuto via iAP2
 - Format is signaled to host via decodeType
-- Host must handle the format (44.1kHz, 48kHz stereo for media; 8kHz, 16kHz mono for voice)
+- Host must handle the format (44.1kHz, 48kHz stereo for media; 16kHz mono for voice — 8kHz exists in firmware code but is vestigial)
 
 ### Host → Phone (Microphone)
 **Answer: YES - Active processing**
@@ -335,8 +339,9 @@ The firmware can write debug PCM files:
 
 **Host app should send microphone audio:**
 - **Siri/Voice Recognition:** 16000 Hz, 1 channel, 16-bit PCM (decodeType=5)
-- **Phone Calls:** 8000 Hz OR 16000 Hz, 1 channel, 16-bit PCM (decodeType=3 or 5)
-- **IMPORTANT:** Use the `decodeType` from the adapter's AudioData command message
+- **Phone Calls:** 16000 Hz, 1 channel, 16-bit PCM (decodeType=5) — the only rate observed in practice
+- **IMPORTANT:** Use the `decodeType` from the adapter's AudioData command message for forward compatibility
+- **Note:** 8kHz (decodeType=3) is accepted by the WebRTC AECM binary but is vestigial dead code — no configuration or phone negotiation triggers it
 
 **Firmware-supported mic sample rates (binary verified):**
 - 8000 Hz (0x1F40) - narrowband

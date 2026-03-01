@@ -79,10 +79,10 @@ Log: `Modes changed: screen %s, mainAudio %s, speech %s (%s), phone %s, turns %s
 
 ### Instrument Cluster / Alt Screen
 
-**Configuration Gate:** `AdvancedFeatures` riddleBoxCfg key (bitmask):
-- Bit 0 → sets exported global `g_bSupportNaviScreen` (enables alt screen video)
-- Bit 1 → sets exported global `g_bSupportViewarea` (enables **main screen** ViewArea/SafeArea negotiation — essential for non-rectangular displays)
-- Set `AdvancedFeatures=3` for both. Can also be bypassed by sending `naviScreenInfo` in BoxSettings (navi only).
+**Configuration Gate:** `AdvancedFeatures` riddleBoxCfg key (boolean 0-1, NOT a bitmask — max=1 enforced):
+- Value 1 → sets exported global `g_bSupportNaviScreen` (enables alt screen video)
+- **`g_bSupportViewarea`** is set from `HU_VIEWAREA_INFO` file content, NOT from AdvancedFeatures (r2 + live verified Feb 2026)
+- Can also be bypassed by sending `naviScreenInfo` in BoxSettings (navi only). See `configuration.md` for full details.
 
 | Function/String | Purpose |
 |---|---|

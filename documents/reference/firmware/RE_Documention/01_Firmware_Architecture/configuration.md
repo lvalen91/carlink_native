@@ -22,7 +22,7 @@
 	"USBVID":	"1314",
 	"USBPID":	"1521",
 	"AndroidWorkMode":	1,
-	"MediaLatency":	300,
+	"MediaLatency":	1000,
 	"AndroidAutoWidth":	2400,
 	"AndroidAutoHeight":	960,
 	"BtAudio":	1,
@@ -44,7 +44,7 @@ Controls H.264 SPS/PPS handling for video stream.
 
 | Value | Behavior |
 |-------|----------|
-| 0 | Auto - firmware decides based on `LastPhoneSpsPps` history |
+| 0 | Passthrough - SPS/PPS forwarded as-is from phone (no modification) |
 | 1 | Re-inject - prepends cached SPS/PPS before each IDR frame |
 | 2 | Cache - stores SPS/PPS in memory, replays on decode errors |
 | 3 | Repeat - duplicates SPS/PPS in every video packet |
@@ -78,14 +78,14 @@ Protocol: Uses internal command ID 0x1c (`RefreshFrame`).
 ### VideoBitRate
 **Type:** Number (0-20) | **Default:** 0
 
-Hint for phone's encoder target bitrate (passed in Open message).
+Hint for phone's encoder target bitrate (passed in Open message). Firmware applies a 0.25 throttle factor (value × 0.25 = effective Mbps hint).
 
 | Value | Effect |
 |-------|--------|
 | 0 | Auto - phone decides based on WiFi conditions |
-| 1-5 | Low bitrate (~2-5 Mbps) |
-| 6-15 | Medium bitrate (~6-12 Mbps) |
-| 16-20 | High bitrate (~13-20 Mbps) |
+| 1-5 | Low bitrate (~0.25-1.25 Mbps effective) |
+| 6-15 | Medium bitrate (~1.5-3.75 Mbps effective) |
+| 16-20 | High bitrate (~4-5 Mbps effective) |
 
 ### CustomFrameRate
 **Type:** Number (0, 20-60) | **Default:** 0
@@ -174,14 +174,14 @@ Firmware calls `usleep(value * 1000000)` before USB init.
 | 1-30 | Wait N seconds before USB init |
 
 ### MediaLatency
-**Type:** Number (300-2000) | **Default:** 300
+**Type:** Number (300-2000) | **Default:** 1000
 
-Audio/video buffer size in milliseconds.
+Audio/video buffer size in milliseconds. AppleCarPlay binary enforces a 500ms floor (values <500 are clamped to 500).
 
 | Value | Behavior |
 |-------|----------|
-| 300-500 | Low latency - audio/video more in sync, may skip |
-| 500-1000 | Balanced |
+| 300-499 | Clamped to 500 by AppleCarPlay binary |
+| 500-1000 | Balanced (default is 1000) |
 | 1000-2000 | High latency - very stable, noticeable A/V desync |
 
 ---
@@ -275,13 +275,16 @@ D-Bus: `HUDComand_A_ResetUSB` signal, logged as `"$$$ ResetUSB from HU"`.
 ### EchoLatency
 **Type:** Number (20-2000) | **Default:** 320
 
-Echo cancellation delay parameter in milliseconds.
+Echo cancellation delay parameter in milliseconds. Used by WebRTC AECM module.
 
 | Value | Effect |
 |-------|--------|
 | 20-100 | Low delay - minimal audio path latency |
 | 100-500 | Typical car systems |
 | 500-2000 | High delay - significant audio buffering |
+| **320** | **Sentinel value** — triggers firmware to read `echoDelay` from BoxSettings config instead of using the literal value |
+
+**Architectural threshold:** Values above 200ms are clamped internally by the WebRTC AECM at `0x2dfa2`. Effective AECM delay is min(EchoLatency, 200).
 
 ### MediaPacketLen / TtsPacketLen / VrPacketLen
 **Type:** Number (200-40000) | **Default:** 200
@@ -803,7 +806,7 @@ This function builds the CarPlay display info dictionary during AirPlay session 
    - "heightPixels"      = viewarea height
    - "originXPixels"     = viewarea X origin
    - "originYPixels"     = viewarea Y origin
-   - "DuckPosition"      = dock position (float64)
+   - "DuckPosition"      = dock position (int64) — **NOTE:** Despite the dict key name, this value maps to `viewAreaStatusBarEdge` (firmware naming inconsistency)
 5. Read HU_SAFEAREA_INFO (20 bytes)
    If valid (width > 0 AND height > 0):
      Build safeArea sub-dictionary:
@@ -872,9 +875,9 @@ import struct
 data = struct.pack('<5I', 2300, 900, 50, 30, 1)
 open('/etc/RiddleBoxData/HU_SAFEAREA_INFO', 'wb').write(data)
 "
-# Also ensure AdvancedFeatures has bit 1 set:
-/usr/sbin/riddleBoxCfg -s AdvancedFeatures 3
-/usr/sbin/riddleBoxCfg --upConfig
+# AdvancedFeatures is boolean 0-1 (NOT a bitmask). Values >1 are rejected by riddleBoxCfg.
+# ViewArea is set via HU_VIEWAREA_INFO file content, not AdvancedFeatures.
+# See AdvancedFeatures section above for details.
 busybox reboot
 ```
 
@@ -1370,7 +1373,7 @@ These require `riddleBoxCfg` CLI or are firmware-only:
 |-----|------------|-------|
 | DashboardInfo | `riddleBoxCfg -s DashboardInfo 7` | iAP2 engine bitmask |
 | GNSSCapability | `riddleBoxCfg -s GNSSCapability 1` | Required for LocationEngine |
-| AdvancedFeatures | `riddleBoxCfg -s AdvancedFeatures 1` | Bitmask: bit 0=naviScreen, bit 1=viewArea. Only set when host handles 0x2C |
+| AdvancedFeatures | `riddleBoxCfg -s AdvancedFeatures 1` | Boolean 0-1 (NOT a bitmask). Enables naviScreen (extra video stream). Only set when host handles 0x2C |
 | SpsPpsMode | `riddleBoxCfg -s SpsPpsMode 1` | H.264 handling mode |
 | SendHeartBeat | `riddleBoxCfg -s SendHeartBeat 1` | Heartbeat toggle |
 | LogMode | `riddleBoxCfg -s LogMode 1` | Logging toggle |
@@ -1397,13 +1400,13 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | LogMode | 1 | 0 | 1 | Internal |
 | BoxConfig_UI_Lang | 0 | 0 | 65535 | Web UI |
 | BoxConfig_DelayStart | 0 | 0 | 120 | Web UI |
-| BoxConfig_preferSPSPPSType | 0 | 0 | 1 | Protocol Init |
-| NotCarPlayH264DecreaseMode | 0 | 0 | 2 | Internal |
+| BoxConfig_preferSPSPPSType | 0 | 0 | 1 | Protocol Init | **DEAD KEY** — zero runtime xrefs |
+| NotCarPlayH264DecreaseMode | 0 | 0 | 2 | Internal | **DEAD KEY** — zero runtime xrefs |
 | NeedKeyFrame | 0 | 0 | 1 | Protocol Init |
 | EchoLatency | 320 | 20 | 2000 | Web UI |
-| DisplaySize | 0 | 0 | 3 | Web UI |
+| DisplaySize | 0 | 0 | 3 | Web UI | **PASS-THROUGH** — written by host, never read via GetBoxConfig |
 | UseBTPhone | 0 | 0 | 1 | Internal |
-| MicGainSwitch | 0 | 0 | 1 | Web UI |
+| MicGainSwitch | 0 | 0 | 1 | Web UI | Controls WebRTC AGC (Automatic Gain Control) |
 | CustomFrameRate | 0 | 0 | 60 | Protocol Init |
 | NeedAutoConnect | 1 | 0 | 1 | Web UI |
 | BackgroundMode | 0 | 0 | 1 | Web UI |
@@ -1411,28 +1414,28 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | CarDate | 0 | 0 | 65535 | Internal |
 | WiFiChannel | 36 | 1 | 165 | Web UI |
 | AutoPlauMusic | 0 | 0 | 1 | Web UI |
-| MouseMode | 1 | 0 | 1 | Web UI |
+| MouseMode | 1 | 0 | 1 | Web UI | **PASS-THROUGH** — written by host, never read via GetBoxConfig |
 | CustomCarLogo | 0 | 0 | 1 | Web UI |
 | VideoBitRate | 0 | 0 | 20 | Protocol Init |
 | VideoResolutionHeight | 0 | 0 | 4096 | Protocol Init |
 | VideoResolutionWidth | 0 | 0 | 4096 | Protocol Init |
-| UDiskPassThrough | 1 | 0 | 1 | Web UI |
+| UDiskPassThrough | 1 | 0 | 1 | Web UI | **DEAD KEY** — zero runtime xrefs |
 | AndroidWorkMode | 1 | 1 | 5 | Protocol Init |
 | CarDrivePosition | 0 | 0 | 1 | Web UI |
-| AndroidAutoWidth | 0 | 0 | 4096 | Protocol Init |
-| AndroidAutoHeight | 0 | 0 | 4096 | Protocol Init |
+| AndroidAutoWidth | 0 | 0 | 4096 | Protocol Init | **PASS-THROUGH** — written by host, never read via GetBoxConfig |
+| AndroidAutoHeight | 0 | 0 | 4096 | Protocol Init | **PASS-THROUGH** — written by host, never read via GetBoxConfig |
 | ScreenDPI | 0 | 0 | 480 | Protocol Init |
-| KnobMode | 0 | 0 | 1 | Web UI |
+| KnobMode | 0 | 0 | 1 | Web UI | **PASS-THROUGH** — written by host, never read via GetBoxConfig |
 | NaviAudio | 0 | 0 | 2 | Web UI |
 | ScreenPhysicalW | 0 | 0 | 1000 | Protocol Init |
 | ScreenPhysicalH | 0 | 0 | 1000 | Protocol Init |
 | CallQuality | 1 | 0 | 2 | Web UI | **BUGGY** - see below |
 | VoiceQuality | 1 | 0 | 2 | Internal | **BUGGY** - see below |
 | AutoUpdate | 1 | 0 | 1 | Web UI |
-| LastBoxUIType | 1 | 0 | 2 | Internal |
+| LastBoxUIType | 1 | 0 | 2 | Internal | **DEAD KEY** — zero runtime xrefs |
 | BoxSupportArea | 0 | 0 | 1 | Internal |
-| HNPInterval | 10 | 0 | 1000 | Internal |
-| lightType | 3 | 1 | 3 | Web UI |
+| HNPInterval | 10 | 0 | 1000 | Internal | **DEAD KEY** — zero runtime xrefs |
+| lightType | 3 | 1 | 3 | Web UI | **DEAD KEY** — zero runtime xrefs |
 | MicType | 0 | 0 | 2 | Web UI |
 | RepeatKeyframe | 0 | 0 | 1 | Protocol Init |
 | BtAudio | 0 | 0 | 1 | Web UI |
@@ -1446,7 +1449,7 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | CarLinkType | 30 | 1 | 30 | Internal |
 | SendHeartBeat | 1 | 0 | 1 | Internal |
 | SendEmptyFrame | 1 | 0 | 1 | Internal |
-| autoDisplay | 1 | 0 | 2 | Web UI |
+| autoDisplay | 1 | 0 | 2 | Web UI | **PASS-THROUGH** — written by host, never read via GetBoxConfig |
 | USBConnectedMode | 0 | 0 | 2 | Web UI |
 | USBTransMode | 0 | 0 | 1 | Web UI |
 | ReturnMode | 0 | 0 | 1 | Web UI |
@@ -1462,7 +1465,13 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | HiCarConnectMode | 0 | 0 | 1 | Internal |
 | GNSSCapability | 0 | 0 | 65535 | Internal |
 | DashboardInfo | 1 | 0 | 7 | Internal |
-| AudioMultiBusMode | 1 | 0 | 1 | Internal |
+| AudioMultiBusMode | 1 | 0 | 1 | Internal | **DEAD KEY** — zero runtime xrefs |
+| DayNightMode | 2 | 0 | 2 | Web UI | 0=Auto (host cmds 16/17), 1=Force Day, 2=Force Night |
+| InternetHotspots | 0 | 0 | 1 | Internal | **DEAD KEY** — zero runtime xrefs |
+| UseUartBLE | 0 | 0 | 1 | Internal | 0=USB HCI BLE, 1=UART HCI BLE (hardware-dependent) |
+| WiFiP2PMode | 0 | 0 | 1 | Internal | 0=SoftAP, 1=WiFi Direct (requires WiFi restart) |
+| DuckPosition | 0 | 0 | 2 | Internal | 0=Left (LHD), 1=Right (RHD), 2=Bottom. Maps to `viewAreaStatusBarEdge` |
+| AdvancedFeatures | 0 | 0 | 1 | Internal | Boolean. Enables naviScreen (0x2C stream). See detailed section above |
 
 ### String Parameters
 
@@ -1475,8 +1484,8 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | CustomBluetoothName | "" | 0 | 15 | Web UI |
 | CustomWifiName | "" | 0 | 15 | Web UI |
 | HU_BT_PIN_CODE | "" | 0 | 6 | Internal - BT pairing PIN (see note) |
-| LastPhoneSpsPps | "" | 0 | 511 | Internal |
-| CustomId | "" | 0 | 31 | Internal |
+| LastPhoneSpsPps | "" | 0 | 511 | Internal | **DEAD KEY** — zero runtime xrefs (SpsPpsMode 0 does NOT read this) |
+| CustomId | "" | 0 | 31 | Internal | **PASS-THROUGH** — written by host, never read via GetBoxConfig |
 | LastConnectedDevice | "" | 0 | 17 | Internal |
 | IgnoreUpdateVersion | "" | 0 | 15 | Internal |
 | CustomBoxName | "" | 0 | 15 | Web UI |
@@ -1484,14 +1493,15 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | BrandName | "" | 0 | 15 | Internal |
 | BrandBluetoothName | "" | 0 | 15 | Internal |
 | BrandWifiName | "" | 0 | 15 | Internal |
-| BrandServiceURL | "" | 0 | 31 | Internal |
-| BoxIp | "" | 0 | 15 | Web UI |
+| BrandServiceURL | "" | 0 | 31 | Internal | **DEAD KEY** — zero runtime xrefs |
+| BoxIp | "" | 0 | 15 | Web UI | **DEAD KEY** — zero runtime xrefs |
 | USBProduct | "" | 0 | 63 | Web UI |
 | USBManufacturer | "" | 0 | 63 | Web UI |
 | USBPID | "" | 0 | 4 | Web UI |
 | USBVID | "" | 0 | 4 | Web UI |
 | USBSerial | "" | 0 | 63 | Internal |
-| oemName | "" | 0 | 63 | Internal |
+| oemName | "" | 0 | 63 | Internal | **DEAD KEY** — zero runtime xrefs |
+| BrandWifiChannel | "" | 0 | 31 | Internal | WiFi channel branding override (read by start_bluetooth_wifi.sh) |
 
 ### Array/Object Parameters
 
@@ -1499,6 +1509,7 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 |-----|------|-------------|
 | DevList | Array | Paired devices list |
 | DeletedDevList | Array | Removed/unpaired devices list |
+| LangList | Array | Supported UI languages (PASS-THROUGH — server.cgi only, populates web UI dropdown) |
 
 #### DevList Structure
 
@@ -1676,7 +1687,7 @@ A15H: CarPlay,HiCar (limited subset)
 
 **IMPORTANT**: Parameters are NOT "hidden" by firmware - they are **contextually filtered** based on hardware capabilities.
 
-- **Backend Reality**: All 91 parameters are accessible via API/CLI regardless of model
+- **Backend Reality**: All 106 parameters (79 int + 24 string + 3 array) are accessible via API/CLI regardless of model
 - **Frontend Filtering**: Web interface conditionally displays parameters based on hardware capabilities
 
 **A15W Contextual Limitations**:
@@ -1821,9 +1832,9 @@ This section documents which configuration keys can be set via USB protocol mess
 | TtsVolumGain | TTS gain |
 | VrPacketLen | Voice recognition config |
 | VrVolumGain | Voice recognition gain |
-| EchoLatency | Echo cancellation |
-| DuckPosition | Ducking level |
-| AudioMultiBusMode | Multi-channel mode |
+| EchoLatency | Echo cancellation latency |
+| DuckPosition | Dock position (viewAreaStatusBarEdge: left/right/bottom of CarPlay status bar) |
+| AudioMultiBusMode | **DEAD KEY** — zero runtime xrefs in any binary |
 
 #### WiFi/Bluetooth Hardware
 
@@ -1849,7 +1860,7 @@ See `usb_protocol.md` → "Bluetooth PIN Message Types" for detailed flow.
 
 | Key | Why Direct Access Required |
 |-----|---------------------------|
-| **AdvancedFeatures** | **Bitmask — bit 0=naviScreen (extra video stream!), bit 1=viewArea. Only enable when host handles 0x2C** |
+| **AdvancedFeatures** | **Boolean 0-1 (NOT bitmask). Enables naviScreen (extra video stream 0x2C). ViewArea set via HU_VIEWAREA_INFO, not this key** |
 | AutoUpdate | Firmware update policy |
 | IgnoreUpdateVersion | Update skip |
 | BackgroundMode | Background operation |

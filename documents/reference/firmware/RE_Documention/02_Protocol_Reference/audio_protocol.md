@@ -340,10 +340,10 @@ VOL packet (vol=1.0)             ← Restore media
 | Siri (speaker) | 5 | 1 | 0x08 | - | 16kHz |
 | Siri (mic) | 5 | 3 | 0x03 | - | 16kHz |
 | Phone (speaker) | 5 | 1 | 0x05 | - | 16kHz |
-| Phone (mic) | 3 or 5 | 3 | 0x03 | - | 8kHz or 16kHz |
+| Phone (mic) | 5 | 3 | 0x03 | - | 16kHz (8kHz in firmware code but vestigial — never observed) |
 | Ringtone | 2/4 | 1 | 0x0C | 0x0D | 44.1/48kHz |
 
-**Microphone Note:** Microphone audio (audio_type=3) must be 8kHz or 16kHz. The firmware WebRTC AECM will reject other sample rates (see `../03_Audio_Processing/audio_formats.md` for binary verification at `0x2dfa2`). This requirement applies to both CarPlay and Android Auto.
+**Microphone Note:** Microphone audio (audio_type=3) must be 16kHz in practice. The firmware WebRTC AECM at `0x2dfa2` accepts only 8kHz or 16kHz and rejects other rates, but 8kHz is vestigial dead code — never observed in 22+ capture sessions. The `CallQuality→VoiceQuality` firmware bug and modern iPhone wideband negotiation ensure only 16kHz is ever used. See `../03_Audio_Processing/audio_formats.md` for full binary analysis.
 
 ---
 

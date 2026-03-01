@@ -12,12 +12,12 @@
 ## Adapter Hardware
 
 - Firmware: 2025.10.15.1127
-- Kernel: linux-3.0.15 (iMX6UL)
+- Kernel: linux-3.14.52+g94d07bb (iMX6UL)
 - BT/WiFi chip: 0x9159
 - WiFi chip firmware: SDIW416---16.92.21.p119.11-MXM5X16437.p20-GPL-(FP92)
 - WiFi binary: nxp/sdioiw416_wlan_v0.bin (425,896 bytes)
 - BT firmware: nxp/uartiw416_bt_v0.bin
-- WiFi channel 161 (5.8GHz), MAC 00:E0:4C:91:B0:DF
+- WiFi channel 149 (5GHz), MAC 00:E0:4C:91:B0:DF (channel 161 on pre-2024.09 firmware)
 - No onboard microphone ("Box No Mic!")
 - USB VID 0x1314, PID 0x1521
 - manufacturer="Magic Communication Tec.", product="Auto Box"
@@ -116,8 +116,8 @@ iPhone → AirPlay → CPC200 (AAC decode → PCM)
 
 ## Session Data
 
-- DHCP: 192.168.43.x (pre-2024.09 firmware behavior)
-- WiFi: channel 161 (5.8GHz)
+- DHCP: 192.168.50.x (192.168.43.x on pre-2024.09 firmware)
+- WiFi: channel 149 (5GHz) (channel 161 on pre-2024.09 firmware)
 - MFi IC: clone/compatible, fallback address works
 - Unrecovered AirPlay packets during Siri to media transitions (known issue)
 - CarLink app memory: PSS 58MB, RSS 178MB

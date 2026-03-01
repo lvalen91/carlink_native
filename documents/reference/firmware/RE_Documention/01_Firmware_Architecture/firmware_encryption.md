@@ -165,12 +165,15 @@ rm temp_plain.bin
 
 ## ARMimg_maker Binary Analysis
 
+> **Note:** ARMimg_maker was **removed in firmware 2025.10.15**. The binary is available from all prior firmware versions and can be re-added to custom firmware images. The on-device update flow (`update_box_ota.sh`) calls this binary for decryption, so custom firmware for 2025.10.15+ should include it.
+
 | Property | Value |
 |----------|-------|
 | **Location** | `/usr/sbin/ARMimg_maker` |
 | **Size (packed)** | 21,056 bytes |
 | **Size (unpacked)** | 37,696 bytes |
 | **Packing** | Modified UPX (Carlinkit-specific) |
+| **Availability** | Present in all firmware versions prior to 2025.10.15; removed in 2025.10.15 |
 
 ### Key Strings (from unpacked binary)
 ```

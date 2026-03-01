@@ -627,7 +627,7 @@ Google services were residually referenced in debloated logs (framework stubs, i
 | Property | Value |
 |----------|-------|
 | Software Version | 2025.10.15.1127CAY |
-| Kernel | Linux 3.0.15 (iMX6UL) |
+| Kernel | Linux 3.14.52+g94d07bb (iMX6UL) |
 | Platform | iMX6UL 14x14 EVK |
 | ChipID | 7201, Version 0 |
 | Product Type | A15W (YA box type) |
@@ -642,7 +642,7 @@ Google services were residually referenced in debloated logs (framework stubs, i
 
 ### Connection Sequence
 
-1. Kernel boots (Linux 3.0.15, iMX6UL)
+1. Kernel boots (Linux 3.14.52, iMX6UL)
 2. USB gadget initializes (Android accessory mode)
 3. Bluetooth HCI UART loads, firmware downloaded
 4. WiFi driver loads (IW416, SDIO), AP starts on ch161 5 GHz
