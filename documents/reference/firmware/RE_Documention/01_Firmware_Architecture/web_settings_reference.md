@@ -213,7 +213,7 @@ if (FastConnect && mac_matches(LastConnectedDevice)) {
 | `UDiskPassThrough` | `UDiskPassThrough` | 0-1 | 1 | Pass-through USB storage |
 | `CarDrivePosition` | `CarDrivePosition` | 0-1 | 0 | 0=LHD, 1=RHD |
 | `SendHeartBeat` | `SendHeartBeat` | 0-1 | 1 | Send 0xAA heartbeat |
-| `ImprovedFluency` | `ImprovedFluency` | 0-1 | 0 | Increase USB buffers |
+| `ImprovedFluency` | `ImprovedFluency` | 0-1 | 0 | ~~Increase USB buffers~~ **DEAD KEY** — stored in riddle.conf but never read by any firmware binary at runtime. Intended to increase USB bulk transfer buffers and adjust pcm_get_buffer_size per advanced.html, but never implemented in fw 2025.10.15.1127 (confirmed via exhaustive Ghidra decompilation of all 7 binaries) |
 | `LogMode` | `LogMode` | 0-1 | 1 | Enable debug logging |
 
 ---
@@ -270,7 +270,7 @@ The following settings must be queried directly via `riddleBoxCfg -g <key>`:
 | GPS from HU | `HudGPSSwitch` | 0=Off, 1=On |
 | USB Passthrough | `UDiskPassThrough` | 0=Off, 1=On |
 | Fast Connect | `FastConnect` | 0=Off, 1=On |
-| Improved Fluency | `ImprovedFluency` | 0=Off, 1=On |
+| Improved Fluency | `ImprovedFluency` | 0=Off, 1=On | **DEAD KEY** — no runtime effect (see firmware hook column above) |
 | Knob Mode | `KnobMode` | 0=Off, 1=On |
 | Mouse Mode | `MouseMode` | 0=Touch, 1=Cursor |
 | Advanced Features | `AdvancedFeatures` | 0=Off, 1=On (Unknown effect) |

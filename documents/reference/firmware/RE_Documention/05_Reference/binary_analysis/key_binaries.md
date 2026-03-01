@@ -13,12 +13,12 @@
 | AppleCarPlay | 325KB | 573KB | Main CarPlay receiver |
 | ARMiPhoneIAP2 | 182KB | 494KB | iPhone IAP2 protocol handler |
 | ARMadb-driver | 217KB | 479KB | Main USB protocol handler |
-| ARMAndroidAuto | - | 489KB | Android Auto protocol handler |
+| ARMAndroidAuto | 489KB | 1,489KB | Android Auto protocol handler |
 | ARMHiCar | - | 132KB | Huawei HiCar support |
 | ARMandroid_Mirror | - | 106KB | Android mirroring |
 | bluetoothDaemon | 173KB | 409KB | Bluetooth management |
-| mdnsd | - | 378KB | mDNS/Bonjour service |
-| boxNetworkService | 40KB | - | Network management (not UPX packed) |
+| mdnsd | - | 141KB | mDNS/Bonjour service (378KB runtime BSS) |
+| boxNetworkService | 45KB | - | Network management (not UPX packed) |
 | riddleBoxCfg | 30KB | 50KB | Configuration CLI |
 | server.cgi | - | 74KB | Web UI backend |
 | upload.cgi | - | 53KB | File upload handler |
@@ -36,12 +36,14 @@
 | Binary | Packed | Unpacked | Ghidra Analyzed |
 |--------|--------|----------|-----------------|
 | ARMadb-driver | ✅ | ✅ | ✅ Fully analyzed |
-| ARMiPhoneIAP2 | ✅ | ✅ | Partial |
-| AppleCarPlay | ✅ | ✅ | Partial |
-| bluetoothDaemon | ✅ | ✅ | Not yet |
-| riddleBoxCfg | ✅ | ✅ | Partial |
+| ARMiPhoneIAP2 | ✅ | ✅ | ✅ Fully analyzed (2026-02-28) |
+| AppleCarPlay | ✅ | ✅ | ✅ Fully analyzed (2026-02-28) |
+| bluetoothDaemon | ✅ | ✅ | ✅ Fully analyzed (2026-02-28) |
+| riddleBoxCfg | ✅ | ✅ | ✅ Fully analyzed (2026-02-28) |
 | ARMimg_maker | ✅ | ✅ | ✅ Key extracted |
-| ARMAndroidAuto | ❌ Custom packer | - | Blocked (packed) |
+| ARMAndroidAuto | ✅ Custom packer | ✅ (1,488,932 bytes) | ✅ Analyzed (2026-02-28) — no section headers, does NOT link config library |
+| ARMHiCar | ✅ | ✅ | ✅ Analyzed (2026-02-28) |
+| server.cgi | ✅ | ✅ | ✅ Analyzed (2026-02-28) |
 
 **Note:** `ARMAndroidAuto` uses a **custom LZMA-based packer** (NOT standard UPX):
 - Magic: `0x55225522` (`U"U"`) at file offset where compressed data begins
@@ -49,12 +51,35 @@
 - Entropy: 8.00 bits/byte (maximum — effectively encrypted/maximally compressed)
 - Decompressor stub: 5,844 bytes at offset 0x76274
 - Stub uses direct Linux syscalls: `readlink("/proc/self/exe")` → `mmap2()` → LZMA decompress (lc=2, lp=0, pb=3) → `open("/dev/hwas", O_RDWR)` → `ioctl(fd, 0xC00C6206, ...)` → `mprotect()` → jump to decompressed code
-- **Cannot decompress with standard Python lzma** — requires ARM Linux with `/dev/hwas` or custom LZMA implementation matching the stub
+- **Successfully unpacked** (2026-02-28): UPX with header fix unpacked to 1,488,932 bytes. No section headers in output ELF.
+- **Key finding:** ARMAndroidAuto does NOT statically link the riddleBoxCfg config library — zero config system strings (no "BoxConfig", "riddle", "riddleConfig" etc.). It cannot read riddleBoxCfg keys directly.
 - The same packer is used for `ARMadb-driver`, `ARMiPhoneIAP2`, and `AppleCarPlay` (but those also have UPX layer)
+
+#### ImprovedFluency Binary Trace (2026-02-28)
+
+All 8 firmware binaries containing the `ImprovedFluency` config table entry were exhaustively
+analyzed via Ghidra headless decompilation and r2 cross-reference tracing:
+
+| Binary | GetBoxConfig Callers | Passes "ImprovedFluency"? | Any Code Ref? |
+|--------|---------------------|--------------------------|---------------|
+| ARMadb-driver (1,909 funcs) | 24 | No | No |
+| AppleCarPlay | 12 | No | No |
+| ARMiPhoneIAP2 | 17 (14 get + 3 set) | No | No |
+| bluetoothDaemon (1,524 funcs) | 8 | No | No |
+| ARMHiCar | 0 code refs | No | No (table only) |
+| server.cgi | 2 (JSON pass-through) | Pass-through only | No branching |
+| riddleBoxCfg | Generic table iterate | Pass-through only | No branching |
+| ARMAndroidAuto | N/A — no config library | N/A | N/A |
+
+**Conclusion:** `ImprovedFluency` is an **unimplemented/dead config key** in firmware 2025.10.15.1127.
+The web UI (`advanced.html`) describes the intended behavior as "Increase USB bulk transfer
+buffers and adjust pcm_get_buffer_size" but this was never implemented in any binary. The config
+table entry propagates to all binaries via statically linked config library, and server.cgi
+serializes it for the web API, but no runtime code reads the value.
 
 ### ARMAndroidAuto Runtime Analysis (TTY Logs - Jan 2026)
 
-Although the binary cannot be unpacked, TTY logs reveal its runtime behavior:
+The binary was successfully unpacked (2026-02-28) — see note above. TTY logs also reveal its runtime behavior:
 
 **Framework:** Based on OpenAuto (open-source Android Auto implementation)
 
@@ -128,10 +153,14 @@ The adapter firmware is built on **Huawei's DMSDP (Distributed Multimedia Servic
 
 | Library | Size | Purpose |
 |---------|------|---------|
-| libdmsdpcrypto.so | 80KB | Crypto (X25519, AES-GCM) |
-| libdmsdpaudiohandler.so | 48KB | Audio dispatch |
-| libdmsdpdvaudio.so | 48KB | Digital audio streaming |
+| libdmsdpcrypto.so | 80KB | Crypto (X25519, AES-GCM) — 2025.02 only; removed in 2025.10 |
+| libdmsdpaudiohandler.so | 42KB | Audio dispatch |
+| libdmsdpcamerahandler.so | 9KB | Camera dispatch |
+| libdmsdpdvaudio.so | 45KB | Digital audio streaming |
+| libdmsdpdvcamera.so | 37KB | Camera streaming |
 | libdmsdpdvdevice.so | - | Device protocol constants |
+| libdmsdpdvinterface.so | 16KB | Interface protocol |
+| libdmsdpsec.so | 25KB | Security/encryption |
 
 ### Third-Party / Support Libraries
 
@@ -249,7 +278,7 @@ initHeader(0x64650) → prepareMessage(0x64670) → buildPayload(0x64768)
 | FUN_00066190 | 0x66190 | riddle.conf config writer |
 | FUN_00062e1c | 0x62e1c | Message buffer init |
 | FUN_00062f34 | 0x62f34 | Message buffer populate |
-| FUN_00017340 | 0x17340 | Message sender |
+| FUN_00017340 | 0x17340 | Main command handler (13,546 bytes) |
 | FUN_00018088 | 0x18088 | Message pre-processor |
 | FUN_000628a4 | 0x628a4 | Message buffer/send wrapper |
 | FUN_00065178 | 0x65178 | JSON field extractor |
@@ -263,7 +292,7 @@ initHeader(0x64650) → prepareMessage(0x64670) → buildPayload(0x64768)
 | `recv HiCar videoTimestamp:%llu` | 0x6cdbe | HiCar video timestamp |
 | `_SendDataToCar iSize: %d, may need send ZLP` | 0x6b823 | USB transmission |
 | `CarPlay recv data size error!` | 0x6d0fc | Video reception error |
-| `box video frame rate: %d, %.2f KB/s` | 0x6c18b | Video statistics |
+| `box video frame rate: %d, %.2f KB/s, audio frame rate: %d, %.2f KB/s` | 0x6f62a | Video/audio statistics |
 | USB magic `0x55AA55AA` | 0x62e18 | Protocol header constant |
 | `recv CarPlay size info:%dx%d` | - | Resolution logging (no validation) |
 | `set frame format: %s %dx%d %dfps` | - | Format setting (no bounds check) |
@@ -279,8 +308,8 @@ initHeader(0x64650) → prepareMessage(0x64670) → buildPayload(0x64768)
 | `kScreenProperty_MaxFPS :%d` | - | Max FPS property (dynamic, not hardcoded) |
 | `format[%d]: %s size: %dx%d minFps: %d maxFps: %d` | - | FPS range tracking |
 | `### tcpSock recv bufSize: %d, maxBitrate: %d Mbps` | - | Bitrate limit (configurable) |
-| `/tmp/screen_fps` | - | Runtime FPS config file |
-| `/tmp/screen_size` | - | Runtime resolution config file |
+| `/tmp/screen_fps` | - | Runtime FPS config file (not found in binary strings; may be runtime path) |
+| `/tmp/screen_size` | - | Runtime resolution config file (not found in binary strings; may be runtime path) |
 | `--width %d --height %d --fps %d` | - | AppleCarPlay launch parameters |
 
 ---
@@ -293,9 +322,9 @@ initHeader(0x64650) → prepareMessage(0x64670) → buildPayload(0x64768)
 | `_AirPlayReceiverSessionScreen_ProcessFrame` | 0x7ecea | Process single frame |
 | `ScreenStreamProcessData` | 0x8ff62 | Raw stream handling |
 | `### Send screen h264 frame data failed!` | 0x9016d | H.264 send error |
-| `### Send h264 I frame data %d byte!` | 0x90196 | I-frame transmission |
-| `### H264 data buffer overrun!` | 0x90119 | Buffer overflow |
-| `### h264 frame data parse error!` | 0x900f9 | NAL parsing error |
+| `### Send h264 I frame data %d byte!` | 0x900f8 | I-frame transmission |
+| `### H264 data buffer overrun!` | 0x900d9 | Buffer overflow |
+| `### h264 frame data parse error!` | 0x9011d | NAL parsing error |
 | `_create_unix_socket %s SUC` | - | Unix socket IPC |
 
 ### Video Processing Note

@@ -181,7 +181,7 @@ The `infos` command returns comprehensive adapter information:
   },
   // NOTE: Settings object only contains 13 keys!
   // Many settings (MicType, BtAudio, BackgroundMode, HudGPSSwitch,
-  // UDiskPassThrough, FastConnect, ImprovedFluency, KnobMode, MouseMode,
+  // UDiskPassThrough, FastConnect, ImprovedFluency (DEAD KEY - unimplemented), KnobMode, MouseMode,
   // AdvancedFeatures, CustomCarLogo) are NOT returned.
   // Use `riddleBoxCfg -g <key>` to query these directly.
   "DevList": [

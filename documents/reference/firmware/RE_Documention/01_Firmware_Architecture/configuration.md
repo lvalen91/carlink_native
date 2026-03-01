@@ -104,10 +104,29 @@ Sets `frameRate` field in Open message.
 ### ImprovedFluency
 **Type:** Toggle (0/1) | **Default:** 0
 
-| Value | Behavior |
-|-------|----------|
-| 0 | Standard buffering - lower latency, possible stutters |
-| 1 | Enhanced buffering - slightly higher latency, smoother playback |
+> **Binary Analysis (2026-02-28): UNIMPLEMENTED / DEAD CONFIG KEY**
+>
+> Exhaustive Ghidra decompilation and cross-reference analysis of ALL firmware
+> binaries containing this key (ARMadb-driver, AppleCarPlay, ARMiPhoneIAP2,
+> bluetoothDaemon, ARMHiCar, server.cgi, riddleBoxCfg) confirms that **no
+> runtime code path reads ImprovedFluency to change behavior** in firmware
+> 2025.10.15.1127. ARMAndroidAuto does not link the config library at all.
+>
+> The config table entry exists in every binary (entry #64 of 79 in
+> `riddleConfigNameValue` at `.data.rel.ro`), and server.cgi serializes it
+> for the web API, but zero `GetBoxConfig("ImprovedFluency")` calls exist
+> in any binary's `.text` section. All 24 GetBoxConfig callers in
+> ARMadb-driver and all callers in every other binary were resolved —
+> none pass this key.
+>
+> The `advanced.html` web UI describes the *intended* behavior as:
+> "Increase USB bulk transfer buffers and adjust pcm_get_buffer_size."
+> This was never implemented. Setting it to 0 or 1 has no effect.
+
+| Value | Documented Behavior | Actual Effect (fw 2025.10.15) |
+|-------|----------|-------------------------------|
+| 0 | Standard buffering - lower latency, possible stutters | No effect (dead key) |
+| 1 | Enhanced buffering - slightly higher latency, smoother playback | No effect (dead key) |
 
 ### FastConnect
 **Type:** Toggle (0/1) | **Default:** 0
@@ -1435,7 +1454,7 @@ Output from `/usr/sbin/riddleBoxCfg --info` on CPC200-CCPA firmware. This is the
 | BackRecording | 0 | 0 | 1 | Internal |
 | FastConnect | 0 | 0 | 1 | Protocol Init |
 | WiredConnect | 1 | 0 | 1 | Internal |
-| ImprovedFluency | 0 | 0 | 1 | Web UI |
+| ImprovedFluency | 0 | 0 | 1 | Web UI | **DEAD KEY** — not read by any binary (see analysis notes above) |
 | NaviVolume | 0 | 0 | 100 | Web UI |
 | OriginalResolution | 0 | 0 | 1 | Protocol Init |
 | AutoConnectInterval | 0 | 0 | 60 | Internal |
@@ -1785,7 +1804,7 @@ This section documents which configuration keys can be set via USB protocol mess
 | RepeatKeyframe | Encoder behavior |
 | SendEmptyFrame | Encoder behavior |
 | NotCarPlayH264DecreaseMode | Quality reduction policy |
-| ImprovedFluency | Buffering behavior |
+| ImprovedFluency | Buffering behavior | **UNIMPLEMENTED** — no binary reads this value at runtime (fw 2025.10.15) |
 
 #### Audio Processing (Internal Mixer Settings)
 
