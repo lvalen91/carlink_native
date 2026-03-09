@@ -54,6 +54,9 @@ object ManeuverMapper {
             12 -> Maneuver.TYPE_DESTINATION           // arrived
             13 -> Maneuver.TYPE_KEEP_LEFT             // keepLeft
             14 -> Maneuver.TYPE_KEEP_RIGHT            // keepRight
+            15 -> Maneuver.TYPE_FERRY_BOAT            // enterFerry
+            16 -> Maneuver.TYPE_FERRY_BOAT            // exitFerry
+            17 -> Maneuver.TYPE_FERRY_BOAT            // changeFerry
             18 -> if (isLeftDrive) Maneuver.TYPE_U_TURN_RIGHT // uTurnToRoute
                  else Maneuver.TYPE_U_TURN_LEFT
             19 -> if (isLeftDrive) Maneuver.TYPE_ROUNDABOUT_ENTER_CW // roundaboutUTurn
