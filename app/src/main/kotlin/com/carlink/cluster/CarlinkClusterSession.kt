@@ -42,7 +42,6 @@ import kotlinx.coroutines.launch
  * - Calls navigationStarted()/updateTrip()/navigationEnded() on state transitions
  */
 class CarlinkClusterSession : Session() {
-
     private var screen: CarlinkClusterScreen? = null
     private var navigationManager: NavigationManager? = null
     private var scope: CoroutineScope? = null
@@ -63,16 +62,18 @@ class CarlinkClusterSession : Session() {
             logError("[CLUSTER] Failed to get NavigationManager: ${e.message}", tag = Logger.Tags.NAVI, throwable = e)
         }
 
-        navigationManager?.setNavigationManagerCallback(object : NavigationManagerCallback {
-            override fun onStopNavigation() {
-                logInfo("[CLUSTER] onStopNavigation callback — ending navigation", tag = Logger.Tags.NAVI)
-                isNavigating = false
-            }
+        navigationManager?.setNavigationManagerCallback(
+            object : NavigationManagerCallback {
+                override fun onStopNavigation() {
+                    logInfo("[CLUSTER] onStopNavigation callback — ending navigation", tag = Logger.Tags.NAVI)
+                    isNavigating = false
+                }
 
-            override fun onAutoDriveEnabled() {
-                logNavi { "[CLUSTER] Auto drive enabled" }
-            }
-        })
+                override fun onAutoDriveEnabled() {
+                    logNavi { "[CLUSTER] Auto drive enabled" }
+                }
+            },
+        )
 
         // Start observing navigation state
         val sessionScope = CoroutineScope(Dispatchers.Main)
@@ -82,28 +83,30 @@ class CarlinkClusterSession : Session() {
             collectNavigationState()
         }
 
-        lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onDestroy(owner: LifecycleOwner) {
-                logInfo("[CLUSTER] Session destroyed — cleaning up", tag = Logger.Tags.NAVI)
-                if (isNavigating) {
-                    try {
-                        navigationManager?.navigationEnded()
-                        logNavi { "[CLUSTER] navigationEnded() called on session destroy" }
-                    } catch (e: Exception) {
-                        logError(
-                            "[CLUSTER] navigationEnded() failed on destroy: ${e.message}",
-                            tag = Logger.Tags.NAVI,
-                            throwable = e,
-                        )
+        lifecycle.addObserver(
+            object : DefaultLifecycleObserver {
+                override fun onDestroy(owner: LifecycleOwner) {
+                    logInfo("[CLUSTER] Session destroyed — cleaning up", tag = Logger.Tags.NAVI)
+                    if (isNavigating) {
+                        try {
+                            navigationManager?.navigationEnded()
+                            logNavi { "[CLUSTER] navigationEnded() called on session destroy" }
+                        } catch (e: Exception) {
+                            logError(
+                                "[CLUSTER] navigationEnded() failed on destroy: ${e.message}",
+                                tag = Logger.Tags.NAVI,
+                                throwable = e,
+                            )
+                        }
+                        isNavigating = false
                     }
-                    isNavigating = false
+                    scope?.cancel()
+                    scope = null
+                    screen = null
+                    navigationManager = null
                 }
-                scope?.cancel()
-                scope = null
-                screen = null
-                navigationManager = null
-            }
-        })
+            },
+        )
 
         return clusterScreen
     }
@@ -122,10 +125,11 @@ class CarlinkClusterSession : Session() {
             debounceJob?.cancel()
 
             // Debounce: wait 200ms for state to stabilize before pushing
-            debounceJob = scope?.launch {
-                delay(200)
-                processStateUpdate(state)
-            }
+            debounceJob =
+                scope?.launch {
+                    delay(200)
+                    processStateUpdate(state)
+                }
         }
     }
 
@@ -182,7 +186,6 @@ class CarlinkClusterSession : Session() {
             screen?.updateState(state)
         }
     }
-
 }
 
 /**
@@ -193,13 +196,16 @@ class CarlinkClusterSession : Session() {
  * - Distance to next maneuver
  * - Road name (via Step cue)
  */
-class CarlinkClusterScreen(carContext: CarContext) : Screen(carContext) {
-
+class CarlinkClusterScreen(
+    carContext: CarContext,
+) : Screen(carContext) {
     private var currentState: NavigationState? = null
 
-    private val actionStrip = ActionStrip.Builder()
-        .addAction(Action.APP_ICON)
-        .build()
+    private val actionStrip =
+        ActionStrip
+            .Builder()
+            .addAction(Action.APP_ICON)
+            .build()
 
     fun updateState(state: NavigationState) {
         currentState = state
@@ -210,7 +216,8 @@ class CarlinkClusterScreen(carContext: CarContext) : Screen(carContext) {
         val state = currentState
         if (state == null || !state.isActive) {
             logNavi { "[CLUSTER_SCREEN] Returning empty NavigationTemplate (state=${state?.status ?: "null"})" }
-            return NavigationTemplate.Builder()
+            return NavigationTemplate
+                .Builder()
                 .setActionStrip(actionStrip)
                 .build()
         }
@@ -224,16 +231,19 @@ class CarlinkClusterScreen(carContext: CarContext) : Screen(carContext) {
 
             val distance = DistanceFormatter.toDistance(state.remainDistance)
 
-            val routingInfo = RoutingInfo.Builder()
-                .setCurrentStep(stepBuilder.build(), distance)
-                .build()
+            val routingInfo =
+                RoutingInfo
+                    .Builder()
+                    .setCurrentStep(stepBuilder.build(), distance)
+                    .build()
 
             logNavi {
                 "[CLUSTER_SCREEN] Template built: maneuver=${state.maneuverType}, " +
                     "dist=${state.remainDistance}m, road=${state.roadName}"
             }
 
-            NavigationTemplate.Builder()
+            NavigationTemplate
+                .Builder()
                 .setActionStrip(actionStrip)
                 .setNavigationInfo(routingInfo)
                 .build()
@@ -243,7 +253,8 @@ class CarlinkClusterScreen(carContext: CarContext) : Screen(carContext) {
                 tag = Logger.Tags.NAVI,
                 throwable = e,
             )
-            NavigationTemplate.Builder()
+            NavigationTemplate
+                .Builder()
                 .setActionStrip(actionStrip)
                 .build()
         }

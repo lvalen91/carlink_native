@@ -89,6 +89,7 @@ object Logger {
 
     private val enabledTags = ConcurrentHashMap<String, Boolean>()
     private val listeners = CopyOnWriteArrayList<LogListener>()
+
     @Volatile
     private var minLevel = Level.DEBUG
 

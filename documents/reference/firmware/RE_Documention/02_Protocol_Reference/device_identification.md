@@ -45,6 +45,9 @@ Offset  Size  Field        Description
 
 | Value | Type | Verification |
 |-------|------|--------------|
+| -2 | Unknown / Reset | AutoKit app default — used internally as "no phone detected" state |
+| -1 | Android (generic) | AutoKit app — Android phone detected but link type not yet determined |
+| 0 | Invalid | AutoKit app — explicitly invalid / uninitialized |
 | 1 | AndroidMirror | pi-carplay enum |
 | 2 | Carlife | Firmware strings |
 | 3 | CarPlay | ✓ **VERIFIED** (USB + Wireless, Jan 2026) |

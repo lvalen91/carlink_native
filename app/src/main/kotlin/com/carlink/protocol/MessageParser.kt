@@ -62,47 +62,83 @@ object MessageParser {
     ): Message =
         when (header.type) {
             MessageType.AUDIO_DATA -> parseAudioData(header, payload)
+
             MessageType.MEDIA_DATA -> parseMediaData(header, payload)
+
             MessageType.COMMAND -> parseCommand(header, payload)
+
             MessageType.PLUGGED -> parsePlugged(header, payload)
+
             MessageType.UNPLUGGED -> UnpluggedMessage(header)
+
             MessageType.BOX_SETTINGS -> parseBoxSettings(header, payload)
+
             MessageType.PEER_BLUETOOTH_ADDRESS -> parsePeerBluetoothAddress(header, payload)
 
             // Inbound diagnostic messages — parsed for logging and future use
             MessageType.PHASE -> parsePhase(header, payload)
+
             MessageType.SOFTWARE_VERSION -> parseStringPayload(header, payload, "SoftwareVersion")
+
             MessageType.BLUETOOTH_DEVICE_NAME -> parseStringPayload(header, payload, "BluetoothDeviceName")
+
             MessageType.WIFI_DEVICE_NAME -> parseStringPayload(header, payload, "WifiDeviceName")
+
             MessageType.BLUETOOTH_ADDRESS -> parseStringPayload(header, payload, "BluetoothAddress")
+
             MessageType.BLUETOOTH_PIN -> parseStringPayload(header, payload, "BluetoothPin")
+
             MessageType.BLUETOOTH_PAIRED_LIST -> parseStringPayload(header, payload, "BluetoothPairedList")
+
             MessageType.MANUFACTURER_INFO -> parseStringPayload(header, payload, "ManufacturerInfo")
+
             MessageType.STATUS_VALUE -> parseStatusValue(header, payload)
+
             MessageType.SESSION_TOKEN -> SessionTokenMessage(header, header.length)
+
             MessageType.NAVI_FOCUS_REQUEST -> NaviFocusMessage(header, isRequest = true)
+
             MessageType.NAVI_FOCUS_RELEASE -> NaviFocusMessage(header, isRequest = false)
+
             MessageType.PEER_BLUETOOTH_ADDRESS_ALT -> parsePeerBluetoothAddress(header, payload)
+
             MessageType.LOGO_TYPE -> parseIntPayload(header, payload, "LogoType")
+
             MessageType.HI_CAR_LINK -> parseStringPayload(header, payload, "HiCarLink")
+
             MessageType.UI_HIDE_PEER_INFO -> InfoMessage(header, "UiHidePeerInfo")
+
             MessageType.UI_BRING_TO_FOREGROUND -> InfoMessage(header, "UiBringToForeground")
+
             MessageType.REMOTE_CX_CY -> parseHexPayload(header, payload, "RemoteCxCy")
+
             MessageType.EXTENDED_MFG_INFO -> parseStringPayload(header, payload, "ExtendedMfgInfo")
+
             MessageType.REMOTE_DISPLAY -> parseHexPayload(header, payload, "RemoteDisplay")
+
             MessageType.OPEN -> parseOpenEcho(header, payload)
 
             // Additional adapter→host messages (firmware binary analysis)
             MessageType.CARPLAY_CONTROL -> parseHexPayload(header, payload, "CarPlayControl")
+
             MessageType.DASHBOARD_DATA -> parseHexPayload(header, payload, "DashboardData")
+
             MessageType.WIFI_STATUS_DATA -> parseHexPayload(header, payload, "WiFiStatusData")
+
             MessageType.DISK_INFO -> parseStringPayload(header, payload, "DiskInfo")
+
             MessageType.DEVICE_EXTENDED_INFO -> parseHexPayload(header, payload, "DeviceExtendedInfo")
+
             MessageType.FACTORY_SETTING -> InfoMessage(header, "FactorySetting")
+
             MessageType.ADAPTER_IDLE -> InfoMessage(header, "AdapterIdle")
+
             MessageType.HEARTBEAT_ECHO -> InfoMessage(header, "HeartbeatEcho")
+
             MessageType.ERROR_REPORT -> parseHexPayload(header, payload, "ErrorReport")
+
             MessageType.UPDATE_PROGRESS -> parseIntPayload(header, payload, "UpdateProgress")
+
             MessageType.DEBUG_TRACE -> parseHexPayload(header, payload, "DebugTrace")
 
             // Navigation video — handled via direct video path in UsbDeviceWrapper,
@@ -208,15 +244,17 @@ object MessageParser {
                     if (header.length < 6) {
                         // Need at least: 4 (type int) + 1 (JSON byte) + 1 (trailing null)
                         emptyMap()
-                    } else try {
-                        val jsonBytes = ByteArray(header.length - 5) // Exclude type int and trailing null
-                        System.arraycopy(payload, 4, jsonBytes, 0, jsonBytes.size)
-                        val jsonString = String(jsonBytes, StandardCharsets.UTF_8).trim('\u0000')
-                        val json = JSONObject(jsonString)
-                        json.keys().asSequence().associateWith { json.get(it) }
-                    } catch (e: JSONException) {
-                        logWarn("[MessageParser] Failed to parse media metadata JSON: ${e.message}")
-                        emptyMap()
+                    } else {
+                        try {
+                            val jsonBytes = ByteArray(header.length - 5) // Exclude type int and trailing null
+                            System.arraycopy(payload, 4, jsonBytes, 0, jsonBytes.size)
+                            val jsonString = String(jsonBytes, StandardCharsets.UTF_8).trim('\u0000')
+                            val json = JSONObject(jsonString)
+                            json.keys().asSequence().associateWith { json.get(it) }
+                        } catch (e: JSONException) {
+                            logWarn("[MessageParser] Failed to parse media metadata JSON: ${e.message}")
+                            emptyMap()
+                        }
                     }
                 }
 
@@ -301,46 +339,68 @@ object MessageParser {
 
     // ==================== Diagnostic Parsers ====================
 
-    private fun parsePhase(header: MessageHeader, payload: ByteArray?): Message {
+    private fun parsePhase(
+        header: MessageHeader,
+        payload: ByteArray?,
+    ): Message {
         if (payload == null || header.length < 4) return PhaseMessage(header, -1)
         val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
         return PhaseMessage(header, buffer.int)
     }
 
-    private fun parseStatusValue(header: MessageHeader, payload: ByteArray?): Message {
+    private fun parseStatusValue(
+        header: MessageHeader,
+        payload: ByteArray?,
+    ): Message {
         if (payload == null || header.length < 4) return StatusValueMessage(header, -1)
         val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
         return StatusValueMessage(header, buffer.int)
     }
 
-    private fun parseStringPayload(header: MessageHeader, payload: ByteArray?, label: String): Message {
+    private fun parseStringPayload(
+        header: MessageHeader,
+        payload: ByteArray?,
+        label: String,
+    ): Message {
         if (payload == null || header.length < 1) return InfoMessage(header, label, "")
         val str = String(payload, 0, header.length, StandardCharsets.UTF_8).trim('\u0000')
         return InfoMessage(header, label, str)
     }
 
-    private fun parseIntPayload(header: MessageHeader, payload: ByteArray?, label: String): Message {
+    private fun parseIntPayload(
+        header: MessageHeader,
+        payload: ByteArray?,
+        label: String,
+    ): Message {
         if (payload == null || header.length < 4) return InfoMessage(header, label, "${header.length}B")
         val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
         return InfoMessage(header, label, "${buffer.int}")
     }
 
-    private fun parseHexPayload(header: MessageHeader, payload: ByteArray?, label: String): Message {
+    private fun parseHexPayload(
+        header: MessageHeader,
+        payload: ByteArray?,
+        label: String,
+    ): Message {
         if (payload == null || header.length < 1) return InfoMessage(header, label, "0B")
-        val hex = payload.take(header.length.coerceAtMost(32))
-            .joinToString(" ") { "%02X".format(it) }
+        val hex =
+            payload
+                .take(header.length.coerceAtMost(32))
+                .joinToString(" ") { "%02X".format(it) }
         val suffix = if (header.length > 32) "... (${header.length}B)" else ""
         return InfoMessage(header, label, "$hex$suffix")
     }
 
-    private fun parseOpenEcho(header: MessageHeader, payload: ByteArray?): Message {
+    private fun parseOpenEcho(
+        header: MessageHeader,
+        payload: ByteArray?,
+    ): Message {
         if (payload == null || header.length < 8) return InfoMessage(header, "OpenEcho", "${header.length}B")
         val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
         val w = buffer.int
         val h = buffer.int
-        return InfoMessage(header, "OpenEcho", "${w}x${h}")
+        return InfoMessage(header, "OpenEcho", "${w}x$h")
     }
-
 }
 
 // ==================== Message Classes ====================
@@ -373,8 +433,11 @@ class CommandMessage(
     val rawId: Int = command.id,
 ) : Message(header) {
     override fun toString(): String =
-        if (command == CommandMapping.INVALID) "Command(unknown id=$rawId / 0x${rawId.toString(16)})"
-        else "Command(${command.name})"
+        if (command == CommandMapping.INVALID) {
+            "Command(unknown id=$rawId / 0x${rawId.toString(16)})"
+        } else {
+            "Command(${command.name})"
+        }
 }
 
 /**
@@ -452,8 +515,11 @@ class BoxSettingsMessage(
     val isPhoneInfo: Boolean,
 ) : Message(header) {
     override fun toString(): String =
-        if (isPhoneInfo) "BoxSettings(phone: ${json.optString("MDModel", "?")})"
-        else "BoxSettings(adapter: ${json.optString("boxType", "?")})"
+        if (isPhoneInfo) {
+            "BoxSettings(phone: ${json.optString("MDModel", "?")})"
+        } else {
+            "BoxSettings(adapter: ${json.optString("boxType", "?")})"
+        }
 }
 
 /**
@@ -482,13 +548,14 @@ class PhaseMessage(
     val phase: Int,
 ) : Message(header) {
     val phaseName: String
-        get() = when (phase) {
-            0 -> "terminated"
-            7 -> "connecting"
-            8 -> "streaming"
-            13 -> "negotiation_failed"
-            else -> "unknown"
-        }
+        get() =
+            when (phase) {
+                0 -> "terminated"
+                7 -> "connecting"
+                8 -> "streaming"
+                13 -> "negotiation_failed"
+                else -> "unknown"
+            }
 
     override fun toString(): String = "Phase($phase=$phaseName)"
 }

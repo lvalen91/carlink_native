@@ -150,4 +150,6 @@
 [83] :: Icon Thrashing fix, and more code cleanup
 [84] :: Log File export fixes
 [85] :: Testing Debug APK Only: Make app category 'HomeScreen' to replace GM Homescreen and freeup resources on GM Intel AAOS. Release APK: Instrument Cluster log level added
-[86] :: Single Keyframe Req for AA to correct anomaly at start of session. Some code cleanup and other video related fixes.
+[86] :: Single Keyframe Req for AA to correct anomaly at start of session. Fixed Android Auto scaling and touch coordination issues. Some code cleanup and other video related fixes.
+[87] :: AA fixes from 86 affected CarPlay. Those issues have been fixed.
+[88] :: Some cleanup and static tool checks.

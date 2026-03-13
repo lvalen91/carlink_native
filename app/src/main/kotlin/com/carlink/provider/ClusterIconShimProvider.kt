@@ -30,7 +30,6 @@ import java.util.LinkedHashMap
  * - openFile(): serve cached PNG via pipe (with optional scaling)
  */
 class ClusterIconShimProvider : ContentProvider() {
-
     companion object {
         private const val TAG = Logger.Tags.ICON_SHIM
         private const val AUTHORITY =
@@ -38,24 +37,28 @@ class ClusterIconShimProvider : ContentProvider() {
         private const val MAX_CACHE_SIZE = 20
     }
 
-    private val iconCache: MutableMap<String, ByteArray> = Collections.synchronizedMap(
-        object : LinkedHashMap<String, ByteArray>(MAX_CACHE_SIZE, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean {
-                val shouldRemove = size > MAX_CACHE_SIZE
-                if (shouldRemove && eldest != null) {
-                    Logger.d("Evicted ${eldest.key} from icon cache (LRU)", tag = TAG)
+    private val iconCache: MutableMap<String, ByteArray> =
+        Collections.synchronizedMap(
+            object : LinkedHashMap<String, ByteArray>(MAX_CACHE_SIZE, 0.75f, true) {
+                override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ByteArray>?): Boolean {
+                    val shouldRemove = size > MAX_CACHE_SIZE
+                    if (shouldRemove && eldest != null) {
+                        Logger.d("Evicted ${eldest.key} from icon cache (LRU)", tag = TAG)
+                    }
+                    return shouldRemove
                 }
-                return shouldRemove
-            }
-        }
-    )
+            },
+        )
 
     override fun onCreate(): Boolean {
         Logger.i("ClusterIconShimProvider registered (authority=$AUTHORITY)", tag = TAG)
         return true
     }
 
-    override fun insert(uri: Uri, values: ContentValues?): Uri? {
+    override fun insert(
+        uri: Uri,
+        values: ContentValues?,
+    ): Uri? {
         if (values == null) {
             Logger.w("insert() called with null ContentValues", tag = TAG)
             return "content://$AUTHORITY/img/empty".toUri()
@@ -102,11 +105,12 @@ class ClusterIconShimProvider : ContentProvider() {
         // Decode dimensions without allocating the full bitmap
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(data, 0, data.size, opts)
-        val aspectRatio = if (opts.outHeight > 0) {
-            opts.outWidth.toDouble() / opts.outHeight.toDouble()
-        } else {
-            1.0
-        }
+        val aspectRatio =
+            if (opts.outHeight > 0) {
+                opts.outWidth.toDouble() / opts.outHeight.toDouble()
+            } else {
+                1.0
+            }
 
         val contentUri = "content://$AUTHORITY/img/$cacheKey"
         cursor.addRow(arrayOf<Any>(contentUri, aspectRatio))
@@ -117,7 +121,10 @@ class ClusterIconShimProvider : ContentProvider() {
         return cursor
     }
 
-    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor? {
+    override fun openFile(
+        uri: Uri,
+        mode: String,
+    ): ParcelFileDescriptor? {
         val cacheKey = uri.lastPathSegment
         if (cacheKey == null) {
             Logger.w("openFile() with null lastPathSegment", tag = TAG)
@@ -133,13 +140,14 @@ class ClusterIconShimProvider : ContentProvider() {
         // Check for scaling parameters
         val targetW = uri.getQueryParameter("w")?.toIntOrNull()
         val targetH = uri.getQueryParameter("h")?.toIntOrNull()
-        val outputData = if (targetW != null && targetH != null && targetW > 0 && targetH > 0) {
-            scaleIcon(data, targetW, targetH)
-        } else {
-            data
-        }
+        val outputData =
+            if (targetW != null && targetH != null && targetW > 0 && targetH > 0) {
+                scaleIcon(data, targetW, targetH)
+            } else {
+                data
+            }
 
-        Logger.d("openFile() serving $cacheKey (${outputData.size} bytes, scale=${targetW}x${targetH})", tag = TAG)
+        Logger.d("openFile() serving $cacheKey (${outputData.size} bytes, scale=${targetW}x$targetH)", tag = TAG)
 
         val pipe = ParcelFileDescriptor.createPipe()
         val readEnd = pipe[0]
@@ -158,7 +166,11 @@ class ClusterIconShimProvider : ContentProvider() {
         return readEnd
     }
 
-    private fun scaleIcon(pngData: ByteArray, w: Int, h: Int): ByteArray {
+    private fun scaleIcon(
+        pngData: ByteArray,
+        w: Int,
+        h: Int,
+    ): ByteArray {
         return try {
             val original = BitmapFactory.decodeByteArray(pngData, 0, pngData.size) ?: return pngData
             val scaled = original.scale(w, h, true)
@@ -168,12 +180,16 @@ class ClusterIconShimProvider : ContentProvider() {
             original.recycle()
             out.toByteArray()
         } catch (e: Exception) {
-            Logger.w("scaleIcon() failed (${w}x${h}): ${e.message} — using original", tag = TAG)
+            Logger.w("scaleIcon() failed (${w}x$h): ${e.message} — using original", tag = TAG)
             pngData
         }
     }
 
-    override fun delete(uri: Uri, selection: String?, selectionArgs: Array<out String>?): Int = 0
+    override fun delete(
+        uri: Uri,
+        selection: String?,
+        selectionArgs: Array<out String>?,
+    ): Int = 0
 
     override fun update(
         uri: Uri,

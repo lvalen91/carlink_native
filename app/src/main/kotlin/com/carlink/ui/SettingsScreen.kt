@@ -1,6 +1,8 @@
 package com.carlink.ui
 
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -21,8 +23,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -32,9 +34,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.DisplaySettings
-import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.PhoneDisabled
 import androidx.compose.material.icons.filled.PowerOff
@@ -75,9 +77,6 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import android.content.Intent
-import android.provider.Settings
-import com.carlink.BuildConfig
 import com.carlink.CarlinkManager
 import com.carlink.logging.FileLogManager
 import com.carlink.logging.logInfo
@@ -332,7 +331,6 @@ private fun ControlTabContent(
                             carlinkManager.stop()
                         },
                     )
-
                 }
 
                 // App Control Card
@@ -424,7 +422,6 @@ private fun ControlTabContent(
                     )
                 }
             }
-
         }
     }
 
@@ -513,7 +510,6 @@ private fun ControlTabContent(
             },
         )
     }
-
 }
 
 /** Debug-only tab: launcher home settings. */
@@ -543,8 +539,9 @@ private fun HomeTabContent() {
                 icon = Icons.Default.Home,
             ) {
                 Text(
-                    text = "CarLink is registered as a HOME launcher in this debug build. " +
-                        "Use the button below to open system home settings and set the default.",
+                    text =
+                        "CarLink is registered as a HOME launcher in this debug build. " +
+                            "Use the button below to open system home settings and set the default.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -728,6 +725,5 @@ private fun ControlButton(
                 )
             }
         }
-
     }
 }

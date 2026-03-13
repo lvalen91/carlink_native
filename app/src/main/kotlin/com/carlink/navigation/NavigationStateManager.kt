@@ -4,7 +4,6 @@ import android.os.SystemClock
 import com.carlink.logging.Logger
 import com.carlink.logging.logInfo
 import com.carlink.logging.logNavi
-import com.carlink.logging.logWarn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,19 +20,19 @@ import kotlinx.coroutines.flow.asStateFlow
  * overwrite the first, showing the wrong road name on the cluster.
  */
 data class NavigationState(
-    val status: Int = 0,               // 0=idle, 1=active, 2=calculating
-    val maneuverType: Int = 0,         // CPManeuverType 0-53
-    val orderType: Int = 0,            // 0=continue, 1=turn, 2=exit, 3=roundabout, 4=uturn, 5=keepLeft, 6=keepRight
+    val status: Int = 0, // 0=idle, 1=active, 2=calculating
+    val maneuverType: Int = 0, // CPManeuverType 0-53
+    val orderType: Int = 0, // 0=continue, 1=turn, 2=exit, 3=roundabout, 4=uturn, 5=keepLeft, 6=keepRight
     val roadName: String? = null,
-    val remainDistance: Int = 0,        // Meters to next maneuver
+    val remainDistance: Int = 0, // Meters to next maneuver
     val distanceToDestination: Int = 0, // Total meters remaining
-    val timeToDestination: Int = 0,    // Seconds to destination
+    val timeToDestination: Int = 0, // Seconds to destination
     val destinationName: String? = null,
-    val appName: String? = null,       // "Apple Maps" etc.
-    val turnAngle: Int = 0,            // Turn angle in degrees
-    val turnSide: Int = 0,             // 0=right-hand driving, 1=left-hand driving
-    val junctionType: Int = 0,         // 0=intersection, 1=roundabout
-    val roundaboutExit: Int = 0,       // NaviRoundaboutExit (1-19, 0=not roundabout)
+    val appName: String? = null, // "Apple Maps" etc.
+    val turnAngle: Int = 0, // Turn angle in degrees
+    val turnSide: Int = 0, // 0=right-hand driving, 1=left-hand driving
+    val junctionType: Int = 0, // 0=intersection, 1=roundabout
+    val roundaboutExit: Int = 0, // NaviRoundaboutExit (1-19, 0=not roundabout)
     // Next-step fields — from firmware double-maneuver burst
     val nextManeuverType: Int? = null,
     val nextOrderType: Int? = null,
@@ -115,26 +114,27 @@ object NavigationStateManager {
         if (isBurst) {
             // Burst: route maneuver-specific fields to next-step slots.
             // Route-level fields (status, distance, destination, turnSide) still update current.
-            val merged = current.copy(
-                status = naviStatus ?: current.status,
-                remainDistance = (payload["NaviRemainDistance"] as? Number)?.toInt() ?: current.remainDistance,
-                distanceToDestination =
-                    (payload["NaviDistanceToDestination"] as? Number)?.toInt()
-                        ?: current.distanceToDestination,
-                timeToDestination = (payload["NaviTimeToDestination"] as? Number)?.toInt() ?: current.timeToDestination,
-                destinationName =
-                    (payload["NaviDestinationName"] as? String)?.takeIf { it.isNotEmpty() }
-                        ?: current.destinationName,
-                appName = (payload["NaviAPPName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.appName,
-                turnSide = (payload["NaviTurnSide"] as? Number)?.toInt() ?: current.turnSide,
-                // Maneuver fields → next-step
-                nextManeuverType = (payload["NaviManeuverType"] as? Number)?.toInt(),
-                nextOrderType = (payload["NaviOrderType"] as? Number)?.toInt(),
-                nextRoadName = (payload["NaviRoadName"] as? String)?.takeIf { it.isNotEmpty() },
-                nextTurnAngle = (payload["NaviTurnAngle"] as? Number)?.toInt(),
-                nextJunctionType = (payload["NaviJunctionType"] as? Number)?.toInt(),
-                nextRoundaboutExit = (payload["NaviRoundaboutExit"] as? Number)?.toInt(),
-            )
+            val merged =
+                current.copy(
+                    status = naviStatus ?: current.status,
+                    remainDistance = (payload["NaviRemainDistance"] as? Number)?.toInt() ?: current.remainDistance,
+                    distanceToDestination =
+                        (payload["NaviDistanceToDestination"] as? Number)?.toInt()
+                            ?: current.distanceToDestination,
+                    timeToDestination = (payload["NaviTimeToDestination"] as? Number)?.toInt() ?: current.timeToDestination,
+                    destinationName =
+                        (payload["NaviDestinationName"] as? String)?.takeIf { it.isNotEmpty() }
+                            ?: current.destinationName,
+                    appName = (payload["NaviAPPName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.appName,
+                    turnSide = (payload["NaviTurnSide"] as? Number)?.toInt() ?: current.turnSide,
+                    // Maneuver fields → next-step
+                    nextManeuverType = (payload["NaviManeuverType"] as? Number)?.toInt(),
+                    nextOrderType = (payload["NaviOrderType"] as? Number)?.toInt(),
+                    nextRoadName = (payload["NaviRoadName"] as? String)?.takeIf { it.isNotEmpty() },
+                    nextTurnAngle = (payload["NaviTurnAngle"] as? Number)?.toInt(),
+                    nextJunctionType = (payload["NaviJunctionType"] as? Number)?.toInt(),
+                    nextRoundaboutExit = (payload["NaviRoundaboutExit"] as? Number)?.toInt(),
+                )
 
             logInfo(
                 "[NAVI] Burst detected (${gapMs}ms gap) — " +
@@ -148,33 +148,34 @@ object NavigationStateManager {
         }
 
         // Normal transition: update current maneuver fields, clear next-step
-        val merged = current.copy(
-            status = naviStatus ?: current.status,
-            maneuverType = (payload["NaviManeuverType"] as? Number)?.toInt() ?: current.maneuverType,
-            orderType = (payload["NaviOrderType"] as? Number)?.toInt() ?: current.orderType,
-            roadName = (payload["NaviRoadName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.roadName,
-            remainDistance = (payload["NaviRemainDistance"] as? Number)?.toInt() ?: current.remainDistance,
-            distanceToDestination =
-                (payload["NaviDistanceToDestination"] as? Number)?.toInt()
-                    ?: current.distanceToDestination,
-            timeToDestination = (payload["NaviTimeToDestination"] as? Number)?.toInt() ?: current.timeToDestination,
-            destinationName =
-                (payload["NaviDestinationName"] as? String)?.takeIf { it.isNotEmpty() }
-                    ?: current.destinationName,
-            appName = (payload["NaviAPPName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.appName,
-            turnAngle = (payload["NaviTurnAngle"] as? Number)?.toInt() ?: current.turnAngle,
-            turnSide = (payload["NaviTurnSide"] as? Number)?.toInt() ?: current.turnSide,
-            junctionType = (payload["NaviJunctionType"] as? Number)?.toInt() ?: current.junctionType,
-            roundaboutExit = (payload["NaviRoundaboutExit"] as? Number)?.toInt() ?: current.roundaboutExit,
-            // Clear next-step on normal maneuver transition — previous preview is stale.
-            // Distance-only updates (no NaviManeuverType) preserve existing next-step.
-            nextManeuverType = if (isManeuverMessage) null else current.nextManeuverType,
-            nextOrderType = if (isManeuverMessage) null else current.nextOrderType,
-            nextRoadName = if (isManeuverMessage) null else current.nextRoadName,
-            nextTurnAngle = if (isManeuverMessage) null else current.nextTurnAngle,
-            nextJunctionType = if (isManeuverMessage) null else current.nextJunctionType,
-            nextRoundaboutExit = if (isManeuverMessage) null else current.nextRoundaboutExit,
-        )
+        val merged =
+            current.copy(
+                status = naviStatus ?: current.status,
+                maneuverType = (payload["NaviManeuverType"] as? Number)?.toInt() ?: current.maneuverType,
+                orderType = (payload["NaviOrderType"] as? Number)?.toInt() ?: current.orderType,
+                roadName = (payload["NaviRoadName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.roadName,
+                remainDistance = (payload["NaviRemainDistance"] as? Number)?.toInt() ?: current.remainDistance,
+                distanceToDestination =
+                    (payload["NaviDistanceToDestination"] as? Number)?.toInt()
+                        ?: current.distanceToDestination,
+                timeToDestination = (payload["NaviTimeToDestination"] as? Number)?.toInt() ?: current.timeToDestination,
+                destinationName =
+                    (payload["NaviDestinationName"] as? String)?.takeIf { it.isNotEmpty() }
+                        ?: current.destinationName,
+                appName = (payload["NaviAPPName"] as? String)?.takeIf { it.isNotEmpty() } ?: current.appName,
+                turnAngle = (payload["NaviTurnAngle"] as? Number)?.toInt() ?: current.turnAngle,
+                turnSide = (payload["NaviTurnSide"] as? Number)?.toInt() ?: current.turnSide,
+                junctionType = (payload["NaviJunctionType"] as? Number)?.toInt() ?: current.junctionType,
+                roundaboutExit = (payload["NaviRoundaboutExit"] as? Number)?.toInt() ?: current.roundaboutExit,
+                // Clear next-step on normal maneuver transition — previous preview is stale.
+                // Distance-only updates (no NaviManeuverType) preserve existing next-step.
+                nextManeuverType = if (isManeuverMessage) null else current.nextManeuverType,
+                nextOrderType = if (isManeuverMessage) null else current.nextOrderType,
+                nextRoadName = if (isManeuverMessage) null else current.nextRoadName,
+                nextTurnAngle = if (isManeuverMessage) null else current.nextTurnAngle,
+                nextJunctionType = if (isManeuverMessage) null else current.nextJunctionType,
+                nextRoundaboutExit = if (isManeuverMessage) null else current.nextRoundaboutExit,
+            )
 
         if (isManeuverMessage && current.hasNextStep) {
             logInfo(

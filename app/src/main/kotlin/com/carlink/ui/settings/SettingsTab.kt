@@ -19,12 +19,13 @@ enum class SettingsTab(
     companion object {
         /** Tabs visible in the current build. HOME is debug-only. */
         val visible: List<SettingsTab>
-            get() = entries.filter { tab ->
-                when (tab) {
-                    HOME -> BuildConfig.DEBUG
-                    LOGS -> !BuildConfig.DEBUG
-                    else -> true
+            get() =
+                entries.filter { tab ->
+                    when (tab) {
+                        HOME -> BuildConfig.DEBUG
+                        LOGS -> !BuildConfig.DEBUG
+                        else -> true
+                    }
                 }
-            }
     }
 }

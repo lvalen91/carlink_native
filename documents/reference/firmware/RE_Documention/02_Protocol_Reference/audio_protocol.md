@@ -621,6 +621,58 @@ The OpenAuto SDK uses numeric focus types to signal audio focus changes:
 
 ---
 
+## Host Audio Focus Architecture (AutoKit Decompilation, Mar 2026)
+
+**Source:** Carlinkit AutoKit app v2025.03.19.1126 — manufacturer's reference implementation.
+
+The AutoKit app creates **5 independent audio focus managers**, each with dedicated `AudioAttributes` (Android SDK 26+). This maps the adapter's audio commands to proper Android audio routing:
+
+### Audio Focus Manager Mapping
+
+| Manager | AudioAttributes Usage | ContentType | Focus Type | Adapter Trigger |
+|---------|----------------------|-------------|------------|-----------------|
+| **MediaManager** | USAGE_MEDIA (1) | CONTENT_TYPE_MUSIC (2) | AUDIOFOCUS_GAIN (1) | MEDIA_START (0x0A) |
+| **NavManager** | USAGE_ASSISTANCE_NAVIGATION_GUIDANCE (12) | CONTENT_TYPE_MUSIC (2) | AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK (3) | NAVI_START (0x07) |
+| **CallManager** | USAGE_VOICE_COMMUNICATION (2) | CONTENT_TYPE_SPEECH (1) | AUDIOFOCUS_GAIN_TRANSIENT (2) | PHONECALL_START (0x05) |
+| **RingManager** | USAGE_NOTIFICATION_RINGTONE (6) | CONTENT_TYPE_MUSIC (2) | AUDIOFOCUS_GAIN_TRANSIENT (2) | ALERT_START (0x0C) |
+| **VoiceManager** | USAGE_VOICE_COMMUNICATION_SIGNALLING (16) | CONTENT_TYPE_SPEECH (1) | AUDIOFOCUS_GAIN_TRANSIENT (2) | SIRI_START (0x09) |
+
+**Legacy API (SDK < 26):** MediaManager uses `STREAM_MUSIC` (3), CallManager uses `STREAM_VOICE_CALL` (0), RingManager uses `STREAM_RING` (2).
+
+### Volume Ducking
+
+On `AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK`:
+- **Android Auto streaming:** Duck media volume to **0.8f** (80%)
+- **All other modes:** Duck media volume to **0.2f** (20%)
+
+### Audio Player Instances (8 Total)
+
+The app pre-creates 8 AudioTrack instances covering all decode_type × stream_type combinations:
+
+| # | decode_type | stream | Rate | Channels | Purpose |
+|---|-------------|--------|------|----------|---------|
+| 1 | 2 | Main | 44.1kHz | Stereo | CarPlay media |
+| 2 | 2 | Nav | 44.1kHz | Stereo | CarPlay navigation |
+| 3 | 3 | Main | 8kHz | Mono | Narrowband phone call |
+| 4 | 4 | Main | 48kHz | Stereo | AA/HiCar media |
+| 5 | 5/7 | Main | 16kHz | Mono/Stereo | Wideband voice (Siri, calls) |
+| 6 | 6 | Main | 24kHz | Mono | Super-wideband voice |
+| 7 | 5 | Nav | 16kHz | Mono | Navigation voice prompts |
+| 8 | 4 | Nav | 48kHz | Stereo | AA navigation audio |
+
+### Platform-Specific Audio Overrides
+
+| Platform | Override |
+|----------|----------|
+| Renesas G6SH | CallManager uses USAGE_ASSISTANCE_SONIFICATION (13); VoiceManager delegates to NavManager |
+| eCarX IHU3Q122 | Mic recording uses channel mask 3 |
+| Intel HONG QI / alps changan | Mic recording uses channel mask 15 |
+| Qualcomm msmnile / Leapmotor C10 | Mic source = VOICE_COMMUNICATION (7) |
+| Qualcomm MSM8996 (JMEV) | Mic source = UNPROCESSED (10) |
+| Default | Mic source = MIC (1), channel mask = CHANNEL_IN_MONO (16) |
+
+---
+
 ## References
 
 - Source: `GM_research/cpc200_research/docs/protocol/AUDIO_PROTOCOL.md`

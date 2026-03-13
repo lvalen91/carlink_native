@@ -20,10 +20,7 @@ import com.carlink.logging.logInfo
  * This service does NOT initialize CarlinkManager, video, audio, or USB.
  */
 class CarlinkClusterService : CarAppService() {
-
-    override fun createHostValidator(): HostValidator {
-        return HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
-    }
+    override fun createHostValidator(): HostValidator = HostValidator.ALLOW_ALL_HOSTS_VALIDATOR
 
     @Suppress("DEPRECATION")
     override fun onCreateSession(): Session {

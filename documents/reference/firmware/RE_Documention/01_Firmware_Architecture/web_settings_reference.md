@@ -195,7 +195,7 @@ if (FastConnect && mac_matches(LastConnectedDevice)) {
 
 | Web API Name | riddleBoxCfg Name | Range | Default | Firmware Hook |
 |--------------|-------------------|-------|---------|---------------|
-| `autoPlay` | `AutoPlauMusic` | 0-1 | 0 | Auto-play music on HiCar |
+| `autoPlay` | `AutoPlauMusic` | 0-1 | 0 | Auto-play music on CarPlay connect. ⚠️ Settable via web UI only — BoxSettings JSON `autoPlay` is NOT mapped in ARMadb-driver. |
 | `HudGPSSwitch` | `HudGPSSwitch` | 0-1 | 1 | Pass car GPS to phone |
 | `HiCarConnectMode` | `HiCarConnectMode` | 0-1 | 0 | HiCar connection method |
 | `AndroidAutoWidth` | `AndroidAutoWidth` | 0-4096 | 0 | AA display width |

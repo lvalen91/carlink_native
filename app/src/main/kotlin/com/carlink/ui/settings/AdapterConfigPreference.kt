@@ -110,7 +110,9 @@ enum class CallQualityConfig(
  * Lower values = less audio latency but more susceptible to USB jitter.
  * Higher values = more stable but noticeable audio lag.
  */
-enum class MediaDelayConfig(val delayMs: Int) {
+enum class MediaDelayConfig(
+    val delayMs: Int,
+) {
     LOW(300),
     MEDIUM(500),
     STANDARD(1000),
@@ -128,7 +130,9 @@ enum class MediaDelayConfig(val delayMs: Int) {
  * 30 FPS is default — sufficient for CarPlay UI and reduces thermal/power load.
  * 60 FPS available for smoother animations if the display supports it.
  */
-enum class FpsConfig(val fps: Int) {
+enum class FpsConfig(
+    val fps: Int,
+) {
     FPS_30(30),
     FPS_60(60),
     ;
@@ -143,7 +147,9 @@ enum class FpsConfig(val fps: Int) {
  * Controls which side the UI elements are positioned for the driver.
  * Written to /tmp/hand_drive_mode on the adapter (0=LHD, 1=RHD).
  */
-enum class HandDriveConfig(val value: Int) {
+enum class HandDriveConfig(
+    val value: Int,
+) {
     /** Left Hand Drive — dock on left, for countries that drive on the right (US, Europe). */
     LEFT(0),
 
@@ -201,13 +207,10 @@ data class VideoResolutionConfig(
          * @param displayHeight Native display height in pixels
          * @return List of 4 resolution options, largest to smallest
          */
-        fun calculateOptions(displayWidth: Int, displayHeight: Int): List<VideoResolutionConfig> {
-            // Calculate GCD to find the aspect ratio
-            fun gcd(a: Int, b: Int): Int = if (b == 0) a else gcd(b, a % b)
-            val g = gcd(displayWidth, displayHeight)
-            val ratioW = displayWidth / g
-            val ratioH = displayHeight / g
-
+        fun calculateOptions(
+            displayWidth: Int,
+            displayHeight: Int,
+        ): List<VideoResolutionConfig> {
             // Calculate scale factors to generate 4 options
             // Start from ~93.75% of original, then 83.3%, 72.9%, 62.5%
             val scaleFactors = listOf(0.9375, 0.833, 0.729, 0.625)
@@ -586,8 +589,7 @@ class AdapterConfigPreference private constructor(
     /**
      * Get current GPS forwarding configuration synchronously.
      */
-    fun getGpsForwardingSync(): Boolean =
-        syncCache.getBoolean(SYNC_CACHE_KEY_GPS_FORWARDING, false)
+    fun getGpsForwardingSync(): Boolean = syncCache.getBoolean(SYNC_CACHE_KEY_GPS_FORWARDING, false)
 
     /**
      * Set GPS forwarding configuration.
@@ -614,8 +616,7 @@ class AdapterConfigPreference private constructor(
     /**
      * Get current cluster navigation configuration synchronously.
      */
-    fun getClusterNavigationSync(): Boolean =
-        syncCache.getBoolean(SYNC_CACHE_KEY_CLUSTER_NAVIGATION, false)
+    fun getClusterNavigationSync(): Boolean = syncCache.getBoolean(SYNC_CACHE_KEY_CLUSTER_NAVIGATION, false)
 
     /**
      * Set cluster navigation configuration.
@@ -640,10 +641,12 @@ class AdapterConfigPreference private constructor(
      */
     fun applyClusterComponentState(context: Context) {
         val enabled = getClusterNavigationSync()
-        val newState = if (enabled)
-            PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-        else
-            PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+        val newState =
+            if (enabled) {
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+            } else {
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+            }
         context.packageManager.setComponentEnabledSetting(
             ComponentName(context, "com.carlink.cluster.CarlinkClusterService"),
             newState,
@@ -800,8 +803,7 @@ class AdapterConfigPreference private constructor(
         }
     }
 
-    fun getLastInitVersionCode(): Long =
-        syncCache.getLong(SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE, 0L)
+    fun getLastInitVersionCode(): Long = syncCache.getLong(SYNC_CACHE_KEY_LAST_INIT_VERSION_CODE, 0L)
 
     suspend fun updateLastInitVersionCode(versionCode: Long) {
         dataStore.edit { it[KEY_LAST_INIT_VERSION_CODE] = versionCode }
@@ -811,8 +813,7 @@ class AdapterConfigPreference private constructor(
     /**
      * Get pending configuration changes synchronously.
      */
-    fun getPendingChangesSync(): Set<String> =
-        syncCache.getStringSet(SYNC_CACHE_KEY_PENDING_CHANGES, emptySet()) ?: emptySet()
+    fun getPendingChangesSync(): Set<String> = syncCache.getStringSet(SYNC_CACHE_KEY_PENDING_CHANGES, emptySet()) ?: emptySet()
 
     /**
      * Add a configuration key to pending changes.
@@ -875,10 +876,21 @@ class AdapterConfigPreference private constructor(
         val pendingChanges = getPendingChangesSync()
         val lastInitVersion = getLastInitVersionCode()
         return when (mode) {
-            InitMode.FULL -> if (!hasCompletedFirstInitSync()) "FULL (first launch)"
-                else "FULL (version $lastInitVersion → $currentVersionCode)"
-            InitMode.MINIMAL_PLUS_CHANGES -> "MINIMAL + changes: $pendingChanges"
-            InitMode.MINIMAL_ONLY -> "MINIMAL (no changes)"
+            InitMode.FULL -> {
+                if (!hasCompletedFirstInitSync()) {
+                    "FULL (first launch)"
+                } else {
+                    "FULL (version $lastInitVersion → $currentVersionCode)"
+                }
+            }
+
+            InitMode.MINIMAL_PLUS_CHANGES -> {
+                "MINIMAL + changes: $pendingChanges"
+            }
+
+            InitMode.MINIMAL_ONLY -> {
+                "MINIMAL (no changes)"
+            }
         }
     }
 }

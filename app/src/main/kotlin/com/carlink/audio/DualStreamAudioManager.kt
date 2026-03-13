@@ -63,12 +63,16 @@ class DualStreamAudioManager(
 ) {
     // Media pool: pre-created AudioTrack+buffer per format (eliminates ~220ms switch gap)
     private val mediaSlots = mutableMapOf<AudioFormatConfig, MediaSlot>()
+
     @Volatile private var activeMediaSlot: MediaSlot? = null
+
     @Volatile private var activeMediaFormat: AudioFormatConfig? = null
 
     // Navigation: single track (format doesn't change mid-session)
     @Volatile private var navTrack: AudioTrack? = null
+
     @Volatile private var navBuffer: AudioRingBuffer? = null
+
     @Volatile private var navFormat: AudioFormatConfig? = null
 
     private var mediaVolume: Float = 1.0f
@@ -187,7 +191,11 @@ class DualStreamAudioManager(
      * Check if audio data is zero-filled (adapter issue).
      * Real audio has dithering noise even during silence.
      */
-    private fun isZeroFilledAudio(data: ByteArray, offset: Int, length: Int): Boolean {
+    private fun isZeroFilledAudio(
+        data: ByteArray,
+        offset: Int,
+        length: Int,
+    ): Boolean {
         if (length < 16) return false
         val end = offset + length
 
@@ -216,7 +224,11 @@ class DualStreamAudioManager(
      * Distinct from warmup noise (mixed 0xFFFF/0x0000/0xFEFF patterns).
      * When detected: flush buffers for clean next NaviStart.
      */
-    private fun isNavEndMarker(data: ByteArray, offset: Int, length: Int): Boolean {
+    private fun isNavEndMarker(
+        data: ByteArray,
+        offset: Int,
+        length: Int,
+    ): Boolean {
         if (length < 32) return false
         val end = offset + length
 
@@ -245,7 +257,11 @@ class DualStreamAudioManager(
      * Detect warmup noise (near-silence mix of 0xFFFF/0x0000/0xFEFF).
      * Appears ~200-400ms after NavStart. Causes distortion if played.
      */
-    private fun isWarmupNoise(data: ByteArray, offset: Int, length: Int): Boolean {
+    private fun isWarmupNoise(
+        data: ByteArray,
+        offset: Int,
+        length: Int,
+    ): Boolean {
         if (length < 32) return false
         val end = offset + length
 
@@ -327,7 +343,7 @@ class DualStreamAudioManager(
                         flushNavBuffers()
                         log(
                             "[AUDIO_FILTER] Nav buffer flushed after " +
-                                "$consecutiveNavZeroPackets consecutive zero packets"
+                                "$consecutiveNavZeroPackets consecutive zero packets",
                         )
                         consecutiveNavZeroPackets = 0
                     }
@@ -344,7 +360,7 @@ class DualStreamAudioManager(
                     if (navWarmupFramesSkipped == 1L || navWarmupFramesSkipped % 10 == 0L) {
                         log(
                             "[AUDIO] Skipped nav warmup frame " +
-                                "(${timeSinceStart}ms since start, total: $navWarmupFramesSkipped)"
+                                "(${timeSinceStart}ms since start, total: $navWarmupFramesSkipped)",
                         )
                     }
                     return 0
@@ -526,7 +542,8 @@ class DualStreamAudioManager(
                         if (track != null && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
                             track.pause()
                         }
-                    } catch (_: Exception) {}
+                    } catch (_: Exception) {
+                    }
                     currentSlot.draining = false
                     currentSlot.started = false
                     currentSlot.pendingPlay = false
@@ -534,22 +551,25 @@ class DualStreamAudioManager(
             }
 
             // Get or create target slot (lazy creation per format)
-            val targetSlot = mediaSlots.getOrPut(format) {
-                val buffer = AudioRingBuffer(
-                    capacityMs = audioConfig.mediaBufferCapacityMs,
-                    sampleRate = format.sampleRate,
-                    channels = format.channelCount,
-                )
-                val chunkSize = format.sampleRate * format.channelCount * 2 * 5 / 1000
-                val slot = MediaSlot(
-                    format = format,
-                    track = createAudioTrack(format, AudioStreamType.MEDIA),
-                    buffer = buffer,
-                    tempBuffer = ByteArray(chunkSize * 20),
-                )
-                log("[AUDIO] Pool: created ${format.sampleRate}Hz/${format.channelCount}ch slot")
-                slot
-            }
+            val targetSlot =
+                mediaSlots.getOrPut(format) {
+                    val buffer =
+                        AudioRingBuffer(
+                            capacityMs = audioConfig.mediaBufferCapacityMs,
+                            sampleRate = format.sampleRate,
+                            channels = format.channelCount,
+                        )
+                    val chunkSize = format.sampleRate * format.channelCount * 2 * 5 / 1000
+                    val slot =
+                        MediaSlot(
+                            format = format,
+                            track = createAudioTrack(format, AudioStreamType.MEDIA),
+                            buffer = buffer,
+                            tempBuffer = ByteArray(chunkSize * 20),
+                        )
+                    log("[AUDIO] Pool: created ${format.sampleRate}Hz/${format.channelCount}ch slot")
+                    slot
+                }
 
             // Clear stale data and reset state for activation
             targetSlot.buffer.clear()
@@ -786,7 +806,9 @@ class DualStreamAudioManager(
                         val isActive = slot === currentActive
                         if (track.playState != AudioTrack.PLAYSTATE_PLAYING &&
                             !slot.pendingPlay && !slot.draining
-                        ) continue
+                        ) {
+                            continue
+                        }
 
                         val buffer = slot.buffer
                         val currentFillMs = buffer.fillLevelMs()
@@ -802,15 +824,20 @@ class DualStreamAudioManager(
                                     while (buffer.fillLevelMs() > effectiveMinBufMs) {
                                         val avail = buffer.availableForRead()
                                         if (avail <= 0) break
-                                        val bytesRead = buffer.read(
-                                            slot.tempBuffer, 0,
-                                            minOf(avail, slot.tempBuffer.size),
-                                        )
+                                        val bytesRead =
+                                            buffer.read(
+                                                slot.tempBuffer,
+                                                0,
+                                                minOf(avail, slot.tempBuffer.size),
+                                            )
                                         if (bytesRead <= 0) break
-                                        val written = track.write(
-                                            slot.tempBuffer, 0, bytesRead,
-                                            AudioTrack.WRITE_NON_BLOCKING,
-                                        )
+                                        val written =
+                                            track.write(
+                                                slot.tempBuffer,
+                                                0,
+                                                bytesRead,
+                                                AudioTrack.WRITE_NON_BLOCKING,
+                                            )
                                         if (written <= 0) break
                                         windowMediaPlayed.addAndGet(written.toLong())
                                         preloaded += written
@@ -835,7 +862,8 @@ class DualStreamAudioManager(
                                     slot.draining = false
                                     try {
                                         if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause()
-                                    } catch (_: Exception) {}
+                                    } catch (_: Exception) {
+                                    }
                                     log("[AUDIO] Drain complete (${slot.format.sampleRate}Hz), track paused (empty)")
                                     continue
                                 }
@@ -846,10 +874,13 @@ class DualStreamAudioManager(
 
                         // Retry residual from prior partial WRITE_NON_BLOCKING
                         if (slot.residualCount > 0) {
-                            val written = track.write(
-                                slot.tempBuffer, slot.residualOffset,
-                                slot.residualCount, AudioTrack.WRITE_NON_BLOCKING,
-                            )
+                            val written =
+                                track.write(
+                                    slot.tempBuffer,
+                                    slot.residualOffset,
+                                    slot.residualCount,
+                                    AudioTrack.WRITE_NON_BLOCKING,
+                                )
                             if (written < 0) {
                                 slot.residualCount = 0
                                 handleTrackError("MEDIA", written, slot)
@@ -869,7 +900,8 @@ class DualStreamAudioManager(
                                 slot.draining = false
                                 try {
                                     if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause()
-                                } catch (_: Exception) {}
+                                } catch (_: Exception) {
+                                }
                                 log("[AUDIO] Drain complete (${slot.format.sampleRate}Hz), track paused")
                             }
                             continue
@@ -881,18 +913,23 @@ class DualStreamAudioManager(
                                 slot.format.sampleRate * slot.format.channelCount * 2 / 1000
                             val maxReadableMs = currentFillMs - effectiveMinBufMs
                             val maxReadableBytes = maxReadableMs * bytesPerMs
-                            val toRead = minOf(
-                                available, slot.tempBuffer.size,
-                                maxReadableBytes.coerceAtLeast(0),
-                            )
+                            val toRead =
+                                minOf(
+                                    available,
+                                    slot.tempBuffer.size,
+                                    maxReadableBytes.coerceAtLeast(0),
+                                )
 
                             if (toRead > 0) {
                                 val bytesRead = buffer.read(slot.tempBuffer, 0, toRead)
                                 if (bytesRead > 0) {
-                                    val written = track.write(
-                                        slot.tempBuffer, 0, bytesRead,
-                                        AudioTrack.WRITE_NON_BLOCKING,
-                                    )
+                                    val written =
+                                        track.write(
+                                            slot.tempBuffer,
+                                            0,
+                                            bytesRead,
+                                            AudioTrack.WRITE_NON_BLOCKING,
+                                        )
                                     if (written < 0) {
                                         handleTrackError("MEDIA", written, slot)
                                         continue
@@ -934,7 +971,8 @@ class DualStreamAudioManager(
                             slot.draining = false
                             try {
                                 if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause()
-                            } catch (_: Exception) {}
+                            } catch (_: Exception) {
+                            }
                             log("[AUDIO] Drain complete (${slot.format.sampleRate}Hz), track paused")
                         }
                     }
@@ -957,15 +995,20 @@ class DualStreamAudioManager(
                                         while (buffer.fillLevelMs() > navMinBuf) {
                                             val avail = buffer.availableForRead()
                                             if (avail <= 0) break
-                                            val bytesRead = buffer.read(
-                                                navTempBuffer, 0,
-                                                minOf(avail, navTempBuffer.size),
-                                            )
+                                            val bytesRead =
+                                                buffer.read(
+                                                    navTempBuffer,
+                                                    0,
+                                                    minOf(avail, navTempBuffer.size),
+                                                )
                                             if (bytesRead <= 0) break
-                                            val written = track.write(
-                                                navTempBuffer, 0, bytesRead,
-                                                AudioTrack.WRITE_NON_BLOCKING,
-                                            )
+                                            val written =
+                                                track.write(
+                                                    navTempBuffer,
+                                                    0,
+                                                    bytesRead,
+                                                    AudioTrack.WRITE_NON_BLOCKING,
+                                                )
                                             if (written <= 0) break
                                             windowNavPlayed.addAndGet(written.toLong())
                                             preloaded += written
@@ -981,16 +1024,19 @@ class DualStreamAudioManager(
                                     }
                                     log(
                                         "[AUDIO] Nav pre-fill complete: " +
-                                            "${currentNavFillMs}ms buffered, starting playback"
+                                            "${currentNavFillMs}ms buffered, starting playback",
                                     )
                                 }
 
                                 // Retry residual from prior partial WRITE_NON_BLOCKING
                                 if (navResidualCount > 0) {
-                                    val written = track.write(
-                                        navTempBuffer, navResidualOffset,
-                                        navResidualCount, AudioTrack.WRITE_NON_BLOCKING,
-                                    )
+                                    val written =
+                                        track.write(
+                                            navTempBuffer,
+                                            navResidualOffset,
+                                            navResidualCount,
+                                            AudioTrack.WRITE_NON_BLOCKING,
+                                        )
                                     if (written < 0) {
                                         navResidualCount = 0
                                         handleTrackError("NAV", written)
@@ -1084,21 +1130,34 @@ class DualStreamAudioManager(
                         var mOvf = 0
                         var mUrun = 0
                         val sb = StringBuilder()
-                        sb.append("Media[Rx:").append(mRx)
-                            .append(" Play:").append(mPlay / 1024).append("KB")
+                        sb
+                            .append("Media[Rx:")
+                            .append(mRx)
+                            .append(" Play:")
+                            .append(mPlay / 1024)
+                            .append("KB")
 
                         if (slotsSnapshot.isNotEmpty()) {
-                            sb.append(" active:")
-                                .append(statsActive?.format?.sampleRate ?: "none").append("Hz")
+                            sb
+                                .append(" active:")
+                                .append(statsActive?.format?.sampleRate ?: "none")
+                                .append("Hz")
                             for (slot in slotsSnapshot) {
                                 val fill = slot.buffer.fillLevelMs()
-                                val state = when {
-                                    slot === statsActive -> "ACTIVE"
-                                    slot.draining -> "DRAIN"
-                                    else -> "IDLE"
-                                }
-                                sb.append(" ").append(slot.format.sampleRate).append("Hz:")
-                                    .append(fill).append("ms(").append(state).append(")")
+                                val state =
+                                    when {
+                                        slot === statsActive -> "ACTIVE"
+                                        slot.draining -> "DRAIN"
+                                        else -> "IDLE"
+                                    }
+                                sb
+                                    .append(" ")
+                                    .append(slot.format.sampleRate)
+                                    .append("Hz:")
+                                    .append(fill)
+                                    .append("ms(")
+                                    .append(state)
+                                    .append(")")
 
                                 val ovfDelta = slot.buffer.overflowCount - slot.prevOverflow
                                 slot.prevOverflow = slot.buffer.overflowCount
@@ -1112,8 +1171,11 @@ class DualStreamAudioManager(
                             sb.append(" Buf:0ms")
                         }
 
-                        sb.append(" Ovf:").append(mOvf)
-                            .append(" Urun:").append(mUrun)
+                        sb
+                            .append(" Ovf:")
+                            .append(mOvf)
+                            .append(" Urun:")
+                            .append(mUrun)
                         if (mRes > 0) sb.append(" Res:").append(mRes)
 
                         // Nav stats (unchanged)
@@ -1123,11 +1185,19 @@ class DualStreamAudioManager(
                         prevNavOverflow = navBuffer?.overflowCount ?: 0
                         prevNavUnderruns = navUnderruns
 
-                        sb.append("] Nav[Rx:").append(nRx)
-                            .append(" Play:").append(nPlay / 1024).append("KB")
-                            .append(" Buf:").append(nFill).append("ms")
-                            .append(" Ovf:").append(nOvf)
-                            .append(" Urun:").append(nUrun)
+                        sb
+                            .append("] Nav[Rx:")
+                            .append(nRx)
+                            .append(" Play:")
+                            .append(nPlay / 1024)
+                            .append("KB")
+                            .append(" Buf:")
+                            .append(nFill)
+                            .append("ms")
+                            .append(" Ovf:")
+                            .append(nOvf)
+                            .append(" Urun:")
+                            .append(nUrun)
                         if (nRes > 0) sb.append(" Res:").append(nRes)
                         sb.append("]")
                         if (zf > 0) sb.append(" Zero:").append(zf)
@@ -1157,7 +1227,10 @@ class DualStreamAudioManager(
                     synchronized(lock) {
                         if (slot != null) {
                             // Pool slot: null track, leave in pool for recreation on next activation
-                            try { slot.track?.release() } catch (_: Exception) {}
+                            try {
+                                slot.track?.release()
+                            } catch (_: Exception) {
+                            }
                             slot.track = null
                             slot.started = false
                             slot.pendingPlay = false
@@ -1167,7 +1240,10 @@ class DualStreamAudioManager(
                             // NAV path (unchanged)
                             when (streamType) {
                                 "NAV" -> {
-                                    try { navTrack?.release() } catch (_: Exception) {}
+                                    try {
+                                        navTrack?.release()
+                                    } catch (_: Exception) {
+                                    }
                                     navTrack = null
                                     navFormat = null
                                     navStarted = false

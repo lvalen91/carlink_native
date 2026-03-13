@@ -43,11 +43,11 @@ import kotlinx.coroutines.launch
  * sole session. On the emulator the second session becomes a no-op.
  */
 class ClusterMainSession : Session() {
-
     private var navigationManager: NavigationManager? = null
     private var scope: CoroutineScope? = null
     private var isNavigating = false
     private var isPrimary = false
+
     /** Only call navigationEnded() after we've seen at least one active state transition to idle.
      *  Without this, the initial idle state from NavigationStateManager kills the binding chain
      *  before Templates Host can create the cluster session (displayType=1). */
@@ -88,16 +88,18 @@ class ClusterMainSession : Session() {
 
         // Set NavigationManagerCallback BEFORE calling navigationStarted() — Templates Host
         // requires the callback to be set first, otherwise navigationStarted() throws.
-        navigationManager?.setNavigationManagerCallback(object : NavigationManagerCallback {
-            override fun onStopNavigation() {
-                logInfo("[CLUSTER_MAIN] onStopNavigation callback", tag = Logger.Tags.CLUSTER)
-                isNavigating = false
-            }
+        navigationManager?.setNavigationManagerCallback(
+            object : NavigationManagerCallback {
+                override fun onStopNavigation() {
+                    logInfo("[CLUSTER_MAIN] onStopNavigation callback", tag = Logger.Tags.CLUSTER)
+                    isNavigating = false
+                }
 
-            override fun onAutoDriveEnabled() {
-                logNavi { "[CLUSTER_MAIN] Auto drive enabled" }
-            }
-        })
+                override fun onAutoDriveEnabled() {
+                    logNavi { "[CLUSTER_MAIN] Auto drive enabled" }
+                }
+            },
+        )
 
         // Call navigationStarted() IMMEDIATELY — this is the critical trigger that causes
         // Templates Host to create ClusterTurnCardActivity on the cluster display.
@@ -118,33 +120,38 @@ class ClusterMainSession : Session() {
             collectNavigationState()
         }
 
-        lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onDestroy(owner: LifecycleOwner) {
-                if (isPrimary) {
-                    primarySession = null
-                    logInfo("[CLUSTER_MAIN] Primary session destroyed — releasing NavigationManager ownership", tag = Logger.Tags.CLUSTER)
-                    if (isNavigating) {
-                        try {
-                            navigationManager?.navigationEnded()
-                            logNavi { "[CLUSTER_MAIN] navigationEnded() called on destroy" }
-                        } catch (e: Exception) {
-                            logError(
-                                "[CLUSTER_MAIN] navigationEnded() failed on destroy: ${e.message}",
-                                tag = Logger.Tags.CLUSTER,
-                                throwable = e,
-                            )
+        lifecycle.addObserver(
+            object : DefaultLifecycleObserver {
+                override fun onDestroy(owner: LifecycleOwner) {
+                    if (isPrimary) {
+                        primarySession = null
+                        logInfo(
+                            "[CLUSTER_MAIN] Primary session destroyed — releasing NavigationManager ownership",
+                            tag = Logger.Tags.CLUSTER,
+                        )
+                        if (isNavigating) {
+                            try {
+                                navigationManager?.navigationEnded()
+                                logNavi { "[CLUSTER_MAIN] navigationEnded() called on destroy" }
+                            } catch (e: Exception) {
+                                logError(
+                                    "[CLUSTER_MAIN] navigationEnded() failed on destroy: ${e.message}",
+                                    tag = Logger.Tags.CLUSTER,
+                                    throwable = e,
+                                )
+                            }
+                            isNavigating = false
                         }
-                        isNavigating = false
+                        scope?.cancel()
+                        scope = null
+                        navigationManager = null
+                    } else {
+                        logInfo("[CLUSTER_MAIN] Secondary session destroyed", tag = Logger.Tags.CLUSTER)
                     }
-                    scope?.cancel()
-                    scope = null
-                    navigationManager = null
-                } else {
-                    logInfo("[CLUSTER_MAIN] Secondary session destroyed", tag = Logger.Tags.CLUSTER)
+                    ClusterBindingState.sessionAlive = false
                 }
-                ClusterBindingState.sessionAlive = false
-            }
-        })
+            },
+        )
 
         return RelayScreen(carContext)
     }
@@ -158,10 +165,11 @@ class ClusterMainSession : Session() {
         NavigationStateManager.state.collectLatest { state ->
             debounceJob?.cancel()
 
-            debounceJob = scope?.launch {
-                delay(200)
-                processStateUpdate(state)
-            }
+            debounceJob =
+                scope?.launch {
+                    delay(200)
+                    processStateUpdate(state)
+                }
         }
     }
 
@@ -227,20 +235,23 @@ class ClusterMainSession : Session() {
      * Relay screen — shows a brief identifying message while Templates Host binds
      * the cluster session. Visible for ~1s before MainActivity returns to front.
      */
-    private class RelayScreen(carContext: CarContext) : Screen(carContext) {
-        override fun onGetTemplate(): Template {
-            return NavigationTemplate.Builder()
+    private class RelayScreen(
+        carContext: CarContext,
+    ) : Screen(carContext) {
+        override fun onGetTemplate(): Template =
+            NavigationTemplate
+                .Builder()
                 .setNavigationInfo(
-                    MessageInfo.Builder("Carlink — Cluster Navigation Service")
-                        .setText("Main app should appear momentarily. If this screen persists, return to the app launcher and reopen Carlink.")
-                        .build()
-                )
-                .setActionStrip(
-                    ActionStrip.Builder()
+                    MessageInfo
+                        .Builder("Carlink — Cluster Navigation Service")
+                        .setText(
+                            "Main app should appear momentarily. If this screen persists, return to the app launcher and reopen Carlink.",
+                        ).build(),
+                ).setActionStrip(
+                    ActionStrip
+                        .Builder()
                         .addAction(Action.APP_ICON)
-                        .build()
-                )
-                .build()
-        }
+                        .build(),
+                ).build()
     }
 }

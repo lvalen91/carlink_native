@@ -552,7 +552,7 @@ For the complete per-ID command listing, see `command_ids.md`. For per-command b
 | `mediaDelay` | int | Audio buffer (ms) | `MediaLatency` |
 | `syncTime` | int | Unix timestamp | - |
 | `autoConn` | bool | Auto-reconnect | `NeedAutoConnect` |
-| `autoPlay` | bool | Auto-start playback | `AutoPlay` |
+| `autoPlay` | bool | Auto-start playback | ⚠️ **NOT MAPPED** — key missing from ARMadb-driver BoxSettings parser. `AutoPlauMusic` config exists but has no JSON input mapping. Set via web UI (boa → riddle.conf) only. |
 | `autoDisplay` | bool | Auto display mode | - |
 | `bgMode` | int | Background mode | `BackgroundMode` |
 | `startDelay` | int | Startup delay (sec) | `BoxConfig_DelayStart` |
@@ -626,7 +626,7 @@ For the complete per-ID command listing, see `command_ids.md`. For per-command b
   "mediaDelay": 300,
   "syncTime": 1737331200,
   "autoConn": true,
-  "autoPlay": false,
+  "autoPlay": false,            // ⚠️ IGNORED by firmware — mapping missing in ARMadb-driver
   "bgMode": 0,
   "startDelay": 0,
   "androidAutoSizeW": 1920,
@@ -1112,9 +1112,16 @@ See `initialization.md` and `configuration.md` for detailed timing requirements.
 | Value | Meaning | Status | Evidence |
 |-------|---------|--------|----------|
 | 0 | Session Terminated / Idle | VERIFIED | Used for session end detection |
+| 4 | Waiting for WiFi Hotspot | AutoKit app | Adapter waiting for phone to connect to WiFi hotspot (wireless CarPlay/AA) |
+| 5 | Waiting for AirPlay | AutoKit app | Adapter waiting for AirPlay session establishment |
 | 7 | Connecting / Negotiating | VERIFIED | `@ 4.498s: Phase payload 07 00 00 00` |
 | 8 | Streaming Ready / Active | VERIFIED | `@ 7.504s: Phase payload 08 00 00 00` |
+| 11 | CarLife Download | AutoKit app | CarLife app download prompt (Baidu CarLife protocol) |
 | 13 | Session Negotiation Failed | VERIFIED | AirPlay negotiation rejected — typically viewArea/safeArea constraint violation (`safeArea ⊆ viewArea ⊆ display`). Adapter internally sees Phase 0 (disconnect) between Phase 2 and 103. Triggers Phase 7→13 reconnect loop. Observed Feb 2026 when HU_VIEWAREA_INFO dimensions exceeded OPEN resolution. |
+| 1001 | Hardware Error: Bluetooth | AutoKit app | Adapter Bluetooth subsystem failure (RTL HCI init or hfpd crash) |
+| 1002 | Hardware Error: WiFi | AutoKit app | Adapter WiFi subsystem failure (RTL8822CS driver load or hostapd crash) |
+| 1003 | Hardware Error: Unknown | AutoKit app | Adapter hardware error (unclassified) |
+| 1004 | Hardware Error: Unknown | AutoKit app | Adapter hardware error (unclassified) |
 
 ### Internal Firmware Phases (Binary Verified Feb 2026)
 
@@ -1254,7 +1261,9 @@ Full operational details for each type follow the summary table.
 | 30 | 0x1E | Bluetooth_Search (IN) / BroadCastRemoteCxCy (OUT) | **DUAL** | IN: unused / OUT: 28B (resolution) | ACTIVE outbound, NO-OP inbound |
 | 119 | 0x77 | FactorySetting | BOTH | A→H: empty (idle notification) / H→A: 4B (factory reset) | ACTIVE — dual-purpose |
 | 136 | 0x88 | CMD_DEBUG_TEST | H→A | 4B (subcommand) | ACTIVE — log capture/retrieval |
+| 160 | 0xA0 | CMD_APP_INFO | H→A | Variable JSON | **HOST-ONLY** — not in firmware dispatch table. AutoKit sends app version, device model, platform, uuid, screen size as JSON. Sent as first init message (before Open). |
 | 161 | 0xA1 | ICCOA Open/Info | A→H | 12-24B | ACTIVE — ICCOA protocol only (not CarPlay/AA) |
+| 162 | 0xA2 | CMD_BOX_CONFIG | H→A | Variable JSON | **HOST-ONLY** — not in firmware dispatch table. AutoKit sends `{"DayNightMode": 2, "WiFiChannel": <int>}` as separate config channel distinct from BoxSettings (0x19). |
 | 205 | 0xCD | HUDComand_A_Reboot | H→A | None | ACTIVE — full system reboot |
 | 206 | 0xCE | HUDComand_A_ResetUSB | H→A | None | ACTIVE — USB gadget reset |
 | 240 | 0xF0 | CMD_ENABLE_CRYPT | H→A (trigger) / A→H (ack) | H→A: 4B crypto_mode / A→H: empty | ACTIVE — see full lifecycle below |

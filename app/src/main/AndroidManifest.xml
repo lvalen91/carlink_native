@@ -12,6 +12,7 @@
     <!-- Required by connectedDevice foreground service type on Android 14+ -->
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
 
     <!-- USB Host Feature (required) -->

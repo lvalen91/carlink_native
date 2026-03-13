@@ -32,6 +32,7 @@ class FileLogManager internal constructor(
         private const val LOGS_DIR = "logs"
         private const val FLUSH_INTERVAL_MS = 1000L
         private const val SHUTDOWN_TIMEOUT_MS = 2000L
+
         // Producer-side backpressure: drop messages when queue exceeds this size.
         // Prevents unbounded memory growth under DEBUG/VIDEO_PIPELINE presets
         // (~350 bytes/msg × 5000 = ~1.7MB max queue footprint). Uses O(1)
@@ -60,10 +61,14 @@ class FileLogManager internal constructor(
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val isEnabled = AtomicBoolean(false)
     private val lastDropWarningMs = AtomicLong(0L)
-    private val dateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US)
-        .withZone(ZoneId.systemDefault())
-    private val fileDateFormat: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss", Locale.US)
-        .withZone(ZoneId.systemDefault())
+    private val dateFormat: DateTimeFormatter =
+        DateTimeFormatter
+            .ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US)
+            .withZone(ZoneId.systemDefault())
+    private val fileDateFormat: DateTimeFormatter =
+        DateTimeFormatter
+            .ofPattern("yyyy-MM-dd_HH-mm-ss", Locale.US)
+            .withZone(ZoneId.systemDefault())
 
     init {
         logsDir =

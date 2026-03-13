@@ -165,5 +165,4 @@ class AudioRingBuffer(
             "sampleRate" to sampleRate,
             "channels" to channels,
         )
-
 }

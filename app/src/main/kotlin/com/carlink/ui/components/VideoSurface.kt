@@ -72,9 +72,6 @@ class VideoSurfaceState {
     var surface: Surface? by mutableStateOf(null)
         private set
 
-    var isCreated: Boolean by mutableStateOf(false)
-        private set
-
     var width: Int by mutableIntStateOf(0)
         private set
 
@@ -89,12 +86,10 @@ class VideoSurfaceState {
         this.surface = surface
         width = w
         height = h
-        isCreated = true
     }
 
     fun onSurfaceDestroyed() {
         surface = null
-        isCreated = false
     }
 
     fun onSurfaceSizeChanged(

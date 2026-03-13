@@ -116,7 +116,7 @@ It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
 | 5 | BoxConfig_UI_Lang | 0 | 0-65535 | `lang` | UI language index into LangList |
 | 3 | UdiskMode | 1 | 0-1 | `Udisk` | USB storage: 0=off, 1=on (loads modules) |
 | 18 | CarDate | 0 | 0-1 | — | Time sync enable: 0=adapter RTC/NTP, 1=accept syncTime from host BoxSettings (+8h CST offset) |
-| 20 | AutoPlauMusic | 0 | 0-1 | `autoPlay` | Auto-start music on connect |
+| 20 | AutoPlauMusic | 0 | 0-1 | ⚠️ ~~`autoPlay`~~ NOT MAPPED | Auto-start music on connect — `autoPlay` absent from ARMadb-driver BoxSettings parser; web UI only |
 | 38 | AutoUpdate | 1 | 0-1 | `autoUpdate` | OTA auto-update toggle |
 | 40 | BoxSupportArea | 0 | 0-1 | — | Region flag: 0=Global (default iAP2), 1=China (zh lang hint, HiCar context) |
 | 61 | BackRecording | 0 | 0-1 | `backRecording` | Background mic for voice wake-word ("Hey Siri"/"OK Google") detection when CarPlay/AA backgrounded |
@@ -3862,9 +3862,9 @@ if (strcmp(fieldName, "syncTime") == 0) {
 - When `AutoPlauMusic==1`, after CarPlay session is established, the adapter sends a play command to `com.apple.Music` (the default music app)
 - The string `"com.apple.Music"` at `0x00073b33` confirms this targets the iOS Music app specifically
 
-**ARMadb-driver** -- Stored via generic config path; read from IAP2.
+**ARMadb-driver** -- Config key `AutoPlauMusic` exists in .rodata at `0x00070c87`, but the `autoPlay` JSON input key is **absent from the BoxSettings parser string table**. The mapping was never implemented — likely a developer oversight. The config value can only be set via the web UI (boa CGI → riddle.conf), not via USB BoxSettings JSON.
 
-**Also listed in** `carlink_firmware_config.md:127` as overridable by host BoxSettings.
+**External verification:** Memory dump analysis (Mar 2026) confirmed the mapping table in ARMadb-driver/boxNetworkService is missing the `autoPlay` → `AutoPlauMusic` entry, while other mappings (e.g., `autoConn` → `NeedAutoConnect`) are present.
 
 ### Pseudocode
 ```c
@@ -5763,7 +5763,7 @@ Source: server.cgi FUN_00014040 (web API serializer)
 | `VrVolumGain` | VrVolumGain | get+set | Audio |
 | `autoConn` | NeedAutoConnect | get+set | Connection / USB |
 | `autoDisplay` | autoDisplay | get+set | Display / UI |
-| `autoPlay` | AutoPlauMusic | get+set | System / Branding |
+| `autoPlay` | AutoPlauMusic | ⚠️ **web UI only** — NOT in ARMadb-driver BoxSettings parser | System / Branding |
 | `autoRefresh` | NeedKeyFrame | get+set | Video / H.264 |
 | `autoUpdate` | AutoUpdate | get+set | System / Branding |
 | `backRecording` | BackRecording | get+set | System / Branding |

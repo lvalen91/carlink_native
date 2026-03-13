@@ -1,12 +1,12 @@
 package com.carlink
 
 import android.Manifest
+import android.app.ActivityManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.app.ActivityManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
@@ -40,14 +40,13 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.carlink.cluster.ClusterBindingState
 import com.carlink.logging.FileLogManager
-import com.carlink.logging.LoggingPreferences
-import com.carlink.navigation.NavigationStateManager
 import com.carlink.logging.LogPreset
 import com.carlink.logging.Logger
+import com.carlink.logging.LoggingPreferences
 import com.carlink.logging.apply
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
-import kotlinx.coroutines.flow.first
+import com.carlink.navigation.NavigationStateManager
 import com.carlink.protocol.AdapterConfig
 import com.carlink.protocol.KnownDevices
 import com.carlink.ui.MainScreen
@@ -57,11 +56,12 @@ import com.carlink.ui.settings.DisplayMode
 import com.carlink.ui.settings.DisplayModePreference
 import com.carlink.ui.theme.CarlinkTheme
 import com.carlink.util.IconAssets
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Main Activity - Entry Point for Carlink Native
@@ -323,12 +323,16 @@ class MainActivity : ComponentActivity() {
         val windowInsets = windowMetrics.windowInsets
 
         // Separate inset sources for per-mode SafeArea computation
-        val systemBarInsets = windowInsets.getInsetsIgnoringVisibility(
-            android.view.WindowInsets.Type.systemBars()
-        )
-        val cutoutInsets = windowInsets.getInsetsIgnoringVisibility(
-            android.view.WindowInsets.Type.displayCutout()
-        )
+        val systemBarInsets =
+            windowInsets.getInsetsIgnoringVisibility(
+                android.view.WindowInsets.Type
+                    .systemBars(),
+            )
+        val cutoutInsets =
+            windowInsets.getInsetsIgnoringVisibility(
+                android.view.WindowInsets.Type
+                    .displayCutout(),
+            )
 
         // Compute video resolution and SafeArea insets per display mode
         val videoWidth: Int
@@ -345,8 +349,12 @@ class MainActivity : ComponentActivity() {
                     cutoutInsets.left - cutoutInsets.right
                 videoHeight = bounds.height() - systemBarInsets.top - systemBarInsets.bottom -
                     cutoutInsets.top - cutoutInsets.bottom
-                safeInsetTop = 0; safeInsetBottom = 0; safeInsetLeft = 0; safeInsetRight = 0
+                safeInsetTop = 0
+                safeInsetBottom = 0
+                safeInsetLeft = 0
+                safeInsetRight = 0
             }
+
             DisplayMode.STATUS_BAR_HIDDEN -> {
                 // Nav bar visible (subtract from video), status bar hidden (cutout exposed top/sides)
                 videoWidth = bounds.width() - systemBarInsets.left - systemBarInsets.right
@@ -356,6 +364,7 @@ class MainActivity : ComponentActivity() {
                 safeInsetLeft = cutoutInsets.left
                 safeInsetRight = cutoutInsets.right
             }
+
             DisplayMode.NAV_BAR_HIDDEN -> {
                 // Status bar visible (subtract from video), nav bar hidden (cutout exposed bottom/sides)
                 videoWidth = bounds.width()
@@ -365,6 +374,7 @@ class MainActivity : ComponentActivity() {
                 safeInsetLeft = cutoutInsets.left
                 safeInsetRight = cutoutInsets.right
             }
+
             DisplayMode.FULLSCREEN_IMMERSIVE -> {
                 // Full screen, all cutout areas exposed
                 videoWidth = bounds.width()
@@ -396,31 +406,34 @@ class MainActivity : ComponentActivity() {
         // Apply video resolution preference (must be before ViewArea/SafeArea construction)
         // AUTO = use detected usable dimensions, otherwise use user-selected resolution
         val userSelectedResolution = !userConfig.videoResolution.isAuto
-        val (configWidth, configHeight) = if (userConfig.videoResolution.isAuto) {
-            Pair(evenWidth, evenHeight)
-        } else {
-            // User selected a specific resolution - use it for adapter config
-            // Note: Surface size remains the actual display size for touch normalization
-            Pair(userConfig.videoResolution.width, userConfig.videoResolution.height)
-        }
+        val (configWidth, configHeight) =
+            if (userConfig.videoResolution.isAuto) {
+                Pair(evenWidth, evenHeight)
+            } else {
+                // User selected a specific resolution - use it for adapter config
+                // Note: Surface size remains the actual display size for touch normalization
+                Pair(userConfig.videoResolution.width, userConfig.videoResolution.height)
+            }
 
         // Build binary ViewArea/SafeArea data using the configured resolution
         // ViewArea/SafeArea must match OPEN message dimensions (safeArea ⊆ viewArea ⊆ display)
         val viewAreaData = buildViewAreaData(configWidth, configHeight)
-        val safeAreaData = if (userSelectedResolution) {
-            // Scale cutout insets from display coordinates to custom resolution coordinates
-            val scaleX = configWidth.toFloat() / evenWidth.toFloat()
-            val scaleY = configHeight.toFloat() / evenHeight.toFloat()
-            buildSafeAreaData(
-                configWidth, configHeight,
-                (safeInsetTop * scaleY).toInt(),
-                (safeInsetBottom * scaleY).toInt(),
-                (safeInsetLeft * scaleX).toInt(),
-                (safeInsetRight * scaleX).toInt(),
-            )
-        } else {
-            buildSafeAreaData(configWidth, configHeight, safeInsetTop, safeInsetBottom, safeInsetLeft, safeInsetRight)
-        }
+        val safeAreaData =
+            if (userSelectedResolution) {
+                // Scale cutout insets from display coordinates to custom resolution coordinates
+                val scaleX = configWidth.toFloat() / evenWidth.toFloat()
+                val scaleY = configHeight.toFloat() / evenHeight.toFloat()
+                buildSafeAreaData(
+                    configWidth,
+                    configHeight,
+                    (safeInsetTop * scaleY).toInt(),
+                    (safeInsetBottom * scaleY).toInt(),
+                    (safeInsetLeft * scaleX).toInt(),
+                    (safeInsetRight * scaleX).toInt(),
+                )
+            } else {
+                buildSafeAreaData(configWidth, configHeight, safeInsetTop, safeInsetBottom, safeInsetLeft, safeInsetRight)
+            }
 
         // Map user config enums to AdapterConfig values
         val micType =
@@ -457,6 +470,8 @@ class MainActivity : ComponentActivity() {
                 viewAreaData = viewAreaData,
                 safeAreaData = safeAreaData,
                 gpsForwarding = userConfig.gpsForwarding,
+                nativeDisplayWidth = bounds.width(),
+                nativeDisplayHeight = bounds.height(),
             )
 
         logInfo(
@@ -488,24 +503,40 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Build HU_VIEWAREA_INFO (24 bytes): [screen_w, screen_h, view_w, view_h, originX, originY] */
-    private fun buildViewAreaData(width: Int, height: Int): ByteArray =
-        ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
-            .putInt(width).putInt(height)   // screen dims
-            .putInt(width).putInt(height)   // viewarea dims (same)
-            .putInt(0).putInt(0)            // origin
+    private fun buildViewAreaData(
+        width: Int,
+        height: Int,
+    ): ByteArray =
+        ByteBuffer
+            .allocate(24)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(width)
+            .putInt(height) // screen dims
+            .putInt(width)
+            .putInt(height) // viewarea dims (same)
+            .putInt(0)
+            .putInt(0) // origin
             .array()
 
     /** Build HU_SAFEAREA_INFO (20 bytes): [safe_w, safe_h, originX, originY, drawOutside] */
     private fun buildSafeAreaData(
-        videoW: Int, videoH: Int,
-        insetTop: Int, insetBottom: Int, insetLeft: Int, insetRight: Int,
+        videoW: Int,
+        videoH: Int,
+        insetTop: Int,
+        insetBottom: Int,
+        insetLeft: Int,
+        insetRight: Int,
     ): ByteArray {
         val safeW = videoW - insetLeft - insetRight
         val safeH = videoH - insetTop - insetBottom
         val hasInsets = (insetTop or insetBottom or insetLeft or insetRight) != 0
-        return ByteBuffer.allocate(20).order(ByteOrder.LITTLE_ENDIAN)
-            .putInt(safeW).putInt(safeH)
-            .putInt(insetLeft).putInt(insetTop)
+        return ByteBuffer
+            .allocate(20)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(safeW)
+            .putInt(safeH)
+            .putInt(insetLeft)
+            .putInt(insetTop)
             .putInt(if (hasInsets) 1 else 0) // wallpaper outside safe area only when cutouts exist
             .array()
     }
@@ -635,10 +666,11 @@ class MainActivity : ComponentActivity() {
         }
 
         try {
-            val intent = Intent().apply {
-                setClassName(this@MainActivity, "androidx.car.app.activity.CarAppActivity")
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
-            }
+            val intent =
+                Intent().apply {
+                    setClassName(this@MainActivity, "androidx.car.app.activity.CarAppActivity")
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                }
             startActivity(intent)
             logInfo("[CLUSTER] Launched CarAppActivity for Templates Host binding", tag = "MAIN")
 
@@ -646,9 +678,10 @@ class MainActivity : ComponentActivity() {
             // need CarAppActivity in the foreground. 1s is enough for the handshake.
             Handler(Looper.getMainLooper()).postDelayed({
                 if (!isDestroyed && !isFinishing) {
-                    val bringBack = Intent(this@MainActivity, MainActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NO_ANIMATION
-                    }
+                    val bringBack =
+                        Intent(this@MainActivity, MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_NO_ANIMATION
+                        }
                     startActivity(bringBack)
                     logInfo("[CLUSTER] Brought MainActivity back to foreground", tag = "MAIN")
                 }
@@ -722,10 +755,16 @@ fun CarlinkApp(
 ) {
     var showSettings by remember { mutableStateOf(false) }
 
-    // Log screen changes for debugging
+    // Log screen changes and recover video when overlay closes.
+    // Unlike Activity onStop/onStart, the settings overlay doesn't trigger lifecycle
+    // events. While the overlay covers the SurfaceView, SurfaceFlinger may stop
+    // consuming frames, stalling the codec's BufferQueue. Flush codec on overlay close.
     LaunchedEffect(showSettings) {
         val screenName = if (showSettings) "SettingsScreen (overlay)" else "MainScreen (Projection)"
         logInfo("[UI_NAV] Active screen: $screenName", tag = "UI")
+        if (!showSettings) {
+            carlinkManager.recoverVideoFromOverlay()
+        }
     }
 
     // Handle back button to close settings overlay

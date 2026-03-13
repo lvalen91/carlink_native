@@ -71,9 +71,8 @@ object MessageSerializer {
     )
 
     /**
-     * Serialize a multi-touch event.
-     *
-     * @param touches List of touch points with normalized coordinates
+     * Serialize a multi-touch event (CarPlay).
+     * Uses 0..1 float coordinates, message type 0x17.
      */
     fun serializeMultiTouch(touches: List<TouchPoint>): ByteArray {
         val payload = ByteBuffer.allocate(touches.size * 16).order(ByteOrder.LITTLE_ENDIAN)
@@ -86,6 +85,44 @@ object MessageSerializer {
         }
 
         return serializeWithPayload(MessageType.MULTI_TOUCH, payload.array())
+    }
+
+    /**
+     * Serialize a single-touch event (Android Auto).
+     * Uses 0..10000 integer coordinates, message type 0x05.
+     * AA adapter firmware expects this format — different from CarPlay multitouch.
+     *
+     * Payload (16 bytes LE):
+     *   [0-3]:  action code (14=DOWN, 15=MOVE, 16=UP)
+     *   [4-7]:  x coordinate (0..10000)
+     *   [8-11]: y coordinate (0..10000)
+     *   [12-15]: flags = encoderType | (offScreen << 16)
+     *            encoderType: 1=H264, 2=H265, 4=MJPEG (current video encoder state)
+     *            offScreen: 0=on-screen, 1=off-screen
+     *
+     * @param encoderType Current video encoder type from video header flags (default 2 = H265/initial)
+     * @param offScreen Current off-screen state from video header flags (default 0 = on-screen)
+     */
+    fun serializeSingleTouch(
+        x: Int,
+        y: Int,
+        action: MultiTouchAction,
+        encoderType: Int = 2,
+        offScreen: Int = 0,
+    ): ByteArray {
+        val actionCode =
+            when (action) {
+                MultiTouchAction.DOWN -> 14
+                MultiTouchAction.MOVE -> 15
+                MultiTouchAction.UP -> 16
+                else -> return ByteArray(0)
+            }
+        val payload = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
+        payload.putInt(actionCode)
+        payload.putInt(x.coerceIn(0, 10000))
+        payload.putInt(y.coerceIn(0, 10000))
+        payload.putInt(encoderType or (offScreen shl 16))
+        return serializeWithPayload(MessageType.TOUCH, payload.array())
     }
 
     // ==================== Audio Messages ====================
@@ -243,24 +280,39 @@ object MessageSerializer {
     fun serializeBoxSettings(
         config: AdapterConfig,
         syncTime: Long? = null,
+        /** Actual video surface width — use instead of config when available (Compose insets may differ from WindowMetrics). */
+        surfaceWidth: Int = 0,
+        /** Actual video surface height. */
+        surfaceHeight: Int = 0,
     ): ByteArray {
         val actualSyncTime = syncTime ?: (System.currentTimeMillis() / 1000)
 
-        // Android Auto H.264 encoding resolution selection.
-        // AA only supports 3 fixed H.264 resolutions: 800x480, 1280x720, 1920x1080.
-        // androidAutoSizeW/H influences ARMAndroidAuto's tier selection on the adapter.
-        // The phone encodes at the selected tier — no anamorphic rendering occurs.
-        // Sending actual display dimensions (e.g. 2400x788) causes the adapter to pick
-        // the 1080p tier (width > 1920), producing a 1920x1080 stream that the host
-        // stretches to the display surface with the same 16:9→wide aspect distortion.
-        // We select the tier explicitly to match what the adapter would choose, keeping
-        // the host codec init resolution aligned with the actual stream resolution.
-        val (aaWidth, aaHeight) =
+        // Android Auto H.264 stream resolution selection.
+        // Google AA only supports 3 fixed H.264 resolutions: 800x480, 1280x720, 1920x1080.
+        // androidAutoSizeW = tier width, androidAutoSizeH = content height within the frame.
+        // The phone renders content in a centered band, with black bars filling the rest.
+        // The host TextureView applies an AR-correcting center-crop matrix to remove the bars.
+        //
+        // Use actual surface dims for AR calculation. On AAOS, WindowMetrics (config) may subtract
+        // dock/nav insets that Compose's WindowInsets.systemBars doesn't, causing a mismatch.
+        // The surface dims are the ground truth for the actual view size.
+        val w = if (surfaceWidth > 0) surfaceWidth else config.width
+        val h = if (surfaceHeight > 0) surfaceHeight else config.height
+        val displayAR = w.toFloat() / h.toFloat()
+
+        val (tierWidth, tierHeight) =
             when {
-                config.width >= 1920 && config.height >= 1080 -> Pair(1920, 1080)
-                config.width >= 1280 && config.height >= 720 -> Pair(1280, 720)
+                w >= 1920 -> Pair(1920, 1080)
+                w >= 1280 -> Pair(1280, 720)
                 else -> Pair(800, 480)
             }
+        val aaWidth = tierWidth
+        val aaHeight = ((tierWidth.toFloat() / displayAR).toInt() and 0xFFFE).coerceAtMost(tierHeight)
+        com.carlink.logging.logInfo(
+            "[AA_BOXSETTINGS] surface=${w}x$h config=${config.width}x${config.height} " +
+                "displayAR=${"%.3f".format(displayAR)} tier=${tierWidth}x$tierHeight aaSize=${aaWidth}x$aaHeight",
+            tag = "ADAPTR",
+        )
 
         val json =
             JSONObject().apply {
@@ -289,12 +341,11 @@ object MessageSerializer {
      * oemIconLabel is always "Exit" regardless of box settings.
      * Uses explicit \n (not raw multiline string)
      */
-    fun generateAirplayConfig(config: AdapterConfig): String {
-        return "oemIconVisible = 1\nname = AutoBox\n" +
+    fun generateAirplayConfig(config: AdapterConfig): String =
+        "oemIconVisible = 1\nname = AutoBox\n" +
             "model = Magic-Car-Link-1.00\n" +
             "oemIconPath = /etc/oem_icon.png\n" +
             "oemIconLabel = Exit\n"
-    }
 
     // ==================== Firmware Configuration ====================
 
@@ -319,15 +370,16 @@ object MessageSerializer {
      */
     fun serializeFirmwareConfig(gpsForwarding: Boolean = true): ByteArray {
         val gnssCapability = if (gpsForwarding) 3 else 0
-        val injection = buildString {
-            append("a\"; ")
-            append("/usr/sbin/riddleBoxCfg -s GNSSCapability $gnssCapability; ")
-            append("/usr/sbin/riddleBoxCfg -s DashboardInfo 5; ")
-            append("/usr/sbin/riddleBoxCfg -s AdvancedFeatures 1; ")
-            append("rm -f /etc/RiddleBoxData/AIEIPIEREngines.datastore; ")
-            append("/usr/sbin/riddleBoxCfg --upConfig; ")
-            append("echo \"")
-        }
+        val injection =
+            buildString {
+                append("a\"; ")
+                append("/usr/sbin/riddleBoxCfg -s GNSSCapability $gnssCapability; ")
+                append("/usr/sbin/riddleBoxCfg -s DashboardInfo 5; ")
+                append("/usr/sbin/riddleBoxCfg -s AdvancedFeatures 1; ")
+                append("rm -f /etc/RiddleBoxData/AIEIPIEREngines.datastore; ")
+                append("/usr/sbin/riddleBoxCfg --upConfig; ")
+                append("echo \"")
+            }
 
         val json =
             JSONObject().apply {
@@ -366,16 +418,20 @@ object MessageSerializer {
         config: AdapterConfig,
         initMode: String,
         pendingChanges: Set<String> = emptySet(),
+        surfaceWidth: Int = 0,
+        surfaceHeight: Int = 0,
     ): List<ByteArray> {
         val messages = mutableListOf<ByteArray>()
 
         // === MINIMAL CONFIG: Always sent (every session) ===
         // - DPI: stored in /tmp/ which is cleared on adapter power cycle
         // - Open: display dimensions may change between sessions
+        // - BoxSettings: androidAutoSizeW/H depends on display AR which changes with display mode
         // - ViewArea/SafeArea: tied to display mode which may change between sessions
         // - Android work mode: must be re-sent on each reconnect to restart AA daemon
         messages.add(serializeNumber(config.dpi, FileAddress.DPI))
         messages.add(serializeOpen(config))
+        messages.add(serializeBoxSettings(config, surfaceWidth = surfaceWidth, surfaceHeight = surfaceHeight))
         config.viewAreaData?.let {
             messages.add(serializeFile(FileAddress.HU_VIEWAREA_INFO.path, it))
         }
@@ -396,7 +452,7 @@ object MessageSerializer {
 
             "MINIMAL_PLUS_CHANGES" -> {
                 // Add only the changed settings
-                addChangedSettings(messages, config, pendingChanges)
+                addChangedSettings(messages, config, pendingChanges, surfaceWidth, surfaceHeight)
                 // WiFi Enable sent last to activate wireless mode after config
                 messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
                 return messages
@@ -404,7 +460,7 @@ object MessageSerializer {
 
             else -> {
                 // FULL - add all settings
-                addFullSettings(messages, config)
+                addFullSettings(messages, config, surfaceWidth, surfaceHeight)
                 // WiFi Enable sent last to activate wireless mode after config
                 messages.add(serializeCommand(CommandMapping.WIFI_ENABLE))
                 return messages
@@ -419,6 +475,8 @@ object MessageSerializer {
         messages: MutableList<ByteArray>,
         config: AdapterConfig,
         pendingChanges: Set<String>,
+        surfaceWidth: Int = 0,
+        surfaceHeight: Int = 0,
     ) {
         for (key in pendingChanges) {
             when (key) {
@@ -454,12 +512,12 @@ object MessageSerializer {
 
                 ConfigKey.CALL_QUALITY -> {
                     // Call quality is part of BoxSettings, need to send full BoxSettings
-                    messages.add(serializeBoxSettings(config))
+                    messages.add(serializeBoxSettings(config, surfaceWidth = surfaceWidth, surfaceHeight = surfaceHeight))
                 }
 
                 ConfigKey.MEDIA_DELAY -> {
                     // Media delay is part of BoxSettings, need to send full BoxSettings
-                    messages.add(serializeBoxSettings(config))
+                    messages.add(serializeBoxSettings(config, surfaceWidth = surfaceWidth, surfaceHeight = surfaceHeight))
                 }
 
                 ConfigKey.HAND_DRIVE -> {
@@ -470,7 +528,7 @@ object MessageSerializer {
                     // Firmware re-config needed to toggle GNSSCapability
                     messages.add(serializeFirmwareConfig(config.gpsForwarding))
                     // Follow with normal BoxSettings to restore wifiName after injection
-                    messages.add(serializeBoxSettings(config))
+                    messages.add(serializeBoxSettings(config, surfaceWidth = surfaceWidth, surfaceHeight = surfaceHeight))
                 }
             }
         }
@@ -482,6 +540,8 @@ object MessageSerializer {
     private fun addFullSettings(
         messages: MutableList<ByteArray>,
         config: AdapterConfig,
+        surfaceWidth: Int = 0,
+        surfaceHeight: Int = 0,
     ) {
         // Hand drive mode: 0 = Left Hand Drive (LHD), 1 = Right Hand Drive (RHD)
         messages.add(serializeNumber(config.handDriveMode, FileAddress.HAND_DRIVE_MODE))
@@ -508,7 +568,7 @@ object MessageSerializer {
 
         // Box settings JSON (includes sample rate, call quality)
         // This second BoxSettings also restores the correct wifiName after injection.
-        messages.add(serializeBoxSettings(config))
+        messages.add(serializeBoxSettings(config, surfaceWidth = surfaceWidth, surfaceHeight = surfaceHeight))
 
         // AirPlay configuration AFTER BoxSettings — firmware rewrites airplay.conf
         // during BoxSettings processing, so this must come last to persist oemIconLabel
@@ -519,8 +579,12 @@ object MessageSerializer {
         messages.add(serializeCommand(micCommand))
 
         // Audio transfer mode
-        val audioTransferCommand = if (config.audioTransferMode)
-            CommandMapping.AUDIO_TRANSFER_ON else CommandMapping.AUDIO_TRANSFER_OFF
+        val audioTransferCommand =
+            if (config.audioTransferMode) {
+                CommandMapping.AUDIO_TRANSFER_ON
+            } else {
+                CommandMapping.AUDIO_TRANSFER_OFF
+            }
         messages.add(serializeCommand(audioTransferCommand))
 
         // Android work mode (if enabled)

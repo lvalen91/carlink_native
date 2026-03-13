@@ -65,6 +65,7 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
         // Current now-playing metadata for notification content
         @Volatile
         private var currentTitle: String? = null
+
         @Volatile
         private var currentArtist: String? = null
 
@@ -90,7 +91,10 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
          * Update notification with current now-playing metadata.
          * Called from CarlinkManager when media metadata changes.
          */
-        fun updateNowPlaying(title: String?, artist: String?) {
+        fun updateNowPlaying(
+            title: String?,
+            artist: String?,
+        ) {
             if (title == currentTitle && artist == currentArtist) return
             currentTitle = title
             currentArtist = artist
@@ -184,11 +188,12 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
         // well-formed media source. The browse tree is empty (projection app with
         // no local library), but the hints prevent miscategorisation on some
         // AAOS media center implementations.
-        val rootExtras = Bundle().apply {
-            putInt("android.media.browse.CONTENT_STYLE_BROWSABLE_HINT", 1)
-            putInt("android.media.browse.CONTENT_STYLE_PLAYABLE_HINT", 1)
-            putBoolean("android.media.browse.SEARCH_SUPPORTED", false)
-        }
+        val rootExtras =
+            Bundle().apply {
+                putInt("android.media.browse.CONTENT_STYLE_BROWSABLE_HINT", 1)
+                putInt("android.media.browse.CONTENT_STYLE_PLAYABLE_HINT", 1)
+                putBoolean("android.media.browse.SEARCH_SUPPORTED", false)
+            }
         return BrowserRoot(EMPTY_ROOT_ID, rootExtras)
     }
 
