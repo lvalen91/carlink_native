@@ -133,7 +133,8 @@ object FileExportService {
             } catch (e: SecurityException) {
                 logError(
                     "[FILE_EXPORT] Permission denied streaming ${file.name}: ${e.message}",
-                    tag = TAG, throwable = e,
+                    tag = TAG,
+                    throwable = e,
                 )
                 Result.failure(e)
             }
@@ -181,5 +182,4 @@ object FileExportService {
                 Result.failure(e)
             }
         }
-
 }

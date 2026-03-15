@@ -232,14 +232,15 @@ class MediaSessionManager(
                 if (albumArt != null) {
                     try {
                         val hash = albumArt.contentHashCode()
-                        val bitmap = if (hash == cachedAlbumArtHash && cachedBitmap != null) {
-                            cachedBitmap
-                        } else {
-                            BitmapFactory.decodeByteArray(albumArt, 0, albumArt.size)?.also {
-                                cachedAlbumArtHash = hash
-                                cachedBitmap = it
+                        val bitmap =
+                            if (hash == cachedAlbumArtHash && cachedBitmap != null) {
+                                cachedBitmap
+                            } else {
+                                BitmapFactory.decodeByteArray(albumArt, 0, albumArt.size)?.also {
+                                    cachedAlbumArtHash = hash
+                                    cachedBitmap = it
+                                }
                             }
-                        }
                         if (bitmap != null) {
                             builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
                             builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
@@ -288,11 +289,12 @@ class MediaSessionManager(
             val stateChanged = playing != lastPushedPlaying
             val now = System.nanoTime()
             val elapsedMs = (now - lastPushedTimeNanos) / 1_000_000L
-            val expectedPosition = if (lastPushedPlaying == true) {
-                lastPushedPositionMs + elapsedMs
-            } else {
-                lastPushedPositionMs
-            }
+            val expectedPosition =
+                if (lastPushedPlaying == true) {
+                    lastPushedPositionMs + elapsedMs
+                } else {
+                    lastPushedPositionMs
+                }
             val seekDetected = kotlin.math.abs(position - expectedPosition) > seekThresholdMs
 
             if (!stateChanged && !seekDetected) return

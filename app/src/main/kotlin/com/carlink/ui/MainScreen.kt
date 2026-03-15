@@ -11,6 +11,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,8 +19,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredHeight
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
@@ -43,8 +46,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.carlink.BuildConfig
 import com.carlink.CarlinkManager
@@ -53,6 +59,7 @@ import com.carlink.logging.logDebug
 import com.carlink.logging.logInfo
 import com.carlink.protocol.MessageSerializer
 import com.carlink.protocol.MultiTouchAction
+import com.carlink.protocol.PhoneType
 import com.carlink.ui.components.LoadingSpinner
 import com.carlink.ui.components.VideoSurface
 import com.carlink.ui.components.rememberVideoSurfaceState
@@ -72,28 +79,34 @@ fun MainScreen(
     var statusText by remember { mutableStateOf("Connect Adapter") }
     var isResetting by remember { mutableStateOf(false) }
     val surfaceState = rememberVideoSurfaceState()
+    var isAndroidAuto by remember { mutableStateOf(false) }
+    var aaCropParams by remember { mutableStateOf<CarlinkManager.AaCropParams?>(null) }
 
     LaunchedEffect(state) {
         logInfo("[UI_STATE] MainScreen connection state: $state", tag = "UI")
     }
 
     var lastTouchTime by remember { mutableLongStateOf(0L) }
-    val isUserInteractingWithProjection = state == CarlinkManager.State.STREAMING
     val activeTouches = remember { mutableStateMapOf<Int, TouchPoint>() }
     var hasStartedConnection by remember { mutableStateOf(false) }
 
-    // Handle surface initialization for adapter
-    LaunchedEffect(surfaceState.surface, surfaceState.width, surfaceState.height) {
+    // Container dimensions (display-mode-padded area) — used for BoxSettings AR calculation.
+    // Tracked separately from surfaceState because AA oversizes the SurfaceView beyond the container.
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    // Handle surface initialization for adapter — uses CONTAINER dimensions for config/BoxSettings,
+    // not the SurfaceView dimensions (which may be oversized for AA bar cropping).
+    LaunchedEffect(surfaceState.surface, containerSize) {
         surfaceState.surface?.let { surface ->
-            if (surfaceState.width <= 0 || surfaceState.height <= 0) return@let
+            if (containerSize.width <= 0 || containerSize.height <= 0) return@let
 
             // Force even dimensions for H.264 macroblock alignment
-            val adapterWidth = surfaceState.width and 1.inv()
-            val adapterHeight = surfaceState.height and 1.inv()
+            val adapterWidth = containerSize.width and 1.inv()
+            val adapterHeight = containerSize.height and 1.inv()
 
             logInfo(
-                "[CARLINK_RESOLUTION] Surface size: ${adapterWidth}x$adapterHeight " +
-                    "(raw: ${surfaceState.width}x${surfaceState.height}, mode=$displayMode)",
+                "[CARLINK_RESOLUTION] Container size: ${adapterWidth}x$adapterHeight " +
+                    "(surface: ${surfaceState.width}x${surfaceState.height}, mode=$displayMode)",
                 tag = "UI",
             )
 
@@ -114,6 +127,18 @@ fun MainScreen(
                         override fun onHostUIPressed() {
                             onNavigateToSettings()
                         }
+
+                        override fun onPhoneTypeChanged(phoneType: PhoneType) {
+                            val isAA = phoneType == PhoneType.ANDROID_AUTO
+                            if (isAA != isAndroidAuto) {
+                                isAndroidAuto = isAA
+                                aaCropParams = if (isAA) carlinkManager.getAaCropParams() else null
+                                logInfo(
+                                    "[UI_SURFACE] Phone type changed: $phoneType, isAA=$isAA, crop=$aaCropParams",
+                                    tag = "UI",
+                                )
+                            }
+                        }
                     },
             )
             if (!hasStartedConnection) {
@@ -127,50 +152,110 @@ fun MainScreen(
     val colorScheme = MaterialTheme.colorScheme
 
     val baseModifier = Modifier.fillMaxSize().background(Color.Black)
-    val boxModifier = when (displayMode) {
-        DisplayMode.FULLSCREEN_IMMERSIVE -> baseModifier
-        DisplayMode.SYSTEM_UI_VISIBLE -> baseModifier
-            .windowInsetsPadding(WindowInsets.systemBars)
-            .windowInsetsPadding(WindowInsets.displayCutout)
-        DisplayMode.STATUS_BAR_HIDDEN,
-        DisplayMode.NAV_BAR_HIDDEN -> baseModifier
-            .windowInsetsPadding(WindowInsets.systemBars)
+    val boxModifier =
+        when (displayMode) {
+            DisplayMode.FULLSCREEN_IMMERSIVE -> {
+                baseModifier
+            }
+
+            DisplayMode.SYSTEM_UI_VISIBLE -> {
+                baseModifier
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .windowInsetsPadding(WindowInsets.displayCutout)
+            }
+
+            DisplayMode.STATUS_BAR_HIDDEN,
+            DisplayMode.NAV_BAR_HIDDEN,
+            -> {
+                baseModifier
+                    .windowInsetsPadding(WindowInsets.systemBars)
+            }
             // No displayCutout padding — video extends behind cutout,
             // SafeArea tells CarPlay where to avoid placing UI elements
-    }
+        }
 
     Box(modifier = boxModifier) {
-        VideoSurface(
-            modifier = Modifier.fillMaxSize(),
-            onSurfaceAvailable = { surface, width, height ->
-                logInfo("[UI_SURFACE] Surface available: ${width}x$height", tag = "UI")
-                surfaceState.onSurfaceAvailable(surface, width, height)
-            },
-            onSurfaceDestroyed = {
-                logInfo("[UI_SURFACE] Surface destroyed", tag = "UI")
-                surfaceState.onSurfaceDestroyed()
-                carlinkManager.onSurfaceDestroyed()
-            },
-            onSurfaceSizeChanged = { width, height ->
-                logInfo("[UI_SURFACE] Surface size changed: ${width}x$height", tag = "UI")
-                surfaceState.onSurfaceSizeChanged(width, height)
-            },
-            onTouchEvent = { event ->
-                if (BuildConfig.DEBUG && isUserInteractingWithProjection) {
-                    val now = System.currentTimeMillis()
-                    if (now - lastTouchTime > 1000) {
-                        logDebug(
-                            "[UI_TOUCH] touch: action=${event.actionMasked}" +
-                                ", pointers=${event.pointerCount}",
-                            tag = "UI",
-                        )
-                        lastTouchTime = now
-                    }
+        val density = LocalDensity.current
+
+        // For AA: SurfaceView oversized to tier AR (16:9), centered + clipped.
+        // Black bars in the codec frame fall outside the clip → cropped visually.
+        // Codec start is deferred until phone type is known, so surface resize
+        // (destroyed→created at oversized dims) happens before decoder is active.
+        BoxWithConstraints(
+            modifier = Modifier.fillMaxSize().clipToBounds(),
+        ) {
+            // Track container dimensions for BoxSettings AR calculation
+            val containerPx =
+                with(density) {
+                    IntSize(maxWidth.roundToPx(), maxHeight.roundToPx())
                 }
-                handleTouchEvent(event, activeTouches, carlinkManager, surfaceState.width, surfaceState.height)
-                true
-            },
-        )
+            LaunchedEffect(containerPx) {
+                if (containerPx.width > 0 && containerPx.height > 0) {
+                    containerSize = containerPx
+                }
+            }
+
+            // AA: oversize SurfaceView to tier AR so black bars overflow the clip region.
+            // CarPlay: SurfaceView fills container (frame matches surface, no crop needed).
+            val surfaceModifier =
+                if (aaCropParams != null) {
+                    val tierAR = aaCropParams!!.tierWidth.toFloat() / aaCropParams!!.tierHeight.toFloat()
+                    val oversizedHeightDp = with(density) { (maxWidth.toPx() / tierAR).toInt().toDp() }
+                    Modifier
+                        .fillMaxWidth()
+                        .requiredHeight(oversizedHeightDp)
+                        .align(Alignment.Center)
+                } else {
+                    Modifier.fillMaxSize()
+                }
+
+            VideoSurface(
+                modifier = surfaceModifier,
+                onSurfaceAvailable = { surface, width, height ->
+                    logInfo("[UI_SURFACE] Surface available: ${width}x$height (isAA=$isAndroidAuto)", tag = "UI")
+                    surfaceState.onSurfaceAvailable(surface, width, height)
+                },
+                onSurfaceDestroyed = {
+                    logInfo("[UI_SURFACE] Surface destroyed", tag = "UI")
+                    surfaceState.onSurfaceDestroyed()
+                    carlinkManager.onSurfaceDestroyed()
+                },
+                onSurfaceSizeChanged = { width, height ->
+                    logInfo("[UI_SURFACE] Surface size changed: ${width}x$height", tag = "UI")
+                    surfaceState.onSurfaceSizeChanged(width, height)
+                },
+                onTouchEvent = { event ->
+                    // Read state directly through the Compose delegate — NOT via
+                    // the pre-computed val `isUserInteractingWithProjection`.
+                    // This lambda is captured once in AndroidView's factory block;
+                    // a pre-computed val would snapshot DISCONNECTED permanently.
+                    if (state == CarlinkManager.State.STREAMING) {
+                        if (BuildConfig.DEBUG) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastTouchTime > 1000) {
+                                logDebug(
+                                    "[UI_TOUCH] touch: action=${event.actionMasked}" +
+                                        ", pointers=${event.pointerCount}" +
+                                        ", surface=${surfaceState.width}x${surfaceState.height}" +
+                                        ", container=${containerSize.width}x${containerSize.height}",
+                                    tag = "UI",
+                                )
+                                lastTouchTime = now
+                            }
+                        }
+                        handleTouchEvent(
+                            event,
+                            activeTouches,
+                            carlinkManager,
+                            surfaceState.width,
+                            surfaceState.height,
+                            containerSize.height,
+                        )
+                    }
+                    true
+                },
+            )
+        }
 
         // Loading overlay
         if (isLoading) {
@@ -304,14 +389,26 @@ private data class TouchPoint(
     val action: MultiTouchAction,
 )
 
+/**
+ * Handle touch on the SurfaceView.
+ *
+ * eventX/Y are in the SurfaceView's coordinate space. For AA the SurfaceView is
+ * oversized (e.g. 2400x1350) but only [containerHeight] pixels are visible
+ * (the center portion). We subtract the crop offset so touch maps to 0..1 of
+ * the visible content area.
+ *
+ * AA:     type 0x05, 0..10000 ints  (CarlinkManager converts 0..1 → 0..10000)
+ * CarPlay: type 0x17, 0..1 floats   (unchanged)
+ */
 private fun handleTouchEvent(
     event: MotionEvent,
     activeTouches: MutableMap<Int, TouchPoint>,
     carlinkManager: CarlinkManager,
     surfaceWidth: Int,
     surfaceHeight: Int,
+    containerHeight: Int,
 ) {
-    if (surfaceWidth == 0 || surfaceHeight == 0) return
+    if (surfaceWidth == 0 || surfaceHeight == 0 || containerHeight == 0) return
 
     val pointerIndex = event.actionIndex
     val pointerId = event.getPointerId(pointerIndex)
@@ -324,8 +421,16 @@ private fun handleTouchEvent(
             else -> return
         }
 
+    // Crop offset: how many SurfaceView pixels are hidden above the visible area.
+    // For CarPlay (no oversize): surfaceHeight == containerHeight → cropTop = 0.
+    // For AA (oversized to tier AR): e.g. (1350 - 960) / 2 = 195.
+    val cropTopY = (surfaceHeight - containerHeight) / 2f
+
+    // Normalize to 0..1 of the oversized surface (matches AutoKit's scaled_height denominator).
+    // X: surface width == container width (no horizontal oversize), simple division.
+    // Y: subtract crop offset, divide by SURFACE height (not container) so AA range maps correctly.
     val x = event.getX(pointerIndex) / surfaceWidth
-    val y = event.getY(pointerIndex) / surfaceHeight
+    val y = (event.getY(pointerIndex) - cropTopY) / surfaceHeight
 
     when (action) {
         MultiTouchAction.DOWN -> {
@@ -336,7 +441,7 @@ private fun handleTouchEvent(
             for (i in 0 until event.pointerCount) {
                 val id = event.getPointerId(i)
                 val px = event.getX(i) / surfaceWidth
-                val py = event.getY(i) / surfaceHeight
+                val py = (event.getY(i) - cropTopY) / surfaceHeight
                 activeTouches[id]?.let { existing ->
                     val dx = kotlin.math.abs(existing.x - px) * 1000
                     val dy = kotlin.math.abs(existing.y - py) * 1000

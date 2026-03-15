@@ -23,7 +23,6 @@ import com.carlink.logging.logWarn
  * NaviTurnSide controls U-turn direction (LEFT vs RIGHT) and roundabout rotation (CW vs CCW).
  */
 object ManeuverMapper {
-
     /** Cache built Maneuver objects by (cpType shl 4) or turnSide to avoid icon thrashing. */
     private val maneuverCache = HashMap<Int, Maneuver>()
 
@@ -34,7 +33,10 @@ object ManeuverMapper {
      * @param turnSide 0=right-hand driving (default), 1=left-hand driving
      * @return Maneuver type constant
      */
-    fun mapManeuverType(cpType: Int, turnSide: Int = 0): Int {
+    fun mapManeuverType(
+        cpType: Int,
+        turnSide: Int = 0,
+    ): Int {
         val isLeftDrive = turnSide == 1
         val mapped = when (cpType) {
             0  -> Maneuver.TYPE_STRAIGHT             // noTurn
@@ -88,7 +90,6 @@ object ManeuverMapper {
                 )
                 Maneuver.TYPE_UNKNOWN
             }
-        }
 
         logNavi { "[NAVI] Mapped CPManeuverType=$cpType (turnSide=$turnSide) → Maneuver.TYPE=$mapped" }
         return mapped
@@ -119,9 +120,10 @@ object ManeuverMapper {
      * @param context Context for loading VectorDrawable resources
      * @return Maneuver with type and resource icon set
      */
-    fun buildManeuver(state: NavigationState, context: Context): Maneuver {
-        return buildManeuverForType(state.maneuverType, state.turnSide, context)
-    }
+    fun buildManeuver(
+        state: NavigationState,
+        context: Context,
+    ): Maneuver = buildManeuverForType(state.maneuverType, state.turnSide, context)
 
     /**
      * Build a Maneuver from explicit CPManeuverType and turnSide values.
@@ -129,7 +131,11 @@ object ManeuverMapper {
      * Used by [TripBuilder] for the next-step maneuver where the fields come from
      * [NavigationState.nextManeuverType] rather than the current state.
      */
-    fun buildManeuverForType(cpType: Int, turnSide: Int, context: Context): Maneuver {
+    fun buildManeuverForType(
+        cpType: Int,
+        turnSide: Int,
+        context: Context,
+    ): Maneuver {
         val cacheKey = (cpType shl 4) or turnSide
         maneuverCache[cacheKey]?.let { return it }
 

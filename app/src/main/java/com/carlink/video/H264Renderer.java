@@ -33,10 +33,10 @@ public class H264Renderer {
         void onKeyframeNeeded();
     }
 
-    // [CSD-CACHE DISABLED] Callback when SPS/PPS are extracted from stream for persistent caching.
-    // public interface CsdExtractedCallback {
-    //     void onCsdExtracted(byte[] sps, int spsLength, byte[] pps, int ppsLength);
-    // }
+    /** Callback when SPS/PPS are extracted from stream for persistent caching. */
+    public interface CsdExtractedCallback {
+        void onCsdExtracted(byte[] sps, int spsLength, byte[] pps, int ppsLength);
+    }
 
     /** Pre-allocated frame buffer for staging between USB and feeder threads.
      *  Ownership transfer via SPSC ring buffer with volatile indices provides happens-before guarantee. */
@@ -60,14 +60,38 @@ public class H264Renderer {
     private volatile java.util.Timer retryTimer;  // Stored for cancellation in stop()
     private final LogCallback logCallback;
     private KeyframeRequestCallback keyframeCallback;
-    // [CSD-CACHE DISABLED] private CsdExtractedCallback csdCallback;
+    private CsdExtractedCallback csdCallback;
 
-    // [CSD-CACHE DISABLED] Cached CSD for codec reconfigure (persists across stop/start cycles)
-    // private byte[] cachedSps;
-    // private int cachedSpsLength;
-    // private byte[] cachedPps;
-    // private int cachedPpsLength;
-    // private volatile boolean firstSpsAfterPrewarmFed;
+    // Cached CSD for codec reconfigure (persists across stop/start cycles)
+    private byte[] cachedSps;
+    private int cachedSpsLength;
+    private byte[] cachedPps;
+    private int cachedPpsLength;
+    private volatile boolean firstSpsAfterPrewarmFed;
+
+    // Android Auto mode — enables AA-specific decoder behaviors:
+    //   - Skip first N rendered frames (boot-screen IDR avoidance)
+    //   - Frame cache for replay recovery (60s IDR gap mitigation)
+    //   - VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING
+    private volatile boolean androidAutoMode = false;
+
+    // AA first-frame skip: decoded frames are released with render=false until this count
+    // reaches AA_RENDER_SKIP_COUNT. Prevents the deterministic 2,735B boot-screen IDR
+    // from ever displaying. AutoKit uses 4; we use the same threshold.
+    private static final int AA_RENDER_SKIP_COUNT = 4;
+    private final AtomicLong aaRenderedFrameCount = new AtomicLong(0);
+
+    // AA frame cache: stores frames since last IDR for replay on decoder recreation.
+    // With AA's 60s natural IDR interval, losing the decoder means 60s of corruption
+    // without cached frames to replay. AutoKit uses Vector capacity 320; we use a
+    // bounded array for GC-free operation.
+    private static final int FRAME_CACHE_MAX_FRAMES = 120;  // ~4s at 30fps
+    private static final int FRAME_CACHE_ENTRY_SIZE = 128 * 1024;  // 128KB per cached frame
+    private byte[][] frameCacheData;
+    private int[] frameCacheLengths;
+    private int frameCacheCount;
+    private byte[] frameCacheSps;  // SPS+PPS cache for replay (separate from codec CSD cache)
+    private int frameCacheSpsLength;
 
     private final AppExecutors executors;
     private final String preferredDecoderName;
@@ -126,11 +150,6 @@ public class H264Renderer {
     // Prevents feeding undecodable frames if initial keyframe bundle is lost.
     private volatile boolean syncAcquired = false;
 
-    // AA IDR flush: AA sends IDR every 60s and we can't request keyframes.
-    // The first IDR is a boot-screen (~2KB) causing 60s of decoder poisoning.
-    // When set, the codec is flushed on the NEXT IDR to clear poisoned references.
-    private volatile boolean flushOnNextIdr = false;
-
     // Monotonic frame counter for PTS
     private final AtomicLong frameCounter = new AtomicLong(0);
 
@@ -154,7 +173,6 @@ public class H264Renderer {
     private volatile Thread feederThread;
     private final AtomicLong stagingDropCount = new AtomicLong(0);
     private final AtomicLong oversizedDropCount = new AtomicLong(0);
-    private final AtomicLong poolExhaustionCount = new AtomicLong(0);
 
     // Fix A: Reactive keyframe request after staging drops
     private volatile boolean stagingOverwriteDetected = false;
@@ -177,19 +195,127 @@ public class H264Renderer {
         this.keyframeCallback = callback;
     }
 
-    // [CSD-CACHE DISABLED]
-    // public void setCsdExtractedCallback(CsdExtractedCallback callback) {
-    //     this.csdCallback = callback;
-    // }
+    public void setCsdExtractedCallback(CsdExtractedCallback callback) {
+        this.csdCallback = callback;
+    }
 
     /**
-     * Schedule a codec flush on the next IDR frame.
-     * Used for AA streams where we can't request keyframes — the first IDR is a
-     * boot-screen that poisons the decoder for 60s until AA's natural IDR cycle.
-     * Flushing on the second IDR clears all corrupted reference frames instantly.
+     * Enable Android Auto decoder mode.
+     * Must be called before start() or during codec lifecycle for immediate effect.
+     * Enables: first-frame skip, frame cache replay, crop scaling mode.
      */
-    public void setFlushOnNextIdr() {
-        this.flushOnNextIdr = true;
+    public void setAndroidAutoMode(boolean enabled) {
+        this.androidAutoMode = enabled;
+        if (enabled) {
+            initFrameCache();
+        }
+        log("[VIDEO] Android Auto mode: " + enabled);
+    }
+
+    /** Allocate frame cache arrays (lazy, only for AA). */
+    private void initFrameCache() {
+        if (frameCacheData != null) return;
+        frameCacheData = new byte[FRAME_CACHE_MAX_FRAMES][];
+        frameCacheLengths = new int[FRAME_CACHE_MAX_FRAMES];
+        frameCacheCount = 0;
+        frameCacheSps = null;
+        frameCacheSpsLength = 0;
+    }
+
+    /** Clear frame cache (on IDR or decoder reset). */
+    private void clearFrameCache() {
+        frameCacheCount = 0;
+    }
+
+    /** Add a frame to the cache. On IDR, clears first. */
+    private void cacheFrame(byte[] data, int offset, int length, int nalType) {
+        if (frameCacheData == null) return;
+
+        // On IDR: clear cache and save SPS+PPS for replay prefix
+        if (nalType == NAL_IDR || nalType == NAL_SPS) {
+            clearFrameCache();
+            // If this is SPS bundle, extract SPS+PPS portion for replay
+            if (nalType == NAL_SPS) {
+                int idrOff = findNalOffset(data, offset + 4, length - 4, NAL_IDR);
+                if (idrOff > 0) {
+                    int spsLen = idrOff - offset;
+                    if (frameCacheSps == null || frameCacheSps.length < spsLen) {
+                        frameCacheSps = new byte[spsLen];
+                    }
+                    System.arraycopy(data, offset, frameCacheSps, 0, spsLen);
+                    frameCacheSpsLength = spsLen;
+                }
+            }
+        }
+
+        if (frameCacheCount >= FRAME_CACHE_MAX_FRAMES) return;  // Cache full, stop adding
+
+        int idx = frameCacheCount;
+        if (frameCacheData[idx] == null || frameCacheData[idx].length < length) {
+            frameCacheData[idx] = new byte[Math.max(length, FRAME_CACHE_ENTRY_SIZE)];
+        }
+        System.arraycopy(data, offset, frameCacheData[idx], 0, length);
+        frameCacheLengths[idx] = length;
+        frameCacheCount++;
+    }
+
+    /**
+     * Replay cached frames through the codec after decoder recreation.
+     * Feeds SPS+PPS first, then all cached frames since last IDR.
+     * AutoKit replays up to 20 iterations for AA — we do a single pass
+     * since our async codec pipeline handles warmup differently.
+     */
+    private void replayFrameCache() {
+        if (frameCacheData == null || frameCacheCount == 0) return;
+        if (mCodec == null || !running) return;
+
+        log("[VIDEO] Replaying " + frameCacheCount + " cached frames for AA recovery");
+
+        // Feed cached SPS+PPS first if available
+        if (frameCacheSps != null && frameCacheSpsLength > 0) {
+            Integer spsIdx = codecAvailableBufferIndexes.poll();
+            if (spsIdx != null) {
+                try {
+                    ByteBuffer buf = mCodec.getInputBuffer(spsIdx);
+                    if (buf != null) {
+                        buf.clear();
+                        buf.put(frameCacheSps, 0, frameCacheSpsLength);
+                        mCodec.queueInputBuffer(spsIdx, 0, frameCacheSpsLength,
+                                frameCounter.getAndIncrement(), MediaCodec.BUFFER_FLAG_CODEC_CONFIG);
+                    } else {
+                        codecAvailableBufferIndexes.offer(spsIdx);
+                    }
+                } catch (Exception e) {
+                    codecAvailableBufferIndexes.offer(spsIdx);
+                    log("[VIDEO] Frame cache SPS replay error: " + e.getMessage());
+                }
+            }
+        }
+
+        // Feed each cached frame
+        for (int i = 0; i < frameCacheCount; i++) {
+            Integer idx = codecAvailableBufferIndexes.poll();
+            if (idx == null) {
+                log("[VIDEO] Frame cache replay: no input buffer at frame " + i + "/" + frameCacheCount);
+                break;
+            }
+            try {
+                ByteBuffer buf = mCodec.getInputBuffer(idx);
+                if (buf != null) {
+                    buf.clear();
+                    buf.put(frameCacheData[i], 0, frameCacheLengths[i]);
+                    mCodec.queueInputBuffer(idx, 0, frameCacheLengths[i],
+                            frameCounter.getAndIncrement(), 0);
+                    feedSuccesses.incrementAndGet();
+                } else {
+                    codecAvailableBufferIndexes.offer(idx);
+                }
+            } catch (Exception e) {
+                codecAvailableBufferIndexes.offer(idx);
+                log("[VIDEO] Frame cache replay error at " + i + ": " + e.getMessage());
+                break;
+            }
+        }
     }
 
     private void log(String message) {
@@ -211,8 +337,9 @@ public class H264Renderer {
         lastLifecycleEventTime = System.currentTimeMillis();
         firstFrameLogged = false;
         syncAcquired = false;
-        flushOnNextIdr = false;
-        // [CSD-CACHE DISABLED] firstSpsAfterPrewarmFed = false;
+        firstSpsAfterPrewarmFed = false;
+        aaRenderedFrameCount.set(0);
+        if (androidAutoMode) clearFrameCache();
 
         log("start - " + width + "x" + height);
 
@@ -297,6 +424,11 @@ public class H264Renderer {
             stop();
             this.surface = savedSurface;
             start();
+
+            // AA: replay cached frames through fresh decoder for faster recovery
+            if (androidAutoMode) {
+                replayFrameCache();
+            }
         }
 
         if (keyframeCallback != null) {
@@ -335,6 +467,11 @@ public class H264Renderer {
             stop();
             this.surface = newSurface;
             start();
+
+            // AA: replay cached frames through fresh decoder for faster recovery
+            if (androidAutoMode) {
+                replayFrameCache();
+            }
         }
 
         if (keyframeCallback != null) {
@@ -342,6 +479,29 @@ public class H264Renderer {
                 keyframeCallback.onKeyframeNeeded();
             } catch (Exception e) {
                 log("[VIDEO_ERROR] Keyframe request failed: " + e);
+            }
+        }
+    }
+
+    /**
+     * Flush the codec to release stalled BufferQueue output buffers.
+     * Used when the SurfaceView is re-exposed after being covered by an overlay
+     * (settings screen). Unlike Activity onStop/onStart, overlays don't trigger
+     * lifecycle events, so the codec may stall while SurfaceFlinger isn't consuming.
+     *
+     * After flush, the codec needs a new IDR to resume decoding. The caller should
+     * request a keyframe from the adapter (for CarPlay) or wait for natural IDR (AA).
+     */
+    public void flushCodec() {
+        synchronized (codecLock) {
+            if (!running || mCodec == null) return;
+            try {
+                mCodec.flush();
+                mCodec.start();
+                codecAvailableBufferIndexes.clear();
+                log("[LIFECYCLE] Codec flushed (overlay recovery)");
+            } catch (Exception e) {
+                log("[LIFECYCLE] Codec flush failed: " + e.getMessage());
             }
         }
     }
@@ -433,8 +593,49 @@ public class H264Renderer {
         }
     }
 
-    // [CSD-CACHE DISABLED] configureWithCsd — codec pre-warming removed for testing
-    // public void configureWithCsd(byte[] sps, byte[] pps) { ... }
+    /**
+     * Reconfigure the codec with cached SPS/PPS (csd-0/csd-1).
+     * Call BEFORE first video frame arrives to pre-warm the decoder.
+     * Safe to call from any thread (acquires codecLock).
+     */
+    public void configureWithCsd(byte[] sps, byte[] pps) {
+        synchronized (codecLock) {
+            // Guard: skip if already pre-warmed with same CSD
+            if (cachedSps != null && cachedSpsLength == sps.length) {
+                boolean same = true;
+                for (int i = 0; i < cachedSpsLength; i++) {
+                    if (cachedSps[i] != sps[i]) { same = false; break; }
+                }
+                if (same) {
+                    log("[VIDEO] configureWithCsd: already pre-warmed, skipping");
+                    return;
+                }
+            }
+
+            if (!running || mCodec == null || surface == null) {
+                log("[VIDEO] configureWithCsd: codec not running, caching for later");
+                cachedSps = sps;
+                cachedSpsLength = sps.length;
+                cachedPps = pps;
+                cachedPpsLength = pps != null ? pps.length : 0;
+                return;
+            }
+
+            log("[VIDEO] Reconfiguring codec with cached CSD: SPS=" + sps.length +
+                    "B, PPS=" + (pps != null ? pps.length : 0) + "B");
+
+            Surface savedSurface = this.surface;
+            stop();
+            this.surface = savedSurface;
+
+            cachedSps = sps;
+            cachedSpsLength = sps.length;
+            cachedPps = pps;
+            cachedPpsLength = pps != null ? pps.length : 0;
+
+            start();
+        }
+    }
 
     private void initCodec(int width, int height, Surface surface) throws IOException {
         log("init codec: " + width + "x" + height);
@@ -468,15 +669,22 @@ public class H264Renderer {
 
         MediaFormat mediaformat = MediaFormat.createVideoFormat("video/avc", width, height);
 
-        // [CSD-CACHE DISABLED] Pre-configure with cached CSD removed for testing
-        // if (cachedSps != null && cachedSpsLength > 0) {
-        //     mediaformat.setByteBuffer("csd-0", ByteBuffer.wrap(cachedSps, 0, cachedSpsLength));
-        //     if (cachedPps != null && cachedPpsLength > 0) {
-        //         mediaformat.setByteBuffer("csd-1", ByteBuffer.wrap(cachedPps, 0, cachedPpsLength));
-        //     }
-        //     syncAcquired = true;
-        //     firstSpsAfterPrewarmFed = false;
-        // }
+        // Pre-configure with cached CSD if available (pre-warms decoder)
+        if (cachedSps != null && cachedSpsLength > 0) {
+            mediaformat.setByteBuffer("csd-0",
+                    ByteBuffer.wrap(cachedSps, 0, cachedSpsLength));
+            log("CSD-0 (SPS) pre-configured: " + cachedSpsLength + "B");
+
+            if (cachedPps != null && cachedPpsLength > 0) {
+                mediaformat.setByteBuffer("csd-1",
+                        ByteBuffer.wrap(cachedPps, 0, cachedPpsLength));
+                log("CSD-1 (PPS) pre-configured: " + cachedPpsLength + "B");
+            }
+
+            // Codec is pre-warmed — set sync acquired so first IDR feeds directly
+            syncAcquired = true;
+            firstSpsAfterPrewarmFed = false;
+        }
 
         // Low latency mode if supported
         if (codecInfo != null) {
@@ -513,6 +721,17 @@ public class H264Renderer {
         mCodec.setCallback(codecCallback);
         codecAvailableBufferIndexes.clear();
         mCodec.configure(mediaformat, surface, null, 0);
+
+        // AA: crop-scale to fit letterboxed content (removes black bars at codec level)
+        if (androidAutoMode) {
+            try {
+                mCodec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT_WITH_CROPPING);
+                log("AA video scaling: SCALE_TO_FIT_WITH_CROPPING");
+            } catch (Exception e) {
+                log("AA scaling mode not supported: " + e.getMessage());
+            }
+        }
+
         log("Surface bound: valid=" + (surface != null && surface.isValid()));
     }
 
@@ -630,7 +849,7 @@ public class H264Renderer {
                         }
                     }
                 } else {
-                    LockSupport.park();
+                    LockSupport.parkNanos(1_000_000L);  // 1ms — 0.5ms avg added latency
                 }
             }
         } catch (Exception e) {
@@ -664,37 +883,17 @@ public class H264Renderer {
                 logPerf("Pre-sync drop: " + nalTypeToString(nalType) + " " + frame.length + "B");
                 return;
             }
-        // [CSD-CACHE DISABLED] Pre-warmed split-feed path removed
-        }
-
-        // AA IDR flush: flush codec on the second IDR to clear poisoned references
-        // from the boot-screen IDR. After flush+start, async callbacks resume with
-        // fresh buffer indices, then we split-feed CSD+IDR for a clean decode.
-        if (flushOnNextIdr) {
+        } else if (!firstSpsAfterPrewarmFed) {
+            // Pre-warmed path: still split-feed first SPS+PPS+IDR bundle
+            // to ensure CSD is delivered with BUFFER_FLAG_CODEC_CONFIG
             int nalType = getNalType(frame.data, 0, frame.length);
-            if (nalType == NAL_SPS || nalType == NAL_IDR) {
-                flushOnNextIdr = false;
-                log("[VIDEO] AA IDR flush: clearing poisoned references (" + frame.length + "B)");
-                try {
-                    synchronized (codecLock) {
-                        if (mCodec != null) {
-                            mCodec.flush();
-                            codecAvailableBufferIndexes.clear();
-                            mCodec.start();
-                        }
-                    }
-                    // Re-feed CSD+IDR cleanly after flush
-                    if (nalType == NAL_SPS) {
-                        int idrOffset = findNalOffset(frame.data, 4, frame.length - 4, NAL_IDR);
-                        if (idrOffset > 0) {
-                            boolean fed = feedSplitCsd(frame, idrOffset);
-                            if (fed) return;
-                        }
-                    }
-                    // Fall through to normal feed for bare IDR or if split-feed failed
-                } catch (Exception e) {
-                    log("[VIDEO] AA IDR flush failed: " + e.getMessage());
-                    // Fall through to normal feed — at worst we get the same corruption
+            if (nalType == NAL_SPS) {
+                firstSpsAfterPrewarmFed = true;
+                int idrOffset = findNalOffset(frame.data, 4, frame.length - 4, NAL_IDR);
+                if (idrOffset > 0) {
+                    log("[VIDEO] Pre-warmed split-feed: first SPS bundle");
+                    boolean fed = feedSplitCsd(frame, idrOffset);
+                    if (fed) return;
                 }
             }
         }
@@ -728,6 +927,12 @@ public class H264Renderer {
             inputBuffer.put(frame.data, 0, frame.length);
             mCodec.queueInputBuffer(index, 0, frame.length, frame.timestamp, 0);
             feedSuccesses.incrementAndGet();
+
+            // AA frame cache: store frames since last IDR for replay on decoder recreation
+            if (androidAutoMode) {
+                int nt = getNalType(frame.data, 0, frame.length);
+                cacheFrame(frame.data, 0, frame.length, nt);
+            }
         } catch (Exception e) {
             long count = feedExceptionCount.incrementAndGet();
             lastFeedException = e.getClass().getSimpleName() + ": " + e.getMessage();
@@ -785,10 +990,11 @@ public class H264Renderer {
             mCodec.queueInputBuffer(idrIndex, 0, idrLen, frame.timestamp, 0);
             idrQueued = true;
 
-            feedSuccesses.addAndGet(1);
+            feedSuccesses.addAndGet(2);
             log("[VIDEO] Split-feed: CSD=" + csdLen + "B + IDR=" + idrLen + "B");
 
-            // [CSD-CACHE DISABLED] cacheCsdFromBundle(frame.data, csdLen);
+            // Cache SPS and PPS for future reconfigures
+            cacheCsdFromBundle(frame.data, csdLen);
 
             return true;
         } catch (Exception e) {
@@ -801,8 +1007,31 @@ public class H264Renderer {
         }
     }
 
-    // [CSD-CACHE DISABLED] cacheCsdFromBundle — CSD extraction and callback removed for testing
-    // private void cacheCsdFromBundle(byte[] data, int csdLength) { ... }
+    /**
+     * Extract individual SPS and PPS NAL units from a CSD bundle and cache them.
+     * Notifies CsdExtractedCallback for persistent storage.
+     */
+    private void cacheCsdFromBundle(byte[] data, int csdLength) {
+        int ppsOffset = findNalOffset(data, 4, csdLength - 4, NAL_PPS);
+        if (ppsOffset < 0) {
+            cachedSps = java.util.Arrays.copyOf(data, csdLength);
+            cachedSpsLength = csdLength;
+            cachedPps = null;
+            cachedPpsLength = 0;
+        } else {
+            cachedSps = java.util.Arrays.copyOf(data, ppsOffset);
+            cachedSpsLength = ppsOffset;
+            cachedPps = java.util.Arrays.copyOfRange(data, ppsOffset, csdLength);
+            cachedPpsLength = csdLength - ppsOffset;
+        }
+
+        log("[VIDEO] Cached CSD: SPS=" + cachedSpsLength + "B, PPS=" + cachedPpsLength + "B");
+
+        CsdExtractedCallback cb = csdCallback;
+        if (cb != null) {
+            cb.onCsdExtracted(cachedSps, cachedSpsLength, cachedPps, cachedPpsLength);
+        }
+    }
 
     // H.264 NAL unit types (ITU-T H.264 Table 7-1)
     private static final int NAL_SLICE = 1;       // Non-IDR slice (P/B frame)
@@ -899,9 +1128,9 @@ public class H264Renderer {
         if (stagingOffer(wf)) {
             // Frame enqueued — get a fresh buffer from pool for next write
             writeFrame = framePool.poll();
-            if (writeFrame == null) poolExhaustionCount.incrementAndGet();
-            Thread t = feederThread;
-            if (t != null) LockSupport.unpark(t);
+            // writeFrame may be null briefly if feeder hasn't returned buffers yet.
+            // Next feedDirect() call will return false (null guard above). This is fine —
+            // the feeder will return buffers to the pool within ~1ms.
         } else {
             // Queue full — drop incoming frame (preserves FIFO order of already-queued frames).
             // wf stays as writeFrame for reuse (data will be overwritten next call).
@@ -958,11 +1187,9 @@ public class H264Renderer {
 
             long stageDrops = stagingDropCount.getAndSet(0);
             long oversized = oversizedDropCount.getAndSet(0);
-            long poolExhausted = poolExhaustionCount.getAndSet(0);
-            if (stageDrops > 0 || oversized > 0 || poolExhausted > 0) {
+            if (stageDrops > 0 || oversized > 0) {
                 sb.append(" STAGE[drop:").append(stageDrops)
-                  .append(" oversized:").append(oversized)
-                  .append(" poolExh:").append(poolExhausted).append("]");
+                  .append(" oversized:").append(oversized).append("]");
             }
 
             if (nullBufs > 0 || exceptions > 0) {
@@ -1004,7 +1231,22 @@ public class H264Renderer {
                 }
 
                 try {
-                    codec.releaseOutputBuffer(index, info.size != 0);
+                    // AA first-frame skip: don't render the first N decoded frames.
+                    // The AA boot-screen IDR (2,735B) decodes to a nearly-uniform dark frame.
+                    // All P-frames reference it, producing corrupt video. By skipping the first
+                    // 4 rendered frames (matching AutoKit's behavior), we avoid ever displaying
+                    // the boot screen and let the codec warm up before rendering begins.
+                    boolean shouldRender = info.size != 0;
+                    if (shouldRender && androidAutoMode) {
+                        long renderCount = aaRenderedFrameCount.incrementAndGet();
+                        if (renderCount <= AA_RENDER_SKIP_COUNT) {
+                            shouldRender = false;
+                            if (renderCount == AA_RENDER_SKIP_COUNT) {
+                                log("[VIDEO] AA warmup complete — rendering enabled");
+                            }
+                        }
+                    }
+                    mCodec.releaseOutputBuffer(index, shouldRender);
                 } catch (Exception e) {
                     // Ignore
                 }

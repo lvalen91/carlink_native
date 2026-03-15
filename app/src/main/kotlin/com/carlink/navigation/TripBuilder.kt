@@ -17,8 +17,10 @@ import java.time.ZonedDateTime
  * is what the driver needs to do now, the second is what comes after.
  */
 object TripBuilder {
-
-    fun buildTrip(state: NavigationState, context: Context): Trip {
+    fun buildTrip(
+        state: NavigationState,
+        context: Context,
+    ): Trip {
         val tripBuilder = Trip.Builder()
         val eta = ZonedDateTime.now().plus(Duration.ofSeconds(state.timeToDestination.toLong()))
 
@@ -28,20 +30,23 @@ object TripBuilder {
         stepBuilder.setManeuver(maneuver)
         state.roadName?.let { stepBuilder.setCue(it) }
 
-        val stepEstimate = TravelEstimate.Builder(
-            DistanceFormatter.toDistance(state.remainDistance),
-            eta,
-        ).build()
+        val stepEstimate =
+            TravelEstimate
+                .Builder(
+                    DistanceFormatter.toDistance(state.remainDistance),
+                    eta,
+                ).build()
 
         tripBuilder.addStep(stepBuilder.build(), stepEstimate)
 
         // Next step — from firmware double-maneuver burst
         if (state.hasNextStep) {
-            val nextManeuver = ManeuverMapper.buildManeuverForType(
-                state.nextManeuverType!!,
-                state.turnSide,
-                context,
-            )
+            val nextManeuver =
+                ManeuverMapper.buildManeuverForType(
+                    state.nextManeuverType!!,
+                    state.turnSide,
+                    context,
+                )
             val nextStepBuilder = Step.Builder()
             nextStepBuilder.setManeuver(nextManeuver)
             state.nextRoadName?.let { nextStepBuilder.setCue(it) }
@@ -49,10 +54,12 @@ object TripBuilder {
             // No meaningful distance to the next-next maneuver — use destination estimate
             // as a placeholder. The cluster primarily shows the current step's distance;
             // the next step is a preview (icon + road name).
-            val nextStepEstimate = TravelEstimate.Builder(
-                DistanceFormatter.toDistance(state.distanceToDestination),
-                eta,
-            ).build()
+            val nextStepEstimate =
+                TravelEstimate
+                    .Builder(
+                        DistanceFormatter.toDistance(state.distanceToDestination),
+                        eta,
+                    ).build()
 
             tripBuilder.addStep(nextStepBuilder.build(), nextStepEstimate)
 
@@ -65,10 +72,12 @@ object TripBuilder {
             val destBuilder = Destination.Builder()
             state.destinationName?.let { destBuilder.setName(it) }
 
-            val destEstimate = TravelEstimate.Builder(
-                DistanceFormatter.toDistance(state.distanceToDestination),
-                eta,
-            ).build()
+            val destEstimate =
+                TravelEstimate
+                    .Builder(
+                        DistanceFormatter.toDistance(state.distanceToDestination),
+                        eta,
+                    ).build()
 
             tripBuilder.addDestination(destBuilder.build(), destEstimate)
         }

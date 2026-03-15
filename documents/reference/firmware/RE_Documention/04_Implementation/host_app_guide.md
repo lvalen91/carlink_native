@@ -476,7 +476,7 @@ fun sendBoxSettings() {
         put("mediaDelay", 300)
         put("syncTime", System.currentTimeMillis() / 1000)
         put("autoConn", true)
-        put("autoPlay", false)
+        // put("autoPlay", false)  // ⚠️ NOT MAPPED — ignored by ARMadb-driver (mapping missing)
         put("bgMode", 0)
         put("startDelay", 0)
 
@@ -660,6 +660,57 @@ Include `naviScreenInfo` in BoxSettings to activate navigation video (type 0x2C)
 
 ---
 
+### Media AutoPlay Implementation
+
+AutoPlay has two distinct mechanisms: **firmware-side** (config key) and **host-side** (reconnect resume).
+
+#### 1. Firmware-Side: `AutoPlauMusic` Config Key (CarPlay Only)
+
+The firmware config key `AutoPlauMusic` (index 20) controls auto-play. When set to 1, after CarPlay session establishment the adapter sends an iAP2 NowPlaying play command targeting `com.apple.Music` via `FUN_0002812c` in ARMiPhoneIAP2. This is CarPlay-only — Android Auto is unaffected.
+
+**⚠️ CRITICAL: BoxSettings `autoPlay` is NOT mapped.** The `autoPlay` JSON key string is absent from ARMadb-driver's BoxSettings parser string table — the mapping was never implemented (confirmed via binary strings analysis and independent memory dump, Mar 2026). Sending `"autoPlay": true` in BoxSettings JSON over USB has **no effect**.
+
+**How to actually set it:**
+- **Web UI:** The boa web interface sets `AutoPlauMusic` directly in riddle.conf (works)
+- **SendFile workaround:** Write directly to `/etc/riddle.conf` via SendFile (0x99) — untested but architecturally valid
+- **Host-side:** Use the reconnect resume pattern below (recommended for host apps)
+
+See `05_Reference/binary_analysis/config_key_analysis.md` [20] for firmware binary analysis.
+
+#### 2. Host-Side: Reconnect Auto-Resume (AutoKit Pattern)
+
+**Source:** AutoKit decompilation (Mar 2026) — this mechanism is entirely host-side, not sent to the adapter.
+
+The manufacturer's app implements reconnect-based media resume using two SharedPreferences flags:
+
+| Flag | Scope | Purpose |
+|------|-------|---------|
+| `IsAutoPlayMusic` | Global | User preference: enable/disable reconnect resume |
+| `MediaPlaying_<deviceId>` | Per-device | Was media playing when this device last disconnected? |
+
+**Flow:**
+1. While streaming, host tracks whether media audio is active
+2. On disconnect, host saves `MediaPlaying_<deviceId> = true` if media was playing
+3. On reconnect, if **both** `IsAutoPlayMusic` and `MediaPlaying_<deviceId>` are true:
+   - Host requests audio focus
+   - Host sends Command 201 (`MusicPlay`, type `0x08`) to resume playback
+
+```kotlin
+// On reconnect — host-side logic only
+fun onDeviceReconnected(deviceId: String) {
+    val autoResume = prefs.getBoolean("IsAutoPlayMusic", false)
+    val wasPlaying = prefs.getBoolean("MediaPlaying_$deviceId", false)
+    if (autoResume && wasPlaying) {
+        requestAudioFocus()
+        sendCommand(0x08, 201)  // MusicPlay — forwarded to phone
+    }
+}
+```
+
+**Key distinction:** `IsAutoPlayMusic` is NOT sent to the adapter. It is purely a host-app preference that controls whether the host sends Command 201 on reconnect. Since the BoxSettings `autoPlay` → `AutoPlauMusic` mapping is broken (see above), this host-side mechanism is the **only reliable way** for a host app to implement auto-play over USB.
+
+---
+
 ## Error Handling
 
 ### Connection Errors
@@ -716,9 +767,10 @@ Include `naviScreenInfo` in BoxSettings to activate navigation video (type 0x2C)
 
 ### Android (AAOS)
 
-- Use `AudioTrack` with appropriate `AudioAttributes`
+- Use `AudioTrack` with appropriate `AudioAttributes` (see audio_protocol.md for focus manager mapping)
 - Map audio_type to Android audio buses
 - Handle `AUDIOFOCUS_*` events
+- Duck media to 0.8f for AA, 0.2f for CarPlay (manufacturer's values)
 
 ### Linux (Pi, Embedded)
 
@@ -730,6 +782,68 @@ Include `naviScreenInfo` in BoxSettings to activate navigation video (type 0x2C)
 
 - Would require MFi program access
 - USB communication via ExternalAccessory framework
+
+### OEM Platform Quirk Table (AutoKit Decompilation, Mar 2026)
+
+**Source:** Carlinkit AutoKit app v2025.03.19.1126 — manufacturer's reference implementation. The app contains extensive per-OEM behavioral overrides detected via `Build.MANUFACTURER`, `Build.MODEL`, and `ro.board.platform`:
+
+#### Microphone Source Selection
+
+| Platform | AudioRecord Source | Notes |
+|----------|--------------------|-------|
+| Qualcomm msmnile_gvmq | VOICE_COMMUNICATION (7) | AAOS Qualcomm |
+| Leapmotor C10 | VOICE_COMMUNICATION (7) | |
+| Qualcomm (generic) | VOICE_COMMUNICATION (7) | |
+| Qualcomm MSM8996 (JMEV) | UNPROCESSED (10) | Bypasses platform AEC |
+| Default (all others) | MIC (1) | Standard mic source |
+
+#### Microphone Recording Delay Compensation
+
+| Platform | Delay (ms) | Notes |
+|----------|-----------|-------|
+| Rockchip RK3399 | 530 | |
+| Allwinner T3 | 1320 | Highest latency |
+| ATC AC8317 (at8317_1537) | 844 | Specific product variant |
+| ATC AC8317 (other) | 150 | |
+| Spreadtrum SP7731E (sp7731e_1h10) | 1081 | Specific variant |
+| Rockchip RK3368 (PX5) | 540 | PX5 variant |
+| MediaTek MT6753 (land_rover) | 1079 | Specific variant |
+| Rockchip RK3188 | 580 | |
+| Default | 150 | |
+
+#### Display/Orientation Quirks
+
+| Platform | Behavior |
+|----------|----------|
+| BYD, NIO (ET5/ET7), Freescale | Portrait orientation mode (`v()=1`) |
+| alps-changan, Great Wall, JIDU | Widescreen mode (`v()=2`) |
+| QTI-FAW (Hong Qi) | Custom mode (`v()=4`), view area inset `Rect(0,96,720,0)` |
+| NIO ET5/ET7, HUAWEI ICHU | Force max video height to 1080 |
+| hozon EP36, NIO, Renesas G6SH | Use saved `vmaxwh` preference for video sizing |
+| Renesas, Intel | Display rotation (10° or 90°) |
+
+#### Safe Area Insets (Per-OEM)
+
+| OEM | Safe Area Rect (left, top, right, bottom) |
+|-----|-------------------------------------------|
+| Changan | `(0, 0, 0, 72)` — 72px bottom inset |
+| Great Wall | `(130, 0, 0, 0)` — 130px left inset |
+| JIDU | `(0, 96, 0, 128)` — 96px top + 128px bottom |
+
+#### Fixed Window Sizes
+
+| Platform | Window Dimensions | Notes |
+|----------|-------------------|-------|
+| hozon | 1230w × display height | Fixed width |
+| QTI (Qualcomm) | display width × 1750h | Fixed height |
+| BYD | display width × 2200h or 1780w × display height | Model-dependent |
+
+#### Video Decoder Configuration
+
+| Platform | Setting |
+|----------|---------|
+| Soft decode mode | Forces FPS to 25 (down from 60), DPI to 160 |
+| Default | 60 FPS, DPI from calculation formula |
 
 ---
 

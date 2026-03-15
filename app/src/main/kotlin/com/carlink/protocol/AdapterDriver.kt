@@ -1,5 +1,6 @@
 package com.carlink.protocol
 
+import com.carlink.protocol.MultiTouchAction
 import com.carlink.usb.UsbDeviceWrapper
 import java.util.Locale
 import java.util.Timer
@@ -57,6 +58,8 @@ class AdapterDriver(
         config: AdapterConfig = AdapterConfig.DEFAULT,
         initMode: String = "FULL",
         pendingChanges: Set<String> = emptySet(),
+        surfaceWidth: Int = 0,
+        surfaceHeight: Int = 0,
     ) {
         if (isRunning.getAndSet(true)) {
             log("Adapter already running")
@@ -78,7 +81,7 @@ class AdapterDriver(
         log("Heartbeat started before initialization (firmware stabilization)")
 
         // Send initialization sequence based on mode
-        val initMessages = MessageSerializer.generateInitSequence(config, initMode, pendingChanges)
+        val initMessages = MessageSerializer.generateInitSequence(config, initMode, pendingChanges, surfaceWidth, surfaceHeight)
         initMessagesCount = initMessages.size
         log("Sending $initMessagesCount initialization messages (mode=$initMode, changes=$pendingChanges)")
 
@@ -94,19 +97,20 @@ class AdapterDriver(
         log("Initialization sequence completed")
 
         // Schedule wifiConnect with timeout (matches pi-carplay behavior)
-        wifiConnectTimer = Timer().apply {
-            schedule(
-                object : TimerTask() {
-                    override fun run() {
-                        if (isRunning.get()) {
-                            log("Sending wifiConnect command (timeout-based)")
-                            send(MessageSerializer.serializeCommand(CommandMapping.WIFI_CONNECT))
+        wifiConnectTimer =
+            Timer().apply {
+                schedule(
+                    object : TimerTask() {
+                        override fun run() {
+                            if (isRunning.get()) {
+                                log("Sending wifiConnect command (timeout-based)")
+                                send(MessageSerializer.serializeCommand(CommandMapping.WIFI_CONNECT))
+                            }
                         }
-                    }
-                },
-                600,
-            )
-        }
+                    },
+                    600,
+                )
+            }
 
         // Start reading loop
         log("Starting message reading loop")
@@ -173,11 +177,22 @@ class AdapterDriver(
     }
 
     /**
-     * Send a multi-touch event.
+     * Send a multi-touch event (CarPlay — type 0x17, 0..1 floats).
      */
-    fun sendMultiTouch(
-        touches: List<MessageSerializer.TouchPoint>,
-    ): Boolean = send(MessageSerializer.serializeMultiTouch(touches))
+    fun sendMultiTouch(touches: List<MessageSerializer.TouchPoint>): Boolean = send(MessageSerializer.serializeMultiTouch(touches))
+
+    /**
+     * Send a single-touch event (Android Auto — type 0x05, 0..10000 ints).
+     * @param encoderType Current video encoder type from video header flags
+     * @param offScreen Current off-screen state from video header flags
+     */
+    fun sendSingleTouch(
+        x: Int,
+        y: Int,
+        action: MultiTouchAction,
+        encoderType: Int = 2,
+        offScreen: Int = 0,
+    ): Boolean = send(MessageSerializer.serializeSingleTouch(x, y, action, encoderType, offScreen))
 
     /**
      * Send microphone audio data.
@@ -283,7 +298,8 @@ class AdapterDriver(
                     // For VIDEO_DATA with direct processing, data is null (processed directly by videoProcessor)
                     // Just signal the message handler that video is streaming
                     if (type == MessageType.VIDEO_DATA.id &&
-                        videoProcessor != null && (data == null || dataLength == 0)) {
+                        videoProcessor != null && (data == null || dataLength == 0)
+                    ) {
                         // Video data was processed directly by videoProcessor - just signal streaming
                         try {
                             messageHandler(VideoStreamingSignal)
@@ -299,7 +315,8 @@ class AdapterDriver(
 
                     // Log received message (except high-frequency types)
                     if (type != MessageType.VIDEO_DATA.id && type != MessageType.AUDIO_DATA.id &&
-                        type != MessageType.NAVI_VIDEO_DATA.id && type != MessageType.HEARTBEAT_ECHO.id) {
+                        type != MessageType.NAVI_VIDEO_DATA.id && type != MessageType.HEARTBEAT_ECHO.id
+                    ) {
                         log("[RECV] $message")
                     }
 

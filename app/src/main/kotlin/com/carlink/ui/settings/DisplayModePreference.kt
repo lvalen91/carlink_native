@@ -191,5 +191,4 @@ class DisplayModePreference private constructor(
             throw e
         }
     }
-
 }

@@ -199,12 +199,31 @@ AES_256GCMDecrypt()
 
 | Parameter | Value |
 |-----------|-------|
-| **Algorithm** | AES-128-CBC (via OpenSSL `AES_set_encrypt_key`, `AES_cbc_encrypt`) |
+| **Algorithm (Firmware)** | AES-128-CBC (via OpenSSL `AES_set_encrypt_key`, `AES_cbc_encrypt`) |
+| **Algorithm (AutoKit App)** | **AES/CFB/NoPadding** (via `javax.crypto.Cipher`) |
 | **Key** | `SkBRDy3gmrw1ieH0` (16 bytes, hardcoded) |
-| **Key Derivation** | XOR-rotated with session seed: `(i + payloadSize) & 0x8000000F` |
-| **Exempt Types** | 0x06 (Video), 0x07 (Audio), 0x2A (Dashboard), 0x2C (AltVideo) |
+| **Key Derivation** | Rotated permutation: `key[i] = "SkBRDy3gmrw1ieH0".charAt((nonce + i) % 16)` |
+| **IV Construction** | 16-byte sparse scatter: `iv[1]=nonce[0], iv[4]=nonce[1], iv[9]=nonce[2], iv[12]=nonce[3]` |
+| **Nonce** | Random positive int32 (`Random().nextInt(Integer.MAX_VALUE)`), must be > 0 |
+| **Exempt Types (Firmware)** | 0x06 (Video), 0x07 (Audio), 0x2A (Dashboard), 0x2C (AltVideo) |
+| **Exempt Types (AutoKit App)** | 0x06 (Video), 0x07 (Audio) only — firmware exempts 0x2A/0x2C server-side regardless |
 | **Magic Marker** | `0x55BB55BB` = encrypted, `0x55AA55AA` = cleartext |
 | **HW Acceleration** | `/dev/hwaes` kernel module (misc 10:0, confirmed live) |
+
+#### CBC vs CFB Discrepancy (Mar 2026)
+
+**CRITICAL:** The firmware binary uses `AES_cbc_encrypt` (OpenSSL CBC mode), but the manufacturer's AutoKit app (v2025.03.19.1126) uses `AES/CFB/NoPadding` (Java CFB mode). Both use the same 128-bit key, IV, and key derivation formula.
+
+**Source evidence:**
+- **Firmware (CBC):** ARM assembly at `0x17ee4` calls `AES_cbc_encrypt` via PLT `0x14a60`. OpenSSL function name unambiguous.
+- **AutoKit app (CFB):** Java source line 2539: `Cipher.getInstance("AES/CFB/NoPadding")` — string literal, no ambiguity.
+
+**Possible explanations:**
+1. **CFB-8 vs CBC equivalence**: For single-block payloads, AES-CFB8 and AES-CBC produce identical output (first block XOR). If most encrypted payloads are ≤16 bytes, both modes would interoperate. However, multi-block payloads would diverge.
+2. **Firmware uses HW AES path**: The firmware may route through `/dev/hwaes` (ioctl `0xC00C6206`) which could implement CFB despite the wrapper function being named `AES_cbc_encrypt` — the NXP i.MX6 DCP engine supports both modes.
+3. **Version-specific**: The AutoKit app may target newer firmware versions that switched to CFB, while the binary analysis was performed on firmware 2025.10.15.
+
+**Recommendation:** Host implementations should support **both CBC and CFB** for maximum compatibility, or test empirically with the specific firmware version. The key, IV, and exempt-type logic are identical regardless of mode.
 
 ### CMD_ENABLE_CRYPT Protocol — Full Operational Lifecycle (Binary Verified Feb 2026)
 
@@ -333,9 +352,66 @@ Options:
 #### When in the Session to Enable
 
 The binary does not enforce timing — 0xF0 can be sent at any point after USB connection. However, practical considerations:
-- Send **after Open (0x01)** and **before streaming starts** (Phase 8)
-- Send before any sensitive configuration data (BoxSettings contains credentials)
 - Do NOT send during active streaming — existing in-flight messages will fail decryption
+
+**Manufacturer's AutoKit app (v2025.03.19.1126) timing:**
+The AutoKit app sends CMD_ENABLE_CRYPT **BEFORE the Open message**, as step 2 of the initialization sequence:
+1. Send AppInfo (type 0xA0) — host identification
+2. **Send CMD_ENABLE_CRYPT (type 0xF0)** — random positive int32 nonce
+3. Send SendFile `/tmp/screen_dpi`
+4. Send SendFile `/etc/android_work_mode`
+5. Send Open (type 0x01) — session parameters
+6. Wait for Open response, then send BoxSettings
+
+This means all subsequent messages (including Open, BoxSettings, and any credentials) are encrypted from the start.
+
+**AutoKit nonce generation (f.java line 1870-1872):**
+```java
+while (this.n <= 0) {
+    this.n = new Random().nextInt(Integer.MAX_VALUE);
+}
+```
+The nonce is always a positive int32 (1 to 2,147,483,647). It is passed to the USB layer via `d.W(this.n)` for the read thread to use for decryption.
+
+**AutoKit encryption receive handler (f.java line 1273-1276):**
+```java
+case 240:  // CMD_ENABLE_CRYPT response
+    s.e("BoxProtocol,onCmd: recv CMD_ENABLE_CRYPT");
+    this.m = true;  // enable encryption flag
+    return;
+```
+On receiving the adapter's 0xF0 ack, the app sets `m=true`, which gates all subsequent encrypt/decrypt calls in the message handler.
+
+**AutoKit encrypt/decrypt method (f.java inner class `l`, method `i(boolean z)`):**
+```java
+private void i(boolean z) {  // z=true: encrypt, z=false: decrypt
+    if (!f.this.m || this.a.f1462b == 0) return;  // skip if not enabled or empty
+    int i2 = this.a.f1463c;  // message type
+    if (z && i2 != 6 && i2 != 7) {  // outbound: set 0x55BB magic for non-video/audio
+        this.a.a();  // sets magic to 0x55BB55BB
+    }
+    if (this.a.b()) {  // b() checks if magic == 0x55BB55BB
+        byte[] key = new byte[16];
+        for (int i3 = 0; i3 < 16; i3++) {
+            key[i3] = (byte) "SkBRDy3gmrw1ieH0".charAt((f.this.n + i3) % 16);
+        }
+        byte[] iv = new byte[16];
+        iv[1]  = (byte) (f.this.n & 0xFF);
+        iv[4]  = (byte) ((f.this.n >> 8) & 0xFF);
+        iv[9]  = (byte) ((f.this.n >> 16) & 0xFF);
+        iv[12] = (byte) ((f.this.n >> 24) & 0xFF);
+        Cipher cipher = Cipher.getInstance("AES/CFB/NoPadding");
+        cipher.init(z ? 1 : 2, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
+        System.arraycopy(cipher.doFinal(payload), 0, buffer, 0, payloadLen);
+    }
+}
+```
+
+**Key behavioral notes from AutoKit:**
+- Outbound encryption: only types != 6 (Video) and != 7 (Audio) get magic set to `0x55BB55BB`
+- Inbound decryption: checks `b()` (magic == `0x55BB55BB`) before decrypting — if adapter sends cleartext (0x55AA55AA), no decryption is attempted
+- Error handling: catches all exceptions, logs `"handleCryptData: "` + stack trace, continues without crashing
+- The encrypt/decrypt is **in-place** — `cipher.doFinal()` result is copied back over the original payload buffer
 
 #### Security Assessment
 
@@ -355,7 +431,7 @@ AES_128CTREncry()     // CTR mode available but NOT used for USB protocol
 AES_128CTRDecrypt()
 AES_128OFBEncry()     // OFB mode available but NOT used
 AES_128OFBDecrypt()
-// Also: AES-CFB128 support found in AppleCarPlay binary
+// AES-CFB128 support found in AppleCarPlay binary — AND used by AutoKit app (see CBC vs CFB note above)
 ```
 
 ---

@@ -8,7 +8,6 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
 import android.os.HandlerThread
-import android.os.Looper
 import androidx.core.content.ContextCompat
 import java.util.Calendar
 import java.util.Locale
@@ -72,7 +71,11 @@ class GnssForwarder(
                 }
 
                 @Deprecated("Deprecated in API 29")
-                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                override fun onStatusChanged(
+                    provider: String?,
+                    status: Int,
+                    extras: Bundle?,
+                ) {}
             }
 
         try {
@@ -138,28 +141,31 @@ class GnssForwarder(
 
         // Derive HDOP from accuracy: accuracy ≈ HDOP × UERE (~5m civilian GPS)
         // Clamp to 0.5-25.0 (valid NMEA range)
-        val hdop = if (location.hasAccuracy()) {
-            "%.1f".format(Locale.US, min(25.0, max(0.5, location.accuracy / 5.0)))
-        } else {
-            "1.0"
-        }
+        val hdop =
+            if (location.hasAccuracy()) {
+                "%.1f".format(Locale.US, min(25.0, max(0.5, location.accuracy / 5.0)))
+            } else {
+                "1.0"
+            }
 
         // Use real satellite count from extras if available, otherwise estimate from accuracy
         val satellites = location.extras?.getInt("satellites", 0) ?: 0
-        val satCount = if (satellites > 0) {
-            "%02d".format(Locale.US, min(satellites, 24))
-        } else if (location.hasAccuracy()) {
-            // Rough estimate: better accuracy → more satellites
-            val est = when {
-                location.accuracy < 3f -> 12
-                location.accuracy < 10f -> 8
-                location.accuracy < 30f -> 5
-                else -> 4
+        val satCount =
+            if (satellites > 0) {
+                "%02d".format(Locale.US, min(satellites, 24))
+            } else if (location.hasAccuracy()) {
+                // Rough estimate: better accuracy → more satellites
+                val est =
+                    when {
+                        location.accuracy < 3f -> 12
+                        location.accuracy < 10f -> 8
+                        location.accuracy < 30f -> 5
+                        else -> 4
+                    }
+                "%02d".format(Locale.US, est)
+            } else {
+                "08"
             }
-            "%02d".format(Locale.US, est)
-        } else {
-            "08"
-        }
 
         val body = "GPGGA,$time,$lat,$latDir,$lon,$lonDir,1,$satCount,$hdop,$alt,M,0.0,M,,"
         val checksum = computeNmeaChecksum(body)

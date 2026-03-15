@@ -1184,6 +1184,120 @@ Rule: Deep buffering (seconds) is counterproductive for projection video.
 
 ---
 
+## Android Auto Resolution Tier Algorithm (AutoKit Decompilation, Mar 2026)
+
+**Source:** Carlinkit AutoKit app v2025.03.19.1126 — manufacturer's reference implementation, decompiled from jiagu360-protected APK.
+
+The firmware itself accepts any resolution 0-4096 (no tier enforcement in ARMadb-driver). However, the Android Auto protocol (inside the packed ARMAndroidAuto/OpenAuto SDK) enforces specific resolution tiers. The manufacturer's app computes the AA resolution to send in BoxSettings (`androidAutoSizeW`/`androidAutoSizeH`) using the following algorithm:
+
+### Tier Calculation
+
+Given the host display dimensions (`srcWidth` × `srcHeight`), four tiers are generated. All dimensions are forced even via `& 0xFFFE`:
+
+**Landscape (width > height):**
+| Tier | Base Height | Width Calculation | Max Width |
+|------|-------------|-------------------|-----------|
+| 480p | 480 | `(480 * srcWidth / srcHeight) & 0xFFFE` | 800 |
+| 720p | 720 | `(720 * srcWidth / srcHeight) & 0xFFFE` | 1280 |
+| 1080p | 1080 | `(1080 * srcWidth / srcHeight) & 0xFFFE` | 1920 |
+| 1440p | 1440 | `(1440 * srcWidth / srcHeight) & 0xFFFE` | 2560 |
+
+**Portrait (height >= width):**
+| Tier | Base Width | Height Calculation | Max Height |
+|------|------------|-------------------|------------|
+| 480p | 800 | `(800 * srcHeight / srcWidth) & 0xFFFE` | 480 |
+| 720p | 1280 | `(1280 * srcHeight / srcWidth) & 0xFFFE` | 720 |
+| 1080p | 1920 | `(1920 * srcHeight / srcWidth) & 0xFFFE` | 1080 |
+| 1440p | 2560 | `(2560 * srcHeight / srcWidth) & 0xFFFE` | 1440 |
+
+Default tier selection: **720p** (index 1). User-configurable via preference `vandroidautoh` (480/720/1080/1440).
+
+### 1440p / 2160p: Not Supported by Android Auto (Verified 2026-03-12)
+
+**Device:** Pixel 10 (frankel), Android 16 (API 36), security patch 2026-02-05
+**AA Version:** v16.3.660834-release (com.google.android.projection.gearhead)
+
+Although the AutoKit manufacturer app defines 4 tiers (including 1440p) and the Android Auto APK contains enum values for `VIDEO_2560x1440`, `VIDEO_1440x2560`, `VIDEO_3840x2160`, and `VIDEO_2160x3840` (class `wvc`, ordinals 3/4/7/8), **the actual resolution mapping function (`gvu.p()`) throws `iuz("Unsupported resolution")` for any resolution above 1080p.**
+
+Verified by JADX decompilation of `base.apk` pulled from Pixel 10:
+
+```java
+// gvu.p() — the only function that maps wvc enum → Size for video negotiation
+static final Size p(wvc wvcVar) throws iuz {
+    int iOrdinal = wvcVar.ordinal();
+    if (iOrdinal == 0) return new Size(800, 480);    // VIDEO_800x480
+    if (iOrdinal == 1) return new Size(1280, 720);   // VIDEO_1280x720
+    if (iOrdinal == 2) return new Size(1920, 1080);  // VIDEO_1920x1080
+    if (iOrdinal == 5) return new Size(720, 1280);   // VIDEO_720x1280 (portrait)
+    if (iOrdinal == 6) return new Size(1080, 1920);  // VIDEO_1080x1920 (portrait)
+    throw new iuz("Unsupported resolution: " + wvcVar.name());
+}
+```
+
+This function is called by `gvu.n()` → `wcs.b()` during video size negotiation. Selecting "1440p" or "2160p" in AA Developer Settings (`car_video_resolution`) will cause a runtime exception.
+
+**Additional constraints from AA APK analysis:**
+- **Framerate:** 480p and 720p get **60fps**; 1080p gets **30fps** (determined by `vbu.aj()` — ordinals 0,1 → 60fps, else → 30fps)
+- **Codecs supported:** H.264 Baseline Profile, H.265, AV1 (class `idx`, field `h`)
+- **Wireless restriction:** Resolution may be further limited by Wi-Fi frequency band (5GHz required for wireless AA; log: `"VideoCodecResolutionType %s (%d) is not allowed due wireless frequency"`)
+- **Manufacturer blocklist:** Subaru and HARMAN head units have a separate resolution restriction path (class `idx`, field `b`)
+
+**Conclusion:** The effective maximum AA resolution is **1920×1080 @ 30fps** (landscape) or **1080×1920 @ 30fps** (portrait). The 1440p/2160p enum values and dev settings entries are forward-looking placeholders with no functional implementation as of AA v16.3.
+
+**Example for GM gminfo37 (2400×960):**
+- 720p tier: width = `(720 * 2400/960) & 0xFFFE` = `1800 & 0xFFFE` = **1800**, height = **720**
+- Capped at max: width = min(1800, 1280) = **1280**, height = **720**
+- Sent to adapter: `{"androidAutoSizeW": 1280, "androidAutoSizeH": 720}`
+- Actual AA content area: 1280 × `(720 * 960/2400)` = 1280 × **512** (aspect-ratio preserved)
+
+### DPI Calculation
+
+The DPI sent via `/tmp/screen_dpi` is computed from the AA resolution:
+
+```
+if (width * height < 384000) → DPI = 100
+else:
+    dpi = (int)((((w*h - 384000) * 23 / 998400) + 120) * 1.25)
+    dpi = dpi - (10 - (dpi % 10))   // round down to nearest 10
+    if (landscape) dpi *= 1.2
+```
+
+Anchor point: 384000 pixels = 800×480 (480p tier). The formula scales linearly from DPI 150 (480p) to DPI ~195 (1080p).
+
+### AA Oversizing (Letterbox Cropping)
+
+When the phone renders at a different aspect ratio than the display (e.g., 1280×720 video for a 2400×960 display), black bars appear. The AutoKit app uses a **negative-margin oversizing technique** to crop these bars:
+
+```
+maxVideoSize = tier size (e.g., 1280×720)
+androidAutoSize = actual AA content area (e.g., 1280×512)
+
+// Calculate black bar margins
+xDiff = (videoWidth - aaWidth) / 2
+yDiff = (videoHeight - aaHeight) / 2
+
+// Scale margins to display coordinates
+scaledLeft = (xDiff * maxW) / aaW
+scaledTop  = (yDiff * maxH) / aaH
+
+// Oversize the view beyond display bounds to hide black bars
+view.setTop(-scaledTop)
+view.setLeft(-scaledLeft)
+layoutParams.width  = maxW + (scaledLeft * 2)
+layoutParams.height = maxH + (scaledTop * 2)
+```
+
+The SurfaceView is physically larger than the display area, with negative offsets pushing the black-bar edges off-screen. Only the center content portion remains visible.
+
+### Resolution Scale Options
+
+The app also generates a list of down-scaled and up-scaled resolution variants:
+- **Down-scale:** 10 steps at 5% decrements (100%, 95%, 90%...55%), stopping when landscape width < 730 or height < 480
+- **Up-scale:** 3 steps at 5% increments (105%, 110%, 115%), dimensions rounded up to even
+- **Special oversize entries:** If 1920×(1080-1151), adds 1920×1152. If 1280×(720-767), adds 1088×768.
+
+---
+
 ## References
 
 - Source: `carlink_native/documents/reference/Firmware/firmware_video.md`

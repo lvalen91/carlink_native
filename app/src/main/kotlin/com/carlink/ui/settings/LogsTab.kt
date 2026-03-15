@@ -555,8 +555,9 @@ internal fun LogsTabContent(
                             }
                             Spacer(modifier = Modifier.height(12.dp))
                             Text(
-                                text = "This file will be permanently deleted from your device. " +
-                                    "This action cannot be undone.",
+                                text =
+                                    "This file will be permanently deleted from your device. " +
+                                        "This action cannot be undone.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = colorScheme.onErrorContainer,
                                 lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.4,

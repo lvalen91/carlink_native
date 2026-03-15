@@ -1394,7 +1394,7 @@ When host app sends BoxSettings (0x19), these JSON fields map to config keys:
 |------------------|-----------------|-------|
 | `mediaDelay` | MediaLatency | Audio buffer (ms) |
 | `autoConn` | NeedAutoConnect | Auto-reconnect toggle |
-| `autoPlay` | AutoPlauMusic | Auto-start playback |
+| `autoPlay` | AutoPlauMusic | ⚠️ **MAPPING MISSING** — `autoPlay` string absent from ARMadb-driver; config key exists but not reachable via BoxSettings JSON. Set via web UI only. |
 | `autoDisplay` | autoDisplay | Auto display mode |
 | `bgMode` | BackgroundMode | Background mode |
 | `startDelay` | BoxConfig_DelayStart | Startup delay |
@@ -1820,7 +1820,7 @@ This section documents which configuration keys can be set via USB protocol mess
 | CustomBluetoothName | "btName" | Bluetooth name |
 | CustomBoxName | "boxName" / "OemName" | Device name |
 | NeedAutoConnect | "autoConn" | Auto-connect enable |
-| AutoPlauMusic | "autoPlay" | Auto-play on connect |
+| AutoPlauMusic | ~~"autoPlay"~~ | ⚠️ **NOT mapped via BoxSettings** — `autoPlay` key absent from ARMadb-driver string table. Settable via web UI (boa CGI → riddle.conf) only. |
 | AndroidAutoWidth | "androidAutoSizeW" | AA video width |
 | AndroidAutoHeight | "androidAutoSizeH" | AA video height |
 

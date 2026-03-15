@@ -120,8 +120,11 @@ fun LogPreset.apply() {
             Logger.disableAllTags()
             Logger.setTagsEnabled(
                 listOf(
-                    Logger.Tags.USB, Logger.Tags.ADAPTR, Logger.Tags.PLATFORM,
-                    Logger.Tags.VIDEO_PERF, Logger.Tags.AUDIO_PERF,
+                    Logger.Tags.USB,
+                    Logger.Tags.ADAPTR,
+                    Logger.Tags.PLATFORM,
+                    Logger.Tags.VIDEO_PERF,
+                    Logger.Tags.AUDIO_PERF,
                 ),
                 true,
             )

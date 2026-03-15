@@ -103,11 +103,13 @@ class MicrophoneCaptureManager(
     // Long requires volatile for JMM atomicity (JLS 17.7); Int for visibility.
     // Matches AudioRingBuffer's @Volatile counter pattern.
     @Volatile private var totalBytesCapture: Long = 0
+
     @Volatile private var overrunCount: Int = 0
 
     // 500ms buffer prevents overruns when main thread blocked (Session 6 fix)
     private val bufferCapacityMs = 500
     private val captureChunkMs = 20
+
     // Pre-allocated read buffer — reused by readChunk() to avoid per-call allocation.
     // Sized for max readChunk request (640 bytes = 20ms of 16kHz mono PCM16).
     // Safe to reuse: caller (sendMicrophoneData) consumes data synchronously before next tick.

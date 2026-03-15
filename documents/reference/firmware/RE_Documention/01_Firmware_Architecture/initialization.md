@@ -36,13 +36,22 @@ The host application sends the following messages after USB connection.
 
 | Order | Type | Name | Content |
 |-------|------|------|---------|
-| 1 | 153 | SendFile | `/tmp/screen_dpi` - Display DPI |
-| 2 | 1 | Open | Session parameters |
-| 3 | 153 | SendFile | `/tmp/night_mode` - Night mode flag |
-| 4 | 153 | SendFile | `/tmp/hand_drive_mode` - Drive mode |
-| 5 | 25 | BoxSettings | JSON configuration |
-| 6 | 8 | Command | Control commands |
-| 7-12 | Various | Config | Additional configuration |
+| 1 | 160 | AppInfo | JSON: app version, device model, platform, uuid, screen size (host identification) |
+| 2 | 240 | EnableCrypt | CMD_ENABLE_CRYPT — 4-byte random nonce for AES session key derivation |
+| 3 | 153 | SendFile | `/tmp/screen_dpi` - Display DPI |
+| 4 | 153 | SendFile | `/etc/android_work_mode` - Android work mode (1=AA, 2=CarLife, 3=Mirror, 4=HiCar, 5=ICCOA) |
+| 5 | 1 | Open | Session parameters (28 bytes: width, height, fps, format, bitrate, boxVersion, phoneWorkMode) |
+| — | — | *Wait* | *Wait for Open response from adapter before proceeding* |
+| 6 | 25 | BoxSettings | JSON configuration (syncTime, mediaDelay, drivePosition, androidAutoSizeW/H, GNSSCapability, DashboardInfo, UseBTPhone) |
+| 7 | 160 | AppInfo | JSON: full app/device info (second send, post-Open) |
+| 8 | 153 | SendFile | CarPlay icons (`/etc/icon_120x120.png`, `/etc/icon_180x180.png`, `/etc/icon_256x256.png`) |
+| 9 | 153 | SendFile | `/tmp/night_mode` - Night mode flag (0=day, 1=night, 2=auto) |
+| 10 | 153 | SendFile | `/tmp/charge_mode` - Charge mode (0/1/2) |
+| 11 | 13/14 | BT/WiFi Name | Set adapter Bluetooth name (type 0x0D) and WiFi name (type 0x0E) |
+| 12 | 153 | SendFile | `/etc/box_name` - Adapter display name |
+| 13 | 8 | Command | Set mic type (cmd 7/15/21), WiFi type (cmd 24/25), audio mode (cmd 22/23) |
+
+**Source:** Carlinkit AutoKit app decompilation (v2025.03.19.1126, Mar 2026). The manufacturer's app sends CMD_ENABLE_CRYPT **before** the Open message, and sends AppInfo (type 0xA0) as the very first message. This differs from the observed capture sequences where encryption was not active.
 
 ### Open Message Structure
 
