@@ -444,12 +444,6 @@ object MessageSerializer {
         if (config.androidWorkMode) {
             messages.add(serializeBoolean(true, FileAddress.ANDROID_WORK_MODE))
         }
-        // Audio transfer mode (adapter USB vs Bluetooth)
-        val audioCommand = if (config.audioTransferMode) CommandMapping.AUDIO_TRANSFER_ON else CommandMapping.AUDIO_TRANSFER_OFF
-        messages.add(serializeCommand(audioCommand))
-        // Microphone source (host app vs adapter box mic)
-        val micCommand = if (config.micType == "box") CommandMapping.BOX_MIC else CommandMapping.MIC
-        messages.add(serializeCommand(micCommand))
 
         when (initMode) {
             "MINIMAL_ONLY" -> {
