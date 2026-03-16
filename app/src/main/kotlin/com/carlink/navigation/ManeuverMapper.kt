@@ -5,6 +5,7 @@ import androidx.car.app.model.CarIcon
 import androidx.car.app.navigation.model.Maneuver
 import androidx.core.graphics.drawable.IconCompat
 import com.carlink.logging.Logger
+import com.carlink.logging.logInfo
 import com.carlink.logging.logNavi
 import com.carlink.logging.logWarn
 
@@ -23,8 +24,11 @@ import com.carlink.logging.logWarn
  * NaviTurnSide controls U-turn direction (LEFT vs RIGHT) and roundabout rotation (CW vs CCW).
  */
 object ManeuverMapper {
-    /** Cache built Maneuver objects by (cpType shl 4) or turnSide to avoid icon thrashing. */
+    /** Cache built Maneuver objects to avoid icon thrashing. */
     private val maneuverCache = HashMap<Int, Maneuver>()
+
+    /** Identity hash of the AA icon Bitmap used in the last cached entry. */
+    private var lastCachedAaIconHash = 0
 
     /**
      * Map a CPManeuverType + turnSide to a Maneuver.TYPE_* constant.
@@ -251,9 +255,10 @@ object ManeuverMapper {
         return exitNumber
     }
 
-    /** Evict maneuver cache on disconnect. */
+    /** Evict maneuver cache on disconnect or icon change. */
     fun clearCache() {
         maneuverCache.clear()
+        lastCachedAaIconHash = 0
     }
 
     /**
@@ -279,9 +284,43 @@ object ManeuverMapper {
         turnSide: Int,
         context: Context,
     ): Maneuver {
-        val cacheKey = (cpType shl 4) or turnSide
-        maneuverCache[cacheKey]?.let { return it }
+        val aaIcon = NavigationStateManager.currentManeuverIcon
+        val aaIconHash = aaIcon?.let { System.identityHashCode(it) } ?: 0
+        val cacheKey = (cpType shl 16) or (turnSide shl 8) or (if (aaIcon != null) 1 else 0)
 
+        maneuverCache[cacheKey]?.let { cached ->
+            if (aaIcon == null || aaIconHash == lastCachedAaIconHash) {
+                return cached
+            }
+        }
+
+        if (aaIcon != null) {
+            // Android Auto path: the adapter forwards the phone's maneuver icon as
+            // MEDIA_DATA sub-type 201 (NAVI_IMAGE). This icon is the source of truth —
+            // pre-rendered by Google Maps with exact angle, lane guidance, and turn
+            // severity that the lossy NaviOrderType enum cannot express.
+            //
+            // Use TYPE_UNKNOWN so Templates Host does not render its own type-based icon
+            // alongside ours. The AA bitmap is the sole visual for the cluster.
+            // TYPE_UNKNOWN is valid per Car App Library (passes isValidType()).
+            //
+            // CarPlay does NOT send maneuver icons (adapter strips iAP2 image data),
+            // so this path is AA-only. CarPlay falls through to the else branch below.
+            val builder = Maneuver.Builder(Maneuver.TYPE_UNKNOWN)
+            val icon = CarIcon.Builder(IconCompat.createWithBitmap(aaIcon)).build()
+            builder.setIcon(icon)
+            lastCachedAaIconHash = aaIconHash
+            logInfo(
+                "[MANEUVER] AA icon (${aaIcon.width}x${aaIcon.height}) for maneuver " +
+                    "(orderType cpType=$cpType, turnSide=$turnSide)",
+                tag = Logger.Tags.NAVI,
+            )
+            return builder.build().also { maneuverCache[cacheKey] = it }
+        }
+
+        // CarPlay path: no NAVI_IMAGE available. Use internal CPManeuverType→AAOS mapping
+        // with static VectorDrawable resource icons. Resource icons hash by (packageName, resId)
+        // which is stable across IPC — no cache thrashing in ClusterIconShimProvider.
         val type = mapManeuverType(cpType, turnSide)
         val builder = Maneuver.Builder(type)
 
@@ -289,10 +328,6 @@ object ManeuverMapper {
             builder.setRoundaboutExitNumber(it)
         }
 
-        // Use resource icon — hashes by (packageName, resId), stable across IPC.
-        // createWithBitmap() uses Bitmap.identityHashCode which changes on every
-        // IPC deserialization, causing Templates Host to generate a new iconId
-        // every ~1s distance update → ClusterIconShimProvider cache thrashing.
         val resId = ManeuverIconRenderer.drawableForManeuver(cpType)
         val icon = CarIcon.Builder(IconCompat.createWithResource(context, resId)).build()
         builder.setIcon(icon)

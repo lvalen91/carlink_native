@@ -273,7 +273,7 @@ fcn.0001911c (PIN sender):
 ```
 Offset  Size  Field        Description
 ------  ----  -----        -----------
-0x00    4     Subtype      Content type indicator (1=JSON, 3=JPEG, 200=NaviJSON)
+0x00    4     Subtype      Content type indicator (1=JSON, 3=JPEG, 200=NaviJSON, 201=NAVI_IMAGE — AA-only PNG maneuver icon)
 0x04    N     Content      JSON string or JPEG image data
 ```
 
@@ -1390,7 +1390,7 @@ These 18 values are **semantically different** from CarPlay's 54 CPManeuverType 
 | Navigation stopped | `ReleaseNaviFocus(507)` + `NaviStatus=2` via NaviJSON | Release focus + status |
 | Turn-by-turn data | **NaviJSON via MediaData 0x2A subtype 200** | Road name, maneuver type, turn side |
 | Distance/time | **NaviJSON** (`NaviRemainDistance`, `NaviNextTurnTimeSeconds`) | Distance to next turn (may be 0 when stationary) |
-| Maneuver icons | **NOT SENT** — 1739-byte PNGs logged on adapter but not forwarded | AA provides rendered icons, not used |
+| Maneuver icons | **SENT as MediaData 0x2A sub-type 201** (CORRECTED 2026-03-16) — 1739-2542 byte PNGs forwarded to host; carlink_native drops them (`MediaType.fromId(201)` = UNKNOWN). **AA-only** — CarPlay sends `NaviManeuverType` enum instead, no icon images. Fix: add `NAVI_IMAGE(201)` to `MediaType`. |
 
 ### AA NaviJSON Field Mapping (differs from CarPlay)
 
@@ -1405,6 +1405,7 @@ These 18 values are **semantically different** from CarPlay's 54 CPManeuverType 
 | `NaviNextTurnTimeSeconds` | (not present in CarPlay) | AA-specific time-to-turn field |
 | `NaviStatus` | `NaviStatus` | Same field (1=active, 2=inactive) |
 | (absent) | `NaviManeuverType` | **Missing in AA NaviJSON — causes ManeuverMapper fallback to 0** |
+| **MediaData sub-type 201 (PNG)** | **(not sent)** | **AA sends rendered maneuver icons; CarPlay never sends icon images** |
 | (absent) | `NaviDistanceToDestination` | Not observed in AA |
 | (absent) | `NaviDestinationName` | Not observed in AA |
 | (absent) | `NaviAPPName` | Not observed in AA |
@@ -2077,7 +2078,7 @@ These messages indicate state changes that **require** host action. Ignoring the
 | 0x04 | PlugOut | 0B | **Immediate disconnect.** Phone was physically unplugged from adapter. Stop all pipelines, transition to DISCONNECTED. |
 | 0x06 | VideoFrame | Variable | Feed H.264 NAL units to decoder. |
 | 0x07 | AudioData | Variable | If 13B: audio command (see below). If larger: PCM audio data → AudioTrack. |
-| 0x2A | DashBoard_DATA | Variable | Parse subtype: 1=media JSON, 3=album art, 200=NaviJSON. Update media session and navigation state. |
+| 0x2A | DashBoard_DATA | Variable | Parse subtype: 1=media JSON, 3=album art, 200=NaviJSON, 201=NAVI_IMAGE (AA-only PNG maneuver icon). Update media session and navigation state. |
 | 0x2C | AltVideoFrame | Variable | Navigation video stream → secondary decoder (iOS 13+, activated by `naviScreenInfo` in BoxSettings). |
 | 0x08 | CarPlayControl | 4B (cmd ID) | Dispatch on command ID — see Command ID Classification below. |
 | 0xFF | CMD_ACK | 0B | Open session acknowledged. Proceed with streaming configuration. |

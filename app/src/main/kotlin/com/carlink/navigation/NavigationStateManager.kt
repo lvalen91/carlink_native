@@ -1,5 +1,7 @@
 package com.carlink.navigation
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.SystemClock
 import com.carlink.logging.Logger
 import com.carlink.logging.logInfo
@@ -72,6 +74,18 @@ object NavigationStateManager {
 
     /** Timestamp (elapsedRealtime) of the last maneuver-bearing message. */
     private var lastManeuverMs = 0L
+
+    /**
+     * Latest AA maneuver icon received via MEDIA_DATA sub-type 201.
+     * Null when no icon available (CarPlay mode, or before first icon arrives).
+     * The adapter sends the icon PNG ~1s before/with each NaviJSON maneuver update.
+     */
+    @Volatile
+    var currentManeuverIcon: Bitmap? = null
+        private set
+
+    /** Content hash of the current icon to avoid redundant BitmapFactory decodes. */
+    private var currentIconHash = 0
 
     private fun orderTypeToCpManeuverType(orderType: Int, turnSide: Int, roundaboutExit: Int): Int =
         when (orderType) {
@@ -236,11 +250,47 @@ object NavigationStateManager {
         _state.value = merged
     }
 
+    /**
+     * Process an incoming AA maneuver icon (MEDIA_DATA sub-type 201).
+     *
+     * Called from USB read thread. Decodes PNG to Bitmap only when content changes
+     * (compared by array contentHashCode to skip redundant decodes for repeated icons).
+     *
+     * @param imageData Raw PNG bytes from the adapter
+     */
+    fun onNaviImage(imageData: ByteArray) {
+        val hash = imageData.contentHashCode()
+        if (hash == currentIconHash && currentManeuverIcon != null) {
+            logNavi { "[NAVI_ICON] Same icon (hash=$hash, ${imageData.size}B) — skipped decode" }
+            return
+        }
+
+        val bitmap = BitmapFactory.decodeByteArray(imageData, 0, imageData.size)
+        if (bitmap != null) {
+            currentManeuverIcon = bitmap
+            currentIconHash = hash
+            // Evict maneuver cache so next buildManeuver() picks up the new icon
+            ManeuverMapper.clearCache()
+            logInfo(
+                "[NAVI_ICON] Decoded AA maneuver icon: ${bitmap.width}x${bitmap.height}, " +
+                    "${imageData.size}B, hash=$hash",
+                tag = Logger.Tags.NAVI,
+            )
+        } else {
+            logWarn(
+                "[NAVI_ICON] Failed to decode AA maneuver icon (${imageData.size}B, hash=$hash)",
+                tag = Logger.Tags.NAVI,
+            )
+        }
+    }
+
     /** Clear state on USB disconnect. */
     fun clear() {
         logNavi { "[NAVI] State cleared (USB disconnect or session end)" }
         _state.value = NavigationState()
         lastManeuverMs = 0
+        currentManeuverIcon = null
+        currentIconHash = 0
         ManeuverMapper.clearCache()
     }
 }

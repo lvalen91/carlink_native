@@ -240,6 +240,16 @@ object MessageParser {
                     mapOf("AlbumCover" to imageData)
                 }
 
+                MediaType.NAVI_IMAGE -> {
+                    if (header.length > 4) {
+                        val imageData = ByteArray(header.length - 4)
+                        System.arraycopy(payload, 4, imageData, 0, imageData.size)
+                        mapOf("NaviImage" to imageData)
+                    } else {
+                        emptyMap()
+                    }
+                }
+
                 MediaType.DATA, MediaType.NAVI_JSON -> {
                     if (header.length < 6) {
                         // Need at least: 4 (type int) + 1 (JSON byte) + 1 (trailing null)

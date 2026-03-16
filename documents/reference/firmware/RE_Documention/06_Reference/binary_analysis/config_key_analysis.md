@@ -46,10 +46,9 @@ Keys set via BoxSettings JSON (48 keys) are written to riddle.conf and take effe
 | bluetoothDaemon | 409KB | 0x59000 | 0x5911c | 10 | 0 | 13 |
 | server.cgi | 49KB | 0x16f64 | (web) | 52 | 0 | 53 |
 | riddleBoxCfg | 50KB | 0x13b18 | 0x13c34 | 5 | 4 | 10 |
-| ARMAndroidAuto | 1.5MB | N/A | N/A | N/A | N/A | 0 |
+| ARMAndroidAuto | 1.5MB | 0x11b73c | (present) | 18+ | TBD | 18+ |
 
-**ARMAndroidAuto** does NOT link the config library — confirmed by exhaustive string search.
-It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
+**CORRECTED 2026-03-16:** ARMAndroidAuto **DOES** access the riddle config system via `GetBoxConfig`, `SetBoxConfig`, `ResetBoxConfig`, `riddleConfigNameValue`, `riddleConfigNameStringValue` (confirmed by deep binary analysis of unpacked rx.bin). It reads at least 18 known riddleBoxCfg keys directly, plus one AA-internal key (`audio_loopback`). The original claim (2026-02-28) of "zero config strings" was incorrect — the packed binary obscured them. See `ARMAndroidAuto.md` Section 30.5 for full cross-reference.
 
 ---
 
@@ -151,8 +150,8 @@ It receives configuration via env vars, CLI args, and D-Bus from ARMadb-driver.
 
 | # | Key | Default | Range | JSON | Description |
 |---|-----|---------|-------|------|-------------|
-| 29 | AndroidAutoWidth | 0 | 0-4096 | `androidAutoSizeW` | AA video width → boot script |
-| 30 | AndroidAutoHeight | 0 | 0-4096 | `androidAutoSizeH` | AA video height → boot script |
+| 29 | AndroidAutoWidth | 0 | 0-4096 | `androidAutoSizeW` | AA video width — **CORRECTED 2026-03-16:** read by ARMAndroidAuto via `GetBoxConfig` at `0x3a8a0` for resolution tier selection (see ARMAndroidAuto.md §24). Written by ARMadb-driver from host BoxSettings; consumed by ARMAndroidAuto at connection time. Not a pure PASS-THROUGH. |
+| 30 | AndroidAutoHeight | 0 | 0-4096 | `androidAutoSizeH` | AA video height — **CORRECTED 2026-03-16:** same as AndroidAutoWidth. Read by ARMAndroidAuto via `GetBoxConfig` for tier selection + margin calculation. |
 | 64 | ImprovedFluency | 0 | 0-1 | `improvedFluency` | Smoothing (server.cgi only, never read at runtime) |
 | S7 | CustomId | "" | buf 32 | — | OEM identifier (CGI only) |
 | A | LangList | [] | array | — | UI languages JSON array |

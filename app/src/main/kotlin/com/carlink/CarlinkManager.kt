@@ -1684,6 +1684,19 @@ class CarlinkManager(
             return
         }
 
+        // Route AA maneuver icons to NavigationStateManager (sub-type 201)
+        if (message.type == MediaType.NAVI_IMAGE) {
+            if (AdapterConfigPreference.getInstance(context).getClusterNavigationSync()) {
+                val imageData = message.payload["NaviImage"] as? ByteArray
+                if (imageData != null) {
+                    NavigationStateManager.onNaviImage(imageData)
+                } else {
+                    logWarn("[NAVI_ICON] NAVI_IMAGE message with no image data", tag = Logger.Tags.NAVI)
+                }
+            }
+            return
+        }
+
         val payload = message.payload
 
         // Extract new song title (if present)

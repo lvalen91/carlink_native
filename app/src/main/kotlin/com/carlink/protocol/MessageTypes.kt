@@ -413,6 +413,7 @@ enum class MediaType(
     DATA(1),
     ALBUM_COVER(3),
     NAVI_JSON(200),
+    NAVI_IMAGE(201),
     UNKNOWN(-1),
     ;
 
