@@ -263,20 +263,18 @@ fcn.0001911c (PIN sender):
 
 **MediaData Subtypes (first 4 bytes of payload):**
 
-| Subtype | Hex | Content | Typical Size | Source |
-|---------|-----|---------|--------------|--------|
-| 1 | 0x00000001 | JSON metadata (song info, playback time) | 30-202 bytes | CarPlay + Android Auto |
-| 2 | 0x00000002 | Album artwork — PNG | Variable | Android Auto only |
-| 3 | 0x00000003 | Album artwork — JPEG | 170-180 KB | CarPlay only |
-| 200 | 0x000000C8 | Navigation JSON (route, TBT directions) | 30-200 bytes | CarPlay + Android Auto |
-| 201 | 0x000000C9 | Maneuver icons — PNG | 1739-2542 bytes | Android Auto only |
+| Subtype | Hex | Content | Typical Size |
+|---------|-----|---------|--------------|
+| 1 | 0x00000001 | JSON metadata (song info, playback time) | 30-202 bytes |
+| 3 | 0x00000003 | Binary data (album artwork - JPEG) | 170-180 KB |
+| 200 | 0x000000C8 | Navigation JSON (route, TBT directions) | 30-200 bytes |
 
 **Packet Structure:**
 ```
 Offset  Size  Field        Description
 ------  ----  -----        -----------
-0x00    4     Subtype      Content type indicator (1=JSON, 2=PNG album art AA-only, 3=JPEG album art CarPlay-only, 200=NaviJSON, 201=NAVI_IMAGE AA-only PNG maneuver icon)
-0x04    N     Content      JSON string, JPEG image, or PNG image data
+0x00    4     Subtype      Content type indicator (1=JSON, 3=JPEG, 200=NaviJSON, 201=NAVI_IMAGE — AA-only PNG maneuver icon)
+0x04    N     Content      JSON string or JPEG image data
 ```
 
 **MediaData JSON Fields (Subtype 1):**
@@ -292,13 +290,7 @@ Offset  Size  Field        Description
 }
 ```
 
-**Album Artwork (Subtype 2 — Android Auto, PNG):**
-- PNG image data starting at offset 0x04
-- Starts with PNG magic: `89 50 4E 47`
-- Sent as a **standalone message**, separate from the subtype-1 JSON metadata tick
-- Arrives before or independently of text metadata — host must cache and push to MediaSession immediately
-
-**Album Artwork (Subtype 3 — CarPlay, JPEG):**
+**Album Artwork (Subtype 3):**
 - JPEG image data starting at offset 0x04
 - Starts with JPEG magic: `FF D8 FF E0`
 - Typical resolution: 300x300 to 600x600 pixels
@@ -2086,7 +2078,7 @@ These messages indicate state changes that **require** host action. Ignoring the
 | 0x04 | PlugOut | 0B | **Immediate disconnect.** Phone was physically unplugged from adapter. Stop all pipelines, transition to DISCONNECTED. |
 | 0x06 | VideoFrame | Variable | Feed H.264 NAL units to decoder. |
 | 0x07 | AudioData | Variable | If 13B: audio command (see below). If larger: PCM audio data → AudioTrack. |
-| 0x2A | DashBoard_DATA | Variable | Parse subtype: 1=media JSON, 2=album art PNG (AA-only, standalone), 3=album art JPEG (CarPlay-only), 200=NaviJSON, 201=NAVI_IMAGE (AA-only PNG maneuver icon). Update media session and navigation state. |
+| 0x2A | DashBoard_DATA | Variable | Parse subtype: 1=media JSON, 3=album art, 200=NaviJSON, 201=NAVI_IMAGE (AA-only PNG maneuver icon). Update media session and navigation state. |
 | 0x2C | AltVideoFrame | Variable | Navigation video stream → secondary decoder (iOS 13+, activated by `naviScreenInfo` in BoxSettings). |
 | 0x08 | CarPlayControl | 4B (cmd ID) | Dispatch on command ID — see Command ID Classification below. |
 | 0xFF | CMD_ACK | 0B | Open session acknowledged. Proceed with streaming configuration. |

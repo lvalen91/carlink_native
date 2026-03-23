@@ -38,7 +38,7 @@ iPhone ──── AirPlay Session ────→ AppleCarPlay binary ──�
 **ARMadb-driver relay specifics (r2 Feb 2026)**:
 - ARMadb-driver has **two reception paths**: a BroadCast handler (`aav.0x0001a7f1`) that only extracts playback status + audio signals, and a DashBoard_DATA handler (`fcn.00017b74`) that forwards engine data as opaque USB type 0x2A with subtypes
 - Exhaustive r2 string search: **zero** title/artist/album/CallState/SignalStrength/Battery field name strings in ARMadb-driver — only `OniAPUpdateMediaPlayerPlaybackStatus` callback exists for media
-- NaviJSON confirmed via 0x2A subtype 200; AA album art confirmed as 0x2A subtype 2 (PNG, standalone message separate from subtype-1 JSON metadata). CarPlay album art is subtype 3 (JPEG). AA maneuver icons are subtype 201 (PNG).
+- NaviJSON confirmed via 0x2A subtype 200; NowPlaying may arrive as 0x2A with a different subtype as opaque binary plist — **USB capture needed to verify which subtypes actually arrive**
 - Battery: CiAP2PowerEngine does NOT call BroadCast at all (r2 verified) — local only
 - Communication/Cellular: broadcast via MiddleMan but no corresponding handler in ARMadb-driver confirmed
 

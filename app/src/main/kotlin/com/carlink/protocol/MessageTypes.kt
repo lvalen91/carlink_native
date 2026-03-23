@@ -158,8 +158,8 @@ enum class CommandMapping(
     // === Android Auto Focus Commands (500-507) ===
     REQUEST_VIDEO_FOCUS(500), // RequestVideoFocus (A→H) - Adapter requests host show video
     RELEASE_VIDEO_FOCUS(501), // ReleaseVideoFocus (A→H) - Adapter releases video focus
-    AA_UNKNOWN_502(502), // Android Auto related (unverified)
-    AA_UNKNOWN_503(503), // Android Auto related (unverified)
+    REQUEST_AUDIO_FOCUS(502), // RequestAudioFocus (A→H) - AA audio started (binary-verified Feb 2026)
+    REQUEST_AUDIO_FOCUS_TRANSIENT(503), // RequestAudioFocusTransient (A→H) - Transient audio focus (binary-verified Feb 2026)
     REQUEST_AUDIO_FOCUS_DUCK(504), // RequestAudioFocusDuck (A→H) - Request audio ducking
     RELEASE_AUDIO_FOCUS(505), // ReleaseAudioFocus (A→H) - Release audio focus
     REQUEST_NAVI_FOCUS(506), // RequestNaviFocus (A→H) - Request navigation audio focus

@@ -174,6 +174,9 @@ class CarlinkManager(
     private val unknownCommandIds = mutableSetOf<Int>()       // raw command IDs seen
     private val unknownAudioCommandIds = mutableSetOf<Int>()  // raw audio cmd IDs seen
 
+    // Video frame logging throttle — log every 30th frame to reduce logcat spam
+    private var videoFrameCount = 0L
+
     // Callback
     private var callback: Callback? = null
 
@@ -1372,14 +1375,33 @@ class CarlinkManager(
                         connectedBtMac = btMac
                         tryPrestageCodecCsd(btMac)
                     }
+                    // Phone link metadata (sent after phone connects)
+                    val linkType = message.json.optString("MDLinkType", "").ifEmpty { null }
+                    val osVersion = message.json.optString("MDOSVersion", "").ifEmpty { null }
+                    val linkVersion = message.json.optString("MDLinkVersion", "").ifEmpty { null }
+                    val cpuTemp = message.json.optInt("cpuTemp", -1).takeIf { it >= 0 }
                     logInfo(
-                        "[DEVICE] Phone identified: model=$phoneModel, bt=$btMac",
+                        "[DEVICE] Phone identified: model=$phoneModel, bt=$btMac" +
+                            (if (linkType != null) ", link=$linkType" else "") +
+                            (if (osVersion != null) ", os=$osVersion" else "") +
+                            (if (linkVersion != null) ", ver=$linkVersion" else "") +
+                            (if (cpuTemp != null) ", cpuTemp=${cpuTemp}°C" else ""),
                         tag = Logger.Tags.ADAPTR,
                     )
                 } else {
                     // BoxSettings #1: adapter info — has DevList of previously paired devices
                     deviceList = parseDevList(message.json)
-                    logInfo("[DEVICE] Paired devices: ${deviceList.size}", tag = Logger.Tags.ADAPTR)
+                    // Adapter capabilities
+                    val hiCar = message.json.optInt("HiCar", -1).takeIf { it >= 0 }
+                    val supportFeatures = message.json.optString("supportFeatures", "").ifEmpty { null }
+                    val channelList = message.json.optString("ChannelList", "").ifEmpty { null }
+                    logInfo(
+                        "[DEVICE] Paired devices: ${deviceList.size}" +
+                            (if (hiCar != null) ", HiCar=$hiCar" else "") +
+                            (if (supportFeatures != null) ", features=$supportFeatures" else "") +
+                            (if (channelList != null) ", channels=$channelList" else ""),
+                        tag = Logger.Tags.ADAPTR,
+                    )
                     // Hot-rejoin: if exactly 1 paired device, try cache lookup now
                     // (adapter may skip BoxSettings #2 and PeerBluetoothAddress)
                     if (deviceList.size == 1) {
@@ -1398,6 +1420,8 @@ class CarlinkManager(
                     "androidWorkMode", "phoneMode", "DashboardInfo",
                     "AndroidAutoSizeW", "AndroidAutoSizeH", "naviScreenInfo",
                     "AdvancedFeatures", "GNSSCapability", "callQuality",
+                    "HiCar", "supportFeatures", "CusCode", "ChannelList",
+                    "MDLinkType", "MDOSVersion", "MDLinkVersion", "cpuTemp",
                 )
                 val unknownKeys = message.json.keys().asSequence()
                     .filter { it !in knownKeys }
@@ -2150,7 +2174,9 @@ class CarlinkManager(
                     startCodecIfDeferred()
                 }
 
-                logVideoUsb { "processVideoDirect: dataLength=$dataLength, pts=$sourcePtsMs" }
+                if (++videoFrameCount % 30 == 0L) {
+                    logVideoUsb { "processVideoDirect: frame=$videoFrameCount dataLength=$dataLength, pts=$sourcePtsMs" }
+                }
 
                 // Parse encoder state from video header for touch flags (AutoKit compatibility).
                 // Offset 8: flags field. Bit 0 = offScreen, bits 2-3 = encoderType (0→H264, 1→H265, 2→MJPEG).
@@ -2247,6 +2273,7 @@ class CarlinkManager(
         unknownMediaSubtypes.clear()
         unknownCommandIds.clear()
         unknownAudioCommandIds.clear()
+        videoFrameCount = 0L
     }
 
     private fun dumpUnknownSummary() {

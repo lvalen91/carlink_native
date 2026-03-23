@@ -162,3 +162,4 @@
 [94] :: NAVI_IMAGE(201) data found. Only Android Auto provides Navigation Icons and adapter forwards instead of discarding. So it will be used while AA is active with Navigation. Instead of the Apps internal vector graphics designed for CarPlay.
 [95] :: Testing GM AAOS fix of possible missing Manuver Icon on AA Nav. Will not set maneuver to 'UNKNOWN' but will use the provided maneuver enum. Regardless if right or wrong, but will use the provided IMAGE. If the image is not record' then the assumed correct Vector graphic will be used. Also testing Detection code by 'metheos' to check if Template Host ContentProvider is available to claim.
 [96] :: Added Android Auto Album Art fix by metheos. App logging adjusted, it will log unknown data received from the adapter. Along with a hex preview of the contents for identification.
+[97] :: Reduced some Video log noise.
