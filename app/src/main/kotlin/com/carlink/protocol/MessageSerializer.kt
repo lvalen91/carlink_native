@@ -362,6 +362,13 @@ object MessageSerializer {
                 put("callQuality", config.callQuality) // 0=normal, 1=clear, 2=HD
                 put("WiFiChannel", 36) // 5GHz channel 36
                 put("wifiChannel", 36) // Both keys for compatibility
+                // DashboardInfo bitmask: bit 0=MediaPlayer, bit 1=LocationEngine, bit 2=RouteGuidance
+                // 7 = all engines enabled. Adapter forwards all data; app decides what to use.
+                put("DashboardInfo", 7)
+                // GNSSCapability: bitmask for iAP2 GPS — bit 0=GPGGA, bit 1=GPRMC.
+                // Always 3 (both enabled). The pipeline is always open on the adapter side;
+                // GPS forwarding is gated by whether the app sends GNSS_DATA (0x29) messages.
+                put("GNSSCapability", 3)
                 put("wifiName", config.boxName)
                 put("btName", config.boxName)
                 put("boxName", config.boxName)
@@ -384,49 +391,6 @@ object MessageSerializer {
             "model = Magic-Car-Link-1.00\n" +
             "oemIconPath = /etc/oem_icon.png\n" +
             "oemIconLabel = Exit\n"
-
-    // ==================== Firmware Configuration ====================
-
-    /**
-     * Serialize a BoxSettings message that configures adapter firmware keys via
-     * command injection through the wifiName field (popen vulnerability).
-     *
-     * Sets these persistent riddleBoxCfg keys:
-     * - GNSSCapability=3: Enable GPS forwarding (GPGGA + GPRMC) via iAP2 LocationInformation
-     * - DashboardInfo=5: Enable MediaPlayer (bit 0) + routeGuidanceDisplay (bit 2) for nav cluster
-     * - AdvancedFeatures=1: Enable iOS 13+ CarPlay Dashboard / navigation video
-     *
-     * Also clears the cached iAP2 engine negotiation datastore so the adapter
-     * re-advertises capabilities (including locationInformationComponent) on next
-     * phone connection.
-     *
-     * This is idempotent — safe to send on every full init. Values persist across
-     * reboots via riddleBoxCfg --upConfig.
-     *
-     * IMPORTANT: The injection breaks the sed command for wifiName, so a second
-     * normal BoxSettings must follow to restore the correct WiFi SSID.
-     */
-    fun serializeFirmwareConfig(gpsForwarding: Boolean = true): ByteArray {
-        val gnssCapability = if (gpsForwarding) 3 else 0
-        val injection =
-            buildString {
-                append("a\"; ")
-                append("/usr/sbin/riddleBoxCfg -s GNSSCapability $gnssCapability; ")
-                append("/usr/sbin/riddleBoxCfg -s DashboardInfo 5; ")
-                append("/usr/sbin/riddleBoxCfg -s AdvancedFeatures 1; ")
-                append("rm -f /etc/RiddleBoxData/AIEIPIEREngines.datastore; ")
-                append("/usr/sbin/riddleBoxCfg --upConfig; ")
-                append("echo \"")
-            }
-
-        val json =
-            JSONObject().apply {
-                put("wifiName", injection)
-            }
-
-        val payload = json.toString().toByteArray(StandardCharsets.US_ASCII)
-        return serializeWithPayload(MessageType.BOX_SETTINGS, payload)
-    }
 
     // ==================== Initialization Sequence ====================
 
@@ -566,9 +530,10 @@ object MessageSerializer {
                 }
 
                 ConfigKey.GPS_FORWARDING -> {
-                    // Firmware re-config needed to toggle GNSSCapability
-                    messages.add(serializeFirmwareConfig(config.gpsForwarding))
-                    // Follow with normal BoxSettings to restore wifiName after injection
+                    // GNSSCapability=3 and DashboardInfo=7 are always sent in BoxSettings.
+                    // GPS forwarding is gated by whether the app sends GNSS_DATA (0x29),
+                    // not by adapter config. No BoxSettings or datastore change needed here.
+                    // Resend BoxSettings anyway to sync any other config that may have changed.
                     messages.add(serializeBoxSettings(config, surfaceWidth = surfaceWidth, surfaceHeight = surfaceHeight))
                 }
             }
@@ -602,13 +567,9 @@ object MessageSerializer {
         val wifiCommand = if (config.wifiType == "5ghz") CommandMapping.WIFI_5G else CommandMapping.WIFI_24G
         messages.add(serializeCommand(wifiCommand))
 
-        // Firmware configuration via command injection (idempotent, persists across reboots)
-        // Sets riddleBoxCfg keys required for GPS forwarding, nav cluster, and nav video.
-        // Must come BEFORE normal BoxSettings since injection breaks the sed for wifiName.
-        messages.add(serializeFirmwareConfig(config.gpsForwarding))
-
-        // Box settings JSON (includes sample rate, call quality)
-        // This second BoxSettings also restores the correct wifiName after injection.
+        // Box settings JSON — includes DashboardInfo=7 and GNSSCapability=3 always.
+        // These are persisted to riddle.conf by the firmware's ConfigFileUtils.
+        // No datastore invalidation needed — values are constant and never change.
         messages.add(serializeBoxSettings(config, surfaceWidth = surfaceWidth, surfaceHeight = surfaceHeight))
 
         // AirPlay configuration AFTER BoxSettings — firmware rewrites airplay.conf

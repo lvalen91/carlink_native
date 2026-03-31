@@ -914,7 +914,7 @@ fun AdapterConfigurationDialog(
                                 if (miscChanged) {
                                     // Tier 3: Misc settings changed — firmware-level changes
                                     // require adapter reboot and full app restart.
-                                    // GPS forwarding: riddleBoxCfg command injection + daemon restart
+                                    // GPS forwarding: controls whether app sends GNSS_DATA (0x29) to adapter
                                     // WiFi band: firmware radio reconfiguration
                                     // Cluster navigation: CarAppActivity shim lifecycle
                                     logWarn(

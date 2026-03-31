@@ -511,7 +511,7 @@ data class AdapterConfig(
     val androidWorkMode: Boolean = true,
     /** Hand drive mode: 0 = LHD (dock left, US/EU default), 1 = RHD (dock right, UK/JP/AU) */
     val handDriveMode: Int = 0,
-    /** GPS forwarding: true = forward vehicle GPS to CarPlay (GNSSCapability=3), false = disabled (GNSSCapability=0) */
+    /** GPS forwarding: true = app sends GNSS_DATA (0x29) to adapter for CarPlay, false = no GPS data sent. Adapter-side GNSSCapability=3 is always set in BoxSettings. */
     val gpsForwarding: Boolean = false,
     val icon120Data: ByteArray? = null,
     val icon180Data: ByteArray? = null,

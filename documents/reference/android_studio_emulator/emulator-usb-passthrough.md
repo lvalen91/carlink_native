@@ -19,13 +19,7 @@ Prerequisites
 
 Launch Command
 
-emulator \
-  -usb-passthrough vendorid=0x1314,productid=0x1520 \
-  -usb-passthrough vendorid=0x1314,productid=0x1521 \
-  -selinux permissive \
-  -writable-system \
-  -no-snapshot \
-  -avd ultrawideaaos
+emulator -usb-passthrough vendorid=0x1314,productid=0x1520 -usb-passthrough vendorid=0x1314,productid=0x1521 -selinux permissive -writable-system -no-snapshot -avd EMULATORNAME
 
 Both -usb-passthrough flags are required. The adapter can switch PIDs at any time and only the matching filter will grab the device.
 
