@@ -2,13 +2,13 @@ package com.carlink.ui.settings
 
 import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -34,26 +34,26 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
-import com.carlink.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.carlink.CarlinkManager
+import com.carlink.R
 import com.carlink.protocol.PhoneType
 import com.carlink.ui.theme.AutomotiveDimens
+import kotlinx.coroutines.delay
 
 /** Fixed card width for horizontal layout. */
 private val CARD_WIDTH = 360.dp
@@ -77,9 +77,10 @@ fun PhonesTabContent(carlinkManager: CarlinkManager) {
 
     // Register device listener for DevList updates (supports multiple listeners)
     DisposableEffect(carlinkManager) {
-        val listener = CarlinkManager.DeviceListener { devices ->
-            pairedDevices = devices
-        }
+        val listener =
+            CarlinkManager.DeviceListener { devices ->
+                pairedDevices = devices
+            }
         carlinkManager.addDeviceListener(listener)
         // Request fresh device list when tab opens
         carlinkManager.refreshDeviceList()
@@ -109,11 +110,12 @@ fun PhonesTabContent(carlinkManager: CarlinkManager) {
         contentAlignment = Alignment.Center,
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(IntrinsicSize.Max)
-                .horizontalScroll(rememberScrollState())
-                .padding(24.dp),
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .height(IntrinsicSize.Max)
+                    .horizontalScroll(rememberScrollState())
+                    .padding(24.dp),
             horizontalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             // === USB Device Card (always present) ===
@@ -133,17 +135,18 @@ fun PhonesTabContent(carlinkManager: CarlinkManager) {
             } else {
                 pairedDevices.forEach { device ->
                     key(device.btMac) {
-                        val isDeviceActive = activeWifi == 1 &&
-                            activeBtMac != null &&
-                            device.btMac == activeBtMac &&
-                            (managerState == CarlinkManager.State.STREAMING ||
-                                managerState == CarlinkManager.State.DEVICE_CONNECTED)
+                        val isDeviceActive =
+                            activeWifi == 1 &&
+                                activeBtMac != null &&
+                                device.btMac == activeBtMac &&
+                                (
+                                    managerState == CarlinkManager.State.STREAMING ||
+                                        managerState == CarlinkManager.State.DEVICE_CONNECTED
+                                )
 
                         WirelessDeviceCard(
                             device = device,
                             isConnected = isDeviceActive,
-                            enabled = !isProcessing,
-                            modifier = Modifier.width(CARD_WIDTH).fillMaxHeight(),
                             onTap = {
                                 view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
                                 isProcessing = true
@@ -156,6 +159,8 @@ fun PhonesTabContent(carlinkManager: CarlinkManager) {
                             onRemove = {
                                 deviceToRemove = device
                             },
+                            modifier = Modifier.width(CARD_WIDTH).fillMaxHeight(),
+                            enabled = !isProcessing,
                         )
                     }
                 }
@@ -201,11 +206,12 @@ private fun UsbDeviceCard(
     val colorScheme = MaterialTheme.colorScheme
     val alpha = if (isConnected) 1f else 0.38f
 
-    val containerColor = if (isConnected && phoneType != null) {
-        activeCardColor(phoneType)
-    } else {
-        colorScheme.surfaceContainerLow
-    }
+    val containerColor =
+        if (isConnected && phoneType != null) {
+            activeCardColor(phoneType)
+        } else {
+            colorScheme.surfaceContainerLow
+        }
 
     val textColor = if (isConnected) Color.White else colorScheme.onSurface.copy(alpha = alpha)
 
@@ -229,9 +235,10 @@ private fun UsbDeviceCard(
 
             Text(
                 text = "USB",
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    fontWeight = FontWeight.SemiBold,
-                ),
+                style =
+                    MaterialTheme.typography.headlineSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                    ),
                 color = textColor,
             )
 
@@ -249,12 +256,14 @@ private fun UsbDeviceCard(
 
                 // Show CarPlay or Android Auto branded icon
                 Image(
-                    painter = painterResource(
-                        id = when (phoneType) {
-                            PhoneType.CARPLAY, PhoneType.CARPLAY_WIRELESS -> R.drawable.ic_carplay
-                            else -> R.drawable.ic_android_auto
-                        },
-                    ),
+                    painter =
+                        painterResource(
+                            id =
+                                when (phoneType) {
+                                    PhoneType.CARPLAY, PhoneType.CARPLAY_WIRELESS -> R.drawable.ic_carplay
+                                    else -> R.drawable.ic_android_auto
+                                },
+                        ),
                     contentDescription = phoneType.name,
                     modifier = Modifier.size(48.dp),
                 )
@@ -275,22 +284,23 @@ private fun UsbDeviceCard(
 private fun WirelessDeviceCard(
     device: CarlinkManager.DeviceInfo,
     isConnected: Boolean,
-    enabled: Boolean = true,
-    modifier: Modifier = Modifier,
     onTap: () -> Unit,
     onRemove: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val colorScheme = MaterialTheme.colorScheme
 
-    val containerColor = if (isConnected) {
-        when (device.type) {
-            "CarPlay" -> CarPlayActiveColor
-            "AndroidAuto" -> AndroidAutoActiveColor
-            else -> colorScheme.surfaceContainerHighest
+    val containerColor =
+        if (isConnected) {
+            when (device.type) {
+                "CarPlay" -> CarPlayActiveColor
+                "AndroidAuto" -> AndroidAutoActiveColor
+                else -> colorScheme.surfaceContainerHighest
+            }
+        } else {
+            colorScheme.surfaceContainer
         }
-    } else {
-        colorScheme.surfaceContainer
-    }
 
     Card(
         onClick = { if (enabled) onTap() },
@@ -304,13 +314,15 @@ private fun WirelessDeviceCard(
         ) {
             // Device type icon (CarPlay / Android Auto branded)
             Image(
-                painter = painterResource(
-                    id = when (device.type) {
-                        "CarPlay" -> R.drawable.ic_carplay
-                        "AndroidAuto" -> R.drawable.ic_android_auto
-                        else -> R.drawable.ic_phone_projection
-                    },
-                ),
+                painter =
+                    painterResource(
+                        id =
+                            when (device.type) {
+                                "CarPlay" -> R.drawable.ic_carplay
+                                "AndroidAuto" -> R.drawable.ic_android_auto
+                                else -> R.drawable.ic_phone_projection
+                            },
+                    ),
                 contentDescription = device.type,
                 modifier = Modifier.size(48.dp),
             )
@@ -322,9 +334,10 @@ private fun WirelessDeviceCard(
 
             Text(
                 text = device.name,
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    fontWeight = FontWeight.SemiBold,
-                ),
+                style =
+                    MaterialTheme.typography.headlineSmall.copy(
+                        fontWeight = FontWeight.SemiBold,
+                    ),
                 color = cardTextColor,
                 textAlign = TextAlign.Center,
                 maxLines = 1,
@@ -335,11 +348,12 @@ private fun WirelessDeviceCard(
 
             // Status line — single field: "Connected" or "Last seen: ..."
             Text(
-                text = if (isConnected) {
-                    "Connected"
-                } else {
-                    device.lastConnected?.let { "Last seen: $it" } ?: "Disconnected"
-                },
+                text =
+                    if (isConnected) {
+                        "Connected"
+                    } else {
+                        device.lastConnected?.let { "Last seen: $it" } ?: "Disconnected"
+                    },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (isConnected) Color.White.copy(alpha = 0.85f) else colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -355,10 +369,11 @@ private fun WirelessDeviceCard(
                 onClick = onRemove,
                 enabled = enabled,
                 modifier = Modifier.height(AutomotiveDimens.ButtonMinHeight),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = colorScheme.error,
-                    contentColor = colorScheme.onError,
-                ),
+                colors =
+                    ButtonDefaults.buttonColors(
+                        containerColor = colorScheme.error,
+                        contentColor = colorScheme.onError,
+                    ),
             ) {
                 Icon(
                     imageVector = Icons.Default.Delete,
@@ -384,14 +399,16 @@ private fun EmptyDeviceCard(modifier: Modifier = Modifier) {
     Card(
         modifier = modifier,
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = colorScheme.surfaceContainerLow,
-        ),
+        colors =
+            CardDefaults.cardColors(
+                containerColor = colorScheme.surfaceContainerLow,
+            ),
     ) {
         Column(
-            modifier = Modifier
-                .padding(24.dp)
-                .fillMaxWidth(),
+            modifier =
+                Modifier
+                    .padding(24.dp)
+                    .fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Icon(
@@ -418,11 +435,12 @@ private fun EmptyDeviceCard(modifier: Modifier = Modifier) {
 
 /** Returns the active card background color based on phone type. */
 @Composable
-private fun activeCardColor(phoneType: PhoneType): Color = when (phoneType) {
-    PhoneType.CARPLAY, PhoneType.CARPLAY_WIRELESS -> CarPlayActiveColor
-    PhoneType.ANDROID_AUTO -> AndroidAutoActiveColor
-    else -> MaterialTheme.colorScheme.surfaceContainerHighest
-}
+private fun activeCardColor(phoneType: PhoneType): Color =
+    when (phoneType) {
+        PhoneType.CARPLAY, PhoneType.CARPLAY_WIRELESS -> CarPlayActiveColor
+        PhoneType.ANDROID_AUTO -> AndroidAutoActiveColor
+        else -> MaterialTheme.colorScheme.surfaceContainerHighest
+    }
 
 // ==================== Dialogs ====================
 
@@ -444,9 +462,10 @@ private fun RemoveDeviceDialog(
         confirmButton = {
             TextButton(
                 onClick = onConfirm,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error,
-                ),
+                colors =
+                    ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
             ) {
                 Text("Remove")
             }

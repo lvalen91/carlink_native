@@ -1,6 +1,7 @@
 package com.carlink.logging
 
 import android.util.Log
+import com.carlink.BuildConfig
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -240,31 +241,36 @@ object Logger {
         message: String,
         throwable: Throwable? = null,
     ) {
-        val timestamp = System.currentTimeMillis()
-        val formattedMessage = if (tag != null) "[$tag] $message" else message
-
-        // Always emit to Logcat regardless of app settings (enables adb logcat capture)
-        when (level) {
-            Level.VERBOSE -> Log.v(TAG, formattedMessage, throwable)
-            Level.DEBUG -> Log.d(TAG, formattedMessage, throwable)
-            Level.INFO -> Log.i(TAG, formattedMessage, throwable)
-            Level.WARN -> Log.w(TAG, formattedMessage, throwable)
-            Level.ERROR -> Log.e(TAG, formattedMessage, throwable)
+        // Emit to system logcat only in debug builds (adb logcat capture during development).
+        // Release builds route exclusively through listeners (app file logging) to avoid
+        // per-packet Log.d() overhead on constrained hardware (GM AAOS Intel Atom).
+        if (BuildConfig.DEBUG) {
+            val formattedMessage = if (tag != null) "[$tag] $message" else message
+            when (level) {
+                Level.VERBOSE -> Log.v(TAG, formattedMessage, throwable)
+                Level.DEBUG -> Log.d(TAG, formattedMessage, throwable)
+                Level.INFO -> Log.i(TAG, formattedMessage, throwable)
+                Level.WARN -> Log.w(TAG, formattedMessage, throwable)
+                Level.ERROR -> Log.e(TAG, formattedMessage, throwable)
+            }
         }
 
-        // Apply filtering only for listeners (file logging, etc.)
-        // NEVER filter protocol-unknown messages — they must always reach file logs
+        // Filter before any further work — skip timestamp + listener dispatch if filtered out.
+        // NEVER filter protocol-unknown messages — they must always reach file logs.
         val bypassFilter = tag == Tags.PROTO_UNKNOWN
         if (!bypassFilter) {
             if (level.priority < minLevel.priority) return
             if (tag != null && !isTagEnabled(tag)) return
         }
 
+        if (listeners.isEmpty()) return
+
+        val timestamp = System.currentTimeMillis()
         for (listener in listeners) {
             try {
                 listener.onLog(level, tag, message, timestamp)
             } catch (e: Exception) {
-                Log.e(TAG, "Error in log listener: ${e.message}")
+                if (BuildConfig.DEBUG) Log.e(TAG, "Error in log listener: ${e.message}")
             }
         }
     }
