@@ -726,8 +726,8 @@ class DualStreamAudioManager(
                 phoneCallSlot
             } else if (state.isSiriActive && format.sampleRate == 16000 && format.channelCount == 1) {
                 siriSlot
-            } else if (state.isAlertActive && format.sampleRate == 24000 && format.channelCount == 1) {
-                alertSlot
+            } else if (state.isAlertActive) {
+                alertSlot // Format-agnostic: ensureSlotFormat() handles 48kHz/2ch (CarPlay) or 24kHz/1ch (AA)
             } else {
                 mediaSlot // Default: all other audio (including transition-period media)
             }

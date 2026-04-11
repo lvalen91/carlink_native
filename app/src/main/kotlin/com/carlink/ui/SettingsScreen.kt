@@ -220,8 +220,8 @@ fun SettingsScreen(
                                 TextButton(
                                     onClick = {
                                         logWarn("[UI_ACTION] Close App confirmed", tag = "UI")
+                                        carlinkManager.stop() // Graceful teardown: sends 0x0F+0x15 to adapter
                                         (context as? android.app.Activity)?.finishAffinity()
-                                        android.os.Process.killProcess(android.os.Process.myPid())
                                     },
                                 ) {
                                     Text("Close", color = colorScheme.error)

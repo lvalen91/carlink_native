@@ -720,6 +720,16 @@ class CarlinkManager(
             return
         }
 
+        // Clear any stale adapter session left by a prior force-kill or crash.
+        // The adapter firmware retains session state across USB reconnects. If the previous
+        // app process was killed without sending DisconnectPhone+CloseDongle, the adapter
+        // stays in PLUGGED/STREAMING state and ignores our OPEN command. Sending these
+        // teardown commands before constructing AdapterDriver is safe on idle adapters (no-op).
+        log("Clearing stale adapter session state")
+        device.write(MessageSerializer.serializeDisconnectPhone())
+        device.write(MessageSerializer.serializeCloseDongle())
+        Thread.sleep(200)
+
         // Create video processor for direct USB -> codec data flow
         // This bypasses message parsing for zero-copy performance (DIRECT_HANDOFF)
         val videoProcessor = createVideoProcessor()
@@ -1853,6 +1863,7 @@ class CarlinkManager(
                 logInfo("[AUDIO_CMD] Phone call started - enabling microphone (mode: PHONECALL, decodeType=$micDecodeType)", tag = Logger.Tags.MIC)
                 activeVoiceMode = VoiceMode.PHONECALL
                 isPhoneCallAudioActive = true
+                endPurpose(StreamPurpose.RINGTONE, command) // Call answered — ringtone is over
                 setPurpose(StreamPurpose.PHONE_CALL, command)
                 startMicrophoneCapture(decodeType = micDecodeType, audioType = 3)
             }
@@ -1894,6 +1905,7 @@ class CarlinkManager(
                 // a previous voice session (Siri/phone call). The adapter does not send an
                 // explicit volume=1.0 restore packet; MEDIA_START is the session boundary.
                 audioManager?.setDucking(1.0f)
+                endPurpose(StreamPurpose.RINGTONE, command) // Safety net — abandon before MEDIA focus request
                 setPurpose(StreamPurpose.MEDIA, command)
             }
 
@@ -1912,6 +1924,7 @@ class CarlinkManager(
                 logDebug("[AUDIO_CMD] Alert stopped", tag = Logger.Tags.AUDIO)
                 isAlertAudioActive = false
                 endPurpose(StreamPurpose.ALERT, command)
+                endPurpose(StreamPurpose.RINGTONE, command) // Call declined/missed — ringtone is over
             }
 
             AudioCommand.AUDIO_OUTPUT_START -> {
@@ -1923,8 +1936,12 @@ class CarlinkManager(
             }
 
             AudioCommand.AUDIO_INCOMING_CALL_INIT -> {
+                // No-op: RINGTONE has no AudioTrack slot and no audio data routing.
+                // ALERT_START follows ~1s later and independently handles focus.
+                // Previously this called setPurpose(RINGTONE) which acquired AUDIOFOCUS_GAIN_TRANSIENT
+                // but was never abandoned (no INCOMING_CALL_STOP exists in the protocol), causing
+                // permanent media silence after phone calls.
                 logInfo("[AUDIO_CMD] Incoming call ring (AudioCmd 14)", tag = Logger.Tags.AUDIO)
-                setPurpose(StreamPurpose.RINGTONE, command)
             }
 
             AudioCommand.AUDIO_INPUT_CONFIG -> {

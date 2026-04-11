@@ -315,3 +315,8 @@
    - Documented CMD_BOX_INFO transform table: 28 entries, 5 keys missing (CallQuality, VoiceQuality, autoPlay, wifiChannel, OemName)
 
 [109] :: In-App option to Close/Kill the app.
+
+[110]:: Audio focus leak, stale session reset, alert routing, Close App teardown.
+   - Media silent after phone call: Removed setPurpose(RINGTONE) from INCOMING_CALL_INIT (no protocol STOP exists, focus was never abandoned). Added endPurpose(RINGTONE) safety nets in PHONECALL_START, ALERT_STOP, MEDIA_START.
+   - "Waiting for phone" after force-kill: Send 0x0F+0x15 after USB open in CarlinkManager.start() to clear stale adapter session. Fixed Close App button: added stop() before finishAffinity(), removed killProcess().
+   - Ringtone silent during incoming call: ALERT routing now matches on isAlertActive only, dropped 24kHz/mono format check. 48kHz stereo alert audio was falling through to muted MEDIA slot. ensureSlotFormat() recreates ALERT track to match incoming format.
