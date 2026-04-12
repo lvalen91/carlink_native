@@ -2143,13 +2143,28 @@ class CarlinkManager(
         // Extract new song title (if present)
         val newSongName = (payload["MediaSongName"] as? String)?.takeIf { it.isNotEmpty() }
 
-        // Detect song change — clear all cached metadata to prevent stale data mixing
+        // WHY we snapshot previous state before the song-change reset:
+        // Android Auto sends metadata in split increments across consecutive
+        // frames (frame 1: title only; frame 2: artist only; frame 3: album).
+        // The prior metadataChanged predicate compared only title+cover, so
+        // artist/album/appName-only updates were silently dropped — cluster
+        // showed title without artist until the next song change. Capturing
+        // previous* here lets metadataChanged below detect incremental changes
+        // even after lastMediaArtistName/etc. have been overwritten.
         val previousSongName = lastMediaSongName
+        val previousArtist = lastMediaArtistName
+        val previousAlbum = lastMediaAlbumName
+        val previousAppName = lastMediaAppName
+        val previousDuration = lastDuration
+
+        // Detect song change — clear all cached metadata to prevent stale data mixing
         if (newSongName != null && newSongName != previousSongName) {
             lastMediaSongName = null
             lastMediaArtistName = null
             lastMediaAlbumName = null
             lastAlbumCover = null
+            lastDuration = 0L
+            lastPosition = 0L
             // Keep appName - typically doesn't change mid-session
         }
 
@@ -2157,15 +2172,12 @@ class CarlinkManager(
         newSongName?.let {
             lastMediaSongName = it
         }
-        (payload["MediaArtistName"] as? String)?.takeIf { it.isNotEmpty() }?.let {
-            lastMediaArtistName = it
-        }
-        (payload["MediaAlbumName"] as? String)?.takeIf { it.isNotEmpty() }?.let {
-            lastMediaAlbumName = it
-        }
-        (payload["MediaAPPName"] as? String)?.takeIf { it.isNotEmpty() }?.let {
-            lastMediaAppName = it
-        }
+        val newArtist = (payload["MediaArtistName"] as? String)?.takeIf { it.isNotEmpty() }
+        newArtist?.let { lastMediaArtistName = it }
+        val newAlbum = (payload["MediaAlbumName"] as? String)?.takeIf { it.isNotEmpty() }
+        newAlbum?.let { lastMediaAlbumName = it }
+        val newAppName = (payload["MediaAPPName"] as? String)?.takeIf { it.isNotEmpty() }
+        newAppName?.let { lastMediaAppName = it }
 
         // Process album cover after song change detection
         val albumCover = payload["AlbumCover"] as? ByteArray
@@ -2196,11 +2208,17 @@ class CarlinkManager(
                 isPlaying = isPlaying,
             )
 
-        // Detect whether metadata actually changed (song change or new album cover)
-        // Position-only ticks (~95% of messages) skip the expensive metadata path
+        // WHY this broader predicate: AA's incremental metadata stream would
+        // otherwise suppress legitimate artist/album/appName/duration-only
+        // updates. Position-only ticks (~95% of messages) still short-circuit
+        // because none of the guarded fields change between them.
         val metadataChanged =
             (newSongName != null && newSongName != previousSongName) ||
-                albumCover != null
+                (newArtist != null && newArtist != previousArtist) ||
+                (newAlbum != null && newAlbum != previousAlbum) ||
+                (newAppName != null && newAppName != previousAppName) ||
+                albumCover != null ||
+                (duration > 0 && duration != previousDuration)
 
         if (metadataChanged) {
             // Full metadata update (title/artist/album/cover/duration)

@@ -6,11 +6,13 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Bundle
 import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.media.MediaBrowserServiceCompat
 import com.carlink.BuildConfig
 import com.carlink.MainActivity
@@ -320,7 +322,22 @@ class CarlinkMediaBrowserService : MediaBrowserServiceCompat() {
 
         try {
             val notification = buildNotification()
-            startForeground(NOTIFICATION_ID, notification)
+            // Android 14+ (API 34) requires the typed startForeground overload when
+            // the service declares a foregroundServiceType in the manifest —
+            // the untyped 2-arg call throws MissingForegroundServiceTypeException.
+            // ServiceCompat.startForeground handles API-level branching.
+            // Types must match manifest ("mediaPlayback|connectedDevice"):
+            //   MEDIA_PLAYBACK     — requires FOREGROUND_SERVICE_MEDIA_PLAYBACK perm
+            //   CONNECTED_DEVICE   — requires FOREGROUND_SERVICE_CONNECTED_DEVICE perm
+            //                        plus one of BLUETOOTH/NFC/USB/NETWORK_STATE/...
+            //                        (CHANGE_NETWORK_STATE + usb.host feature satisfy)
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
             isForeground = true
             if (BuildConfig.DEBUG) Log.d(TAG, "[BROWSER_SERVICE] Entered foreground mode")
         } catch (e: Exception) {

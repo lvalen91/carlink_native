@@ -151,6 +151,42 @@ object MessageParser {
             else -> UnknownMessage(header, payload)
         }
 
+    /**
+     * Bounds-safe ByteBuffer.wrap that tolerates adapter frames whose declared
+     * header.length exceeds the bytes actually delivered by the USB bulk read.
+     *
+     * WHY: ByteBuffer.wrap(array, offset, length) throws IOOBE when
+     * offset+length > array.size. Before this helper, a short/corrupt frame
+     * from the adapter would crash the USB-ReadLoop thread mid-session
+     * (fatal — no further messages parsed until full reconnect). The clamp
+     * converts the crash into a logged drop; the state machine's existing
+     * reconnect logic then handles recovery.
+     *
+     * Returns null only for negative declared length (hard protocol violation);
+     * callers should treat null as "return UnknownMessage".
+     */
+    private fun safeWrap(
+        payload: ByteArray,
+        declared: Int,
+        tag: String,
+    ): ByteBuffer? {
+        if (declared < 0) {
+            logWarn(
+                "[MessageParser] $tag: negative header.length=$declared; dropping",
+                Logger.Tags.PROTO_UNKNOWN,
+            )
+            return null
+        }
+        val safe = declared.coerceAtMost(payload.size)
+        if (safe != declared) {
+            logWarn(
+                "[MessageParser] $tag: truncated frame, header.length=$declared payload=${payload.size}; clamping to $safe",
+                Logger.Tags.PROTO_UNKNOWN,
+            )
+        }
+        return ByteBuffer.wrap(payload, 0, safe).order(ByteOrder.LITTLE_ENDIAN)
+    }
+
     private fun parseAudioData(
         header: MessageHeader,
         payload: ByteArray?,
@@ -159,16 +195,19 @@ object MessageParser {
             return UnknownMessage(header, payload)
         }
 
-        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = safeWrap(payload, header.length, "parseAudioData")
+            ?: return UnknownMessage(header, payload)
 
         val decodeType = buffer.int
         val volume = buffer.float
         val audioType = buffer.int
 
-        val remainingBytes = header.length - 12
+        // Use buffer.limit() (the safeWrap-clamped bound) rather than header.length
+        // to avoid reading past the actual payload on truncated frames.
+        val remainingBytes = (buffer.limit() - 12).coerceAtLeast(0)
 
         return when {
-            remainingBytes == 1 -> {
+            remainingBytes == 1 && payload.size > 12 -> {
                 val commandId = payload[12].toInt() and 0xFF
                 AudioDataMessage(
                     header = header,
@@ -232,23 +271,33 @@ object MessageParser {
             return MediaDataMessage(header, MediaType.UNKNOWN, emptyMap())
         }
 
-        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = safeWrap(payload, header.length, "parseMediaData")
+            ?: return MediaDataMessage(header, MediaType.UNKNOWN, emptyMap())
         val typeInt = buffer.int
         val mediaType = MediaType.fromId(typeInt)
+
+        // Use buffer.limit() rather than header.length so we respect the clamped
+        // bound from safeWrap() on truncated frames. end is always <= payload.size.
+        val end = buffer.limit()
+        val bodyLen = (end - 4).coerceAtLeast(0)
 
         val mediaPayload: Map<String, Any> =
             when (mediaType) {
                 MediaType.ALBUM_COVER,
                 MediaType.ALBUM_COVER_AA -> {
-                    val imageData = ByteArray(header.length - 4)
-                    System.arraycopy(payload, 4, imageData, 0, imageData.size)
-                    mapOf("AlbumCover" to imageData)
+                    if (bodyLen > 0) {
+                        val imageData = ByteArray(bodyLen)
+                        System.arraycopy(payload, 4, imageData, 0, bodyLen)
+                        mapOf("AlbumCover" to imageData)
+                    } else {
+                        emptyMap()
+                    }
                 }
 
                 MediaType.NAVI_IMAGE -> {
-                    if (header.length > 4) {
-                        val imageData = ByteArray(header.length - 4)
-                        System.arraycopy(payload, 4, imageData, 0, imageData.size)
+                    if (bodyLen > 0) {
+                        val imageData = ByteArray(bodyLen)
+                        System.arraycopy(payload, 4, imageData, 0, bodyLen)
                         mapOf("NaviImage" to imageData)
                     } else {
                         emptyMap()
@@ -256,24 +305,24 @@ object MessageParser {
                 }
 
                 MediaType.DATA, MediaType.NAVI_JSON, MediaType.CALL_STATUS -> {
-                    if (header.length < 6) {
-                        // Need at least: 4 (type int) + 1 (JSON byte) + 1 (trailing null)
+                    if (bodyLen < 1) {
                         emptyMap()
                     } else {
+                        // WHY trimEnd('\u0000') instead of old "header.length - 5":
+                        // the prior code hardcoded "4 byte subtype + 1 byte NUL" and
+                        // silently dropped the last JSON char when the adapter sent
+                        // frames without the trailing NUL (observed firmware variance,
+                        // same pattern as BT-address strings). trimEnd tolerates
+                        // 0..N trailing NULs without losing real content. trimEnd
+                        // (not trim) preserves leading NULs as a framing-bug signal.
+                        val jsonString = String(payload, 4, bodyLen, StandardCharsets.UTF_8)
+                            .trimEnd('\u0000')
                         try {
-                            val jsonBytes = ByteArray(header.length - 5) // Exclude type int and trailing null
-                            System.arraycopy(payload, 4, jsonBytes, 0, jsonBytes.size)
-                            val jsonString = String(jsonBytes, StandardCharsets.UTF_8).trim('\u0000')
                             val json = JSONObject(jsonString)
                             json.keys().asSequence().associateWith { json.get(it) }
                         } catch (e: JSONException) {
-                            val rawPreview = try {
-                                val raw = ByteArray(header.length - 5)
-                                System.arraycopy(payload, 4, raw, 0, raw.size)
-                                String(raw, StandardCharsets.UTF_8).take(256)
-                            } catch (_: Exception) { "(unreadable)" }
                             logWarn(
-                                "[MessageParser] Failed to parse media JSON: ${e.message} raw=$rawPreview",
+                                "[MessageParser] Failed to parse media JSON: ${e.message} raw=${jsonString.take(256)}",
                                 Logger.Tags.PROTO_UNKNOWN,
                             )
                             emptyMap()
@@ -283,10 +332,15 @@ object MessageParser {
 
                 else -> {
                     // Unknown subtype — preserve raw bytes for diagnostic logging
-                    val preview = if (header.length > 4) {
-                        val limit = (header.length - 4).coerceAtMost(64)
-                        payload.drop(4).take(limit).joinToString(" ") { "%02X".format(it) } +
-                            if (header.length - 4 > 64) " … (${header.length - 4}B total)" else ""
+                    val preview = if (bodyLen > 0) {
+                        val limit = bodyLen.coerceAtMost(64)
+                        val hex = StringBuilder(limit * 3)
+                        for (i in 0 until limit) {
+                            if (i > 0) hex.append(' ')
+                            hex.append("%02X".format(payload[4 + i]))
+                        }
+                        if (bodyLen > 64) hex.append(" … (${bodyLen}B total)")
+                        hex.toString()
                     } else ""
                     mapOf("_unknownSubtype" to typeInt, "_hexPreview" to preview)
                 }
@@ -302,7 +356,8 @@ object MessageParser {
         if (payload == null || header.length < 4) {
             return CommandMessage(header, CommandMapping.INVALID, rawId = -1)
         }
-        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = safeWrap(payload, header.length, "parseCommand")
+            ?: return CommandMessage(header, CommandMapping.INVALID, rawId = -1)
         val commandId = buffer.int
         return CommandMessage(header, CommandMapping.fromId(commandId), rawId = commandId)
     }
@@ -314,7 +369,8 @@ object MessageParser {
         if (payload == null || header.length < 4) {
             return PluggedMessage(header, PhoneType.UNKNOWN, null)
         }
-        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = safeWrap(payload, header.length, "parsePlugged")
+            ?: return PluggedMessage(header, PhoneType.UNKNOWN, null)
         val phoneTypeId = buffer.int
         val phoneType = PhoneType.fromId(phoneTypeId)
 
@@ -337,7 +393,8 @@ object MessageParser {
         }
 
         // Payload is null-terminated JSON string
-        val jsonString = String(payload, 0, header.length, StandardCharsets.UTF_8).trim('\u0000')
+        val safeLen = header.length.coerceAtMost(payload.size)
+        val jsonString = String(payload, 0, safeLen, StandardCharsets.UTF_8).trim('\u0000')
         if (jsonString.isEmpty()) {
             return UnknownMessage(header, payload)
         }
@@ -357,7 +414,7 @@ object MessageParser {
         header: MessageHeader,
         payload: ByteArray?,
     ): Message {
-        if (payload == null || header.length < 17) {
+        if (payload == null || header.length < 17 || payload.size < 17) {
             return UnknownMessage(header, payload)
         }
 
@@ -373,7 +430,8 @@ object MessageParser {
         payload: ByteArray?,
     ): Message {
         if (payload == null || header.length < 4) return PhaseMessage(header, -1)
-        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = safeWrap(payload, header.length, "parsePhase")
+            ?: return PhaseMessage(header, -1)
         return PhaseMessage(header, buffer.int)
     }
 
@@ -382,7 +440,8 @@ object MessageParser {
         payload: ByteArray?,
     ): Message {
         if (payload == null || header.length < 4) return StatusValueMessage(header, -1)
-        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = safeWrap(payload, header.length, "parseStatusValue")
+            ?: return StatusValueMessage(header, -1)
         return StatusValueMessage(header, buffer.int)
     }
 
@@ -407,7 +466,8 @@ object MessageParser {
         if (payload == null || header.length < 17) {
             return BluetoothPairedListMessage(header, "", emptyList())
         }
-        val raw = String(payload, 0, header.length, StandardCharsets.UTF_8)
+        val safeLen = header.length.coerceAtMost(payload.size)
+        val raw = String(payload, 0, safeLen, StandardCharsets.UTF_8)
             .replace(Regex("[\\x00-\\x1F\\x7F]+"), "") // strip all control characters
         val devices = mutableListOf<Pair<String, String>>()
 
@@ -431,7 +491,8 @@ object MessageParser {
         label: String,
     ): Message {
         if (payload == null || header.length < 1) return InfoMessage(header, label, "")
-        val str = String(payload, 0, header.length, StandardCharsets.UTF_8).trim('\u0000')
+        val safeLen = header.length.coerceAtMost(payload.size)
+        val str = String(payload, 0, safeLen, StandardCharsets.UTF_8).trim('\u0000')
         return InfoMessage(header, label, str)
     }
 
@@ -441,7 +502,8 @@ object MessageParser {
         label: String,
     ): Message {
         if (payload == null || header.length < 4) return InfoMessage(header, label, "${header.length}B")
-        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = safeWrap(payload, header.length, "parseIntPayload[$label]")
+            ?: return InfoMessage(header, label, "${header.length}B")
         return InfoMessage(header, label, "${buffer.int}")
     }
 
@@ -451,11 +513,12 @@ object MessageParser {
         label: String,
     ): Message {
         if (payload == null || header.length < 1) return InfoMessage(header, label, "0B")
+        val safeLen = header.length.coerceAtMost(payload.size)
         val hex =
             payload
-                .take(header.length.coerceAtMost(32))
+                .take(safeLen.coerceAtMost(32))
                 .joinToString(" ") { "%02X".format(it) }
-        val suffix = if (header.length > 32) "... (${header.length}B)" else ""
+        val suffix = if (safeLen > 32) "... (${safeLen}B)" else ""
         return InfoMessage(header, label, "$hex$suffix")
     }
 
@@ -464,7 +527,8 @@ object MessageParser {
         payload: ByteArray?,
     ): Message {
         if (payload == null || header.length < 8) return InfoMessage(header, "OpenEcho", "${header.length}B")
-        val buffer = ByteBuffer.wrap(payload, 0, header.length).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = safeWrap(payload, header.length, "parseOpenEcho")
+            ?: return InfoMessage(header, "OpenEcho", "${header.length}B")
         val w = buffer.int
         val h = buffer.int
         return InfoMessage(header, "OpenEcho", "${w}x$h")

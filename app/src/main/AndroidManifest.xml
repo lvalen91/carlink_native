@@ -153,6 +153,22 @@
             android:grantUriPermissions="true"
             tools:ignore="ExportedContentProvider" />
 
+        <!-- FileProvider for publishing album art as content:// URIs to AAOS media
+             controllers (Media Center, cluster, system UI) IN ADDITION to the inline
+             METADATA_KEY_ALBUM_ART Bitmap. URI path is additive only — the inline
+             Bitmap is the primary renderer guarantee so that a missing/failed URI
+             does not blank the Media Card. grantUriPermissions lets MediaSession
+             auto-grant read permission to controllers. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.albumart"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths_albumart" />
+        </provider>
+
     </application>
 
 </manifest>

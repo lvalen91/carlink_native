@@ -3,7 +3,10 @@ package com.carlink.media
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.graphics.BitmapFactory
+import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -11,6 +14,12 @@ import android.util.Log
 import com.carlink.BuildConfig
 import com.carlink.MainActivity
 import com.carlink.util.LogCallback
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 private const val TAG = "CARLINK_MEDIA"
 
@@ -73,9 +82,27 @@ class MediaSessionManager(
     /** Position must drift more than this from AAOS-extrapolated value to trigger a push (seek). */
     private val seekThresholdMs: Long = 2_000L
 
-    // Album art bitmap cache — avoids redundant BitmapFactory.decodeByteArray on same cover
-    private var cachedAlbumArtHash: Int = 0
-    private var cachedBitmap: android.graphics.Bitmap? = null
+    // Album art cache — writes downscaled JPEG files to a FileProvider-backed
+    // directory. Used additively alongside the inline METADATA_KEY_ALBUM_ART
+    // Bitmap (see publishMetadata below for why the dual path is necessary).
+    private val albumArtCache = AlbumArtCache(context)
+
+    // Last-published art hash → (inline Bitmap, URI). Inline Bitmap is the PRIMARY
+    // carrier (renders immediately on AAOS Media Center / ClusterHome). URI is
+    // ADDITIVE — published only after AlbumArtCache confirms the backing file is
+    // on disk. WHY dual-path: publishing METADATA_KEY_ALBUM_ART_URI alone without
+    // a reachable file causes AAOS renderers to treat the entire metadata bundle
+    // as corrupt — they suppress the whole card including title/artist text, not
+    // just the art. Keeping the inline Bitmap as primary guarantees the card
+    // always renders even if the URI pipeline fails.
+    private var lastArtHash: Int = 0
+    private var lastArtUri: Uri? = null
+    private var lastInlineArt: Bitmap? = null
+    private var lastArtJob: Job? = null
+
+    // Scope for off-main bitmap decode + file write. Cancelled in release().
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     // Lock for thread-safe MediaSession access (USB thread + main thread)
     private val sessionLock = Any()
@@ -155,14 +182,18 @@ class MediaSessionManager(
      */
     fun release() {
         try {
+            scope.cancel()
+            lastArtJob = null
             mediaSession?.let { session ->
                 session.isActive = false
                 session.release()
             }
             mediaSession = null
             mediaControlCallback = null
-            cachedAlbumArtHash = 0
-            cachedBitmap = null
+            lastArtHash = 0
+            lastArtUri = null
+            lastInlineArt?.let { if (!it.isRecycled) it.recycle() }
+            lastInlineArt = null
             lastPushedPlaying = null
             lastPushedPositionMs = 0L
             lastPushedTimeNanos = 0L
@@ -202,67 +233,132 @@ class MediaSessionManager(
         albumArt: ByteArray?,
         duration: Long = 0L,
     ) {
-        synchronized(sessionLock) {
-            val session = mediaSession ?: return
+        val hash = albumArt?.let { if (it.isEmpty()) 0 else it.contentHashCode() } ?: 0
 
-            try {
-                val builder =
-                    MediaMetadataCompat
-                        .Builder()
-                        .putString(
-                            MediaMetadataCompat.METADATA_KEY_TITLE,
-                            title ?: "Unknown",
-                        ).putString(
-                            MediaMetadataCompat.METADATA_KEY_ARTIST,
-                            artist ?: "Unknown",
-                        ).putString(
-                            MediaMetadataCompat.METADATA_KEY_ALBUM,
-                            album ?: "",
-                        ).putString(
-                            MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE,
-                            appName ?: "Carlink",
+        // PRIMARY path: decode a small inline Bitmap synchronously on the caller
+        // thread (≤256px RGB_565 ≈ 130 KB, well under the 1 MB Binder cap even
+        // across several subscribed controllers). AAOS Media Center + ClusterHome
+        // render this immediately. If the subsequent URI write fails, the card
+        // still renders text + art.
+        // Falling back to lastInlineArt on null/empty bytes keeps the prior
+        // song's art visible during AA's ~130ms gap between the text-only JSON
+        // frame (song change detected) and the follow-up standalone ALBUM_COVER_AA
+        // frame — avoids a brief blank flicker on track change.
+        val inlineArt: Bitmap? = when {
+            albumArt == null || albumArt.isEmpty() -> lastInlineArt  // keep last
+            hash == lastArtHash -> lastInlineArt                     // same bytes
+            else -> try {
+                albumArtCache.decodeDisplayIcon(albumArt)
+            } catch (e: Exception) {
+                log("[MEDIA_SESSION] inline decode failed: ${e.message}")
+                null
+            }
+        }
+        if (inlineArt != null && inlineArt !== lastInlineArt) {
+            lastInlineArt?.let { if (!it.isRecycled) it.recycle() }
+            lastInlineArt = inlineArt
+        }
+
+        // URI on the synchronous path: only reuse if this frame's hash matches the
+        // previously-published art. Never publish a stale-song URI for new bytes.
+        val artUriForNow: Uri? = if (hash == lastArtHash) lastArtUri else null
+
+        publishMetadata(
+            session = synchronized(sessionLock) { mediaSession } ?: return,
+            title = title,
+            artist = artist,
+            album = album,
+            appName = appName,
+            duration = duration,
+            artUri = artUriForNow,
+            inlineArt = inlineArt,
+        )
+
+        // ADDITIVE path: off-main decode + file write. URI keys only get published
+        // after we verify the backing file actually exists and is non-empty.
+        if (albumArt != null && hash != lastArtHash) {
+            lastArtJob?.cancel()
+            val titleCapture = title
+            val artistCapture = artist
+            val albumCapture = album
+            val appNameCapture = appName
+            val durationCapture = duration
+            lastArtJob = scope.launch {
+                val uri = try {
+                    albumArtCache.put(albumArt)
+                } catch (e: Exception) {
+                    log("[MEDIA_SESSION] AlbumArtCache.put failed: ${e.message}")
+                    null
+                }
+                if (uri == null) return@launch  // inline Bitmap already renders; skip URI publish
+                mainHandler.post {
+                    synchronized(sessionLock) {
+                        val session = mediaSession ?: return@synchronized
+                        lastArtHash = hash
+                        lastArtUri = uri
+                        publishMetadata(
+                            session = session,
+                            title = titleCapture,
+                            artist = artistCapture,
+                            album = albumCapture,
+                            appName = appNameCapture,
+                            duration = durationCapture,
+                            artUri = uri,
+                            inlineArt = lastInlineArt,
                         )
+                    }
+                }
+            }
+        }
+        log("[MEDIA_SESSION] Metadata updated: $title - $artist (inlineArt=${inlineArt != null}, uriPending=${albumArt != null && hash != lastArtHash})")
+    }
 
-                // Add duration if known
+    /**
+     * Build and publish a [MediaMetadataCompat] with the given fields. Keeps the
+     * URI-based album art flow in one place.
+     */
+    private fun publishMetadata(
+        session: MediaSessionCompat,
+        title: String?,
+        artist: String?,
+        album: String?,
+        appName: String?,
+        duration: Long,
+        artUri: Uri?,
+        inlineArt: Bitmap? = null,
+    ) {
+        synchronized(sessionLock) {
+            try {
+                val builder = MediaMetadataCompat.Builder()
+                    .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title ?: "Unknown")
+                    .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist ?: "Unknown")
+                    .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, album ?: "")
+                    .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, appName ?: "Carlink")
                 if (duration > 0) {
                     builder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, duration)
                 }
-
-                // Decode and add album art with caching to avoid redundant decodes
-                if (albumArt != null) {
-                    try {
-                        val hash = albumArt.contentHashCode()
-                        val bitmap =
-                            if (hash == cachedAlbumArtHash && cachedBitmap != null) {
-                                cachedBitmap
-                            } else {
-                                BitmapFactory.decodeByteArray(albumArt, 0, albumArt.size)?.also {
-                                    cachedAlbumArtHash = hash
-                                    cachedBitmap = it
-                                }
-                            }
-                        if (bitmap != null) {
-                            builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
-                            builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, bitmap)
-                        } else {
-                            // Decode returned null - clear stale album art
-                            builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, null)
-                            builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, null)
-                            log("[MEDIA_SESSION] Album art decode returned null, cleared")
-                        }
-                    } catch (e: Exception) {
-                        // Decode failed - clear stale album art
-                        builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, null)
-                        builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, null)
-                        log("[MEDIA_SESSION] Failed to decode album art, cleared: ${e.message}")
-                    }
+                // PRIMARY art — inline Bitmap via METADATA_KEY_ALBUM_ART +
+                // METADATA_KEY_DISPLAY_ICON. This is the guaranteed render path:
+                // AAOS Media Center + ClusterHome both pick these up first. A
+                // dangling URI (file not yet written or write failed) caused
+                // prior builds to render the card entirely blank (no text either);
+                // keeping the inline Bitmap present ensures the card always renders.
+                if (inlineArt != null && !inlineArt.isRecycled) {
+                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, inlineArt)
+                    builder.putBitmap(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON, inlineArt)
                 }
-
+                // ADDITIVE art — URI keys are only set by callers that have
+                // already verified the FileProvider backing file exists and is
+                // non-empty on disk. Controllers that prefer URIs pick these up.
+                if (artUri != null) {
+                    val s = artUri.toString()
+                    builder.putString(MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI, s)
+                    builder.putString(MediaMetadataCompat.METADATA_KEY_ART_URI, s)
+                    builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI, s)
+                }
                 session.setMetadata(builder.build())
-
-                log("[MEDIA_SESSION] Metadata updated: $title - $artist")
             } catch (e: Exception) {
-                log("[MEDIA_SESSION] Failed to update metadata: ${e.message}")
+                log("[MEDIA_SESSION] Failed to publish metadata: ${e.message}")
             }
         }
     }
@@ -328,8 +424,12 @@ class MediaSessionManager(
 
             isPlaying = false
             currentPosition = 0L
-            cachedAlbumArtHash = 0
-            cachedBitmap = null
+            lastArtHash = 0
+            lastArtUri = null
+            lastInlineArt?.let { if (!it.isRecycled) it.recycle() }
+            lastInlineArt = null
+            lastArtJob?.cancel()
+            lastArtJob = null
             lastPushedPlaying = null
             lastPushedPositionMs = 0L
             lastPushedTimeNanos = 0L

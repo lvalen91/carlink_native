@@ -324,3 +324,12 @@
 [111] :: Documentation Corrections and Unknown firmware messages documented.
    - 0x0F Turn-by-Turn Start arrives before NAVI_START. Used as an additional trigger for Nav Audio start before actual audio packets.
    - 0x2A DashboardInfo also contains Call information as JSON sub type 100. In/Outgoing Call information rcvd by adapter. Not implemented (sys perm restricted).
+
+[112] :: MediaSession rework, Maybe fix inconsistent GM AAOS. AUDIO_ROUTE log cleanup.
+   - automotive_app_desc.xml: added <uses name="media"/> so AAOS enumerates the app as a media source
+   - CarlinkMediaBrowserService: typed ServiceCompat.startForeground(MEDIA_PLAYBACK|CONNECTED_DEVICE) for Android 14+ compliance
+   - MessageParser: safeWrap() clamps header.length to payload.size — truncated USB frames no longer crash the read loop
+   - MessageParser: JSON media branch uses trimEnd('\u0000') instead of hardcoded -5 (firmware variants omit trailing NUL)
+   - CarlinkManager.processMediaMetadata: dedup predicate now includes artist/album/appName/duration so AA's split incremental metadata (title-then-artist) isn't dropped
+   - Album art: new AlbumArtCache writes downscaled JPEGs to a FileProvider-backed cache. Inline METADATA_KEY_ALBUM_ART Bitmap is PRIMARY; ALBUM_ART_URI/ART_URI/DISPLAY_ICON_URI keys additive ONLY after disk write confirmed.
+   - AUDIO_ROUTE only logs on route change (purpose, sample rate, or channel count) with 30-second summaries. Prior: logged on every audio packet.

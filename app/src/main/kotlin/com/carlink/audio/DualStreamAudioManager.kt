@@ -148,6 +148,12 @@ class DualStreamAudioManager(
     private val underrunRecoveryThreshold = 10
     private val minBufferLevelMs = 0 // AudioTrack internal buffer (4x min) provides jitter protection
 
+    // AUDIO_ROUTE dedup: only log when route changes, plus periodic summary
+    private var lastRoutePurpose: StreamPurpose? = null
+    private var lastRouteSampleRate: Int = 0
+    private var lastRouteChannels: Int = 0
+    private var routeRepeatCount: Long = 0
+
     @Volatile private var navStarted = false
 
     @Volatile private var navStartTime: Long = 0
@@ -731,11 +737,23 @@ class DualStreamAudioManager(
             } else {
                 mediaSlot // Default: all other audio (including transition-period media)
             }
-        logDebug(
-            "[AUDIO_ROUTE] ${format.sampleRate}Hz/${format.channelCount}ch " +
-                "state=(call=${state.isPhoneCallActive} siri=${state.isSiriActive} alert=${state.isAlertActive}) " +
-                "→ ${slot?.purpose ?: "null"}",
-        )
+        val purpose = slot?.purpose
+        if (purpose != lastRoutePurpose || format.sampleRate != lastRouteSampleRate || format.channelCount != lastRouteChannels) {
+            if (routeRepeatCount > 0) {
+                logDebug("[AUDIO_ROUTE] (suppressed $routeRepeatCount identical)")
+            }
+            logDebug(
+                "[AUDIO_ROUTE] ${format.sampleRate}Hz/${format.channelCount}ch " +
+                    "state=(call=${state.isPhoneCallActive} siri=${state.isSiriActive} alert=${state.isAlertActive}) " +
+                    "→ ${purpose ?: "null"}",
+            )
+            lastRoutePurpose = purpose
+            lastRouteSampleRate = format.sampleRate
+            lastRouteChannels = format.channelCount
+            routeRepeatCount = 0
+        } else {
+            routeRepeatCount++
+        }
         return slot
     }
 
@@ -1367,6 +1385,9 @@ class DualStreamAudioManager(
                         if (nRes > 0) sb.append(" Res:").append(nRes)
                         sb.append("]")
                         if (zf > 0) sb.append(" Zero:").append(zf)
+                        val suppressed = routeRepeatCount
+                        if (suppressed > 0) sb.append(" Route:").append(lastRoutePurpose?.name ?: "?").append("x").append(suppressed)
+                        routeRepeatCount = 0
                         sb.append(" Duck:").append(if (isDucked) "Y" else "N")
                         sb.append(" FDuck:").append((focusDuckLevel * 100).toInt()).append("%")
                         val focusPurposes = activeFocusRequests.keys.joinToString(",")
