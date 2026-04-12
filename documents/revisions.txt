@@ -333,3 +333,11 @@
    - CarlinkManager.processMediaMetadata: dedup predicate now includes artist/album/appName/duration so AA's split incremental metadata (title-then-artist) isn't dropped
    - Album art: new AlbumArtCache writes downscaled JPEGs to a FileProvider-backed cache. Inline METADATA_KEY_ALBUM_ART Bitmap is PRIMARY; ALBUM_ART_URI/ART_URI/DISPLAY_ICON_URI keys additive ONLY after disk write confirmed.
    - AUDIO_ROUTE only logs on route change (purpose, sample rate, or channel count) with 30-second summaries. Prior: logged on every audio packet.
+
+[113] :: Cold-start inset race fix attempt (SYSTEM_UI_VISIBLE stretch/cutout). Seen on AAOS emulator + VCUNH1. Not on gminfo
+   - themes.xml: dropped windowFullscreen + inline cutout mode.
+   - applyDisplayMode: per-mode setDecorFitsSystemWindows + layoutInDisplayCutoutMode. SystemUI > (true, DEFAULT); immersive modes > (false, ALWAYS).
+   - onCreate: initializeCarlinkManager deferred via decorView.post so WindowMetrics reflects post-clip rect on first read.
+   - MainScreen: VideoSurface wrapped in key(carlinkManager, displayMode) — reinit paths drop the AndroidView slot and release the HWC plane.
+   - Reset Connection: rebuilds manager via reinitializeForDisplayMode(currentDisplayMode) instead of in-place restart().
+   - Verified: SurfaceView 2400x788 on first create (was 2400x864 transient). Tested on Emulator with Display size of 13.2 at 2400x960.

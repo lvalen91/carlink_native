@@ -164,9 +164,18 @@ class MainActivity : ComponentActivity() {
         // other modes use usable area excluding visible system bars
         loadAndApplyDisplayMode()
 
-        // Initialize Carlink manager (must be AFTER immersive mode is applied)
-        // so display dimensions are calculated correctly for the active mode
-        initializeCarlinkManager()
+        // Defer CarlinkManager creation to the next main-looper tick so the WM has
+        // processed the decorFitsSystemWindows + layoutInDisplayCutoutMode flags set
+        // in applyDisplayMode(). currentWindowMetrics.bounds then reflects the
+        // post-clip rect (e.g. 2400x788 in SYSTEM_UI_VISIBLE on a 2400x960 display)
+        // on the very first read, eliminating the cold-start surface-size race.
+        // Compose renders `if (manager != null)` while we wait, so the UI boots with
+        // the loading overlay and swaps in as soon as the manager is ready.
+        window.decorView.post {
+            if (!isDestroyed && !isFinishing) {
+                initializeCarlinkManager()
+            }
+        }
 
         // Request permissions if needed (location is chained after mic dialog)
         requestMicrophonePermission()
@@ -201,6 +210,11 @@ class MainActivity : ComponentActivity() {
                             displayMode = displayMode,
                             onResetCluster = ::restartClusterBinding,
                             onReinitForDisplayMode = ::reinitializeForDisplayMode,
+                            // Reset Connection now rebuilds the full manager via the same
+                            // path display-mode changes use. Turns a probabilistic repair
+                            // into a deterministic one: new SurfaceView, fresh HWC plane,
+                            // fresh WindowMetrics, renegotiated Open() — every time.
+                            onResetConnection = { reinitializeForDisplayMode(currentDisplayMode) },
                         )
                     }
                 }
@@ -672,15 +686,26 @@ class MainActivity : ComponentActivity() {
      */
     private fun applyDisplayMode(mode: DisplayMode) {
         val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        val lp = window.attributes
 
         when (mode) {
             DisplayMode.SYSTEM_UI_VISIBLE -> {
-                // Show all system bars - let AAOS manage display bounds
+                // WM clips window content rect to between-bars region *before* view tree is
+                // inflated. SurfaceView is born at correct geometry; no HWC-plane race.
+                WindowCompat.setDecorFitsSystemWindows(window, true)
+                lp.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                window.attributes = lp
                 windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
             }
 
             DisplayMode.STATUS_BAR_HIDDEN -> {
-                // Hide status bar only, keep navigation bar visible
+                // Edge-to-edge: video extends into hidden-bar + cutout regions.
+                // SafeArea metadata tells the phone to keep clickable UI out of those zones.
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                lp.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                window.attributes = lp
                 windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
                 windowInsetsController.show(WindowInsetsCompat.Type.navigationBars())
                 windowInsetsController.systemBarsBehavior =
@@ -688,7 +713,10 @@ class MainActivity : ComponentActivity() {
             }
 
             DisplayMode.NAV_BAR_HIDDEN -> {
-                // Hide navigation bar only, keep status bar visible
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                lp.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                window.attributes = lp
                 windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
                 windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
                 windowInsetsController.systemBarsBehavior =
@@ -696,7 +724,10 @@ class MainActivity : ComponentActivity() {
             }
 
             DisplayMode.FULLSCREEN_IMMERSIVE -> {
-                // Hide all system bars for maximum projection area
+                WindowCompat.setDecorFitsSystemWindows(window, false)
+                lp.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                window.attributes = lp
                 windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
                 windowInsetsController.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -829,6 +860,7 @@ fun CarlinkApp(
     displayMode: DisplayMode,
     onResetCluster: () -> Unit,
     onReinitForDisplayMode: (DisplayMode) -> Unit = {},
+    onResetConnection: () -> Unit = {},
 ) {
     var showSettings by remember { mutableStateOf(false) }
 
@@ -860,6 +892,7 @@ fun CarlinkApp(
                 logInfo("[UI_NAV] Opening SettingsScreen overlay (video continues)", tag = "UI")
                 showSettings = true
             },
+            onResetConnection = onResetConnection,
         )
 
         // SettingsScreen slides in ON TOP of MainScreen

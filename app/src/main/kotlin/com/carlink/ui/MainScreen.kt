@@ -38,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +74,7 @@ fun MainScreen(
     carlinkManager: CarlinkManager,
     displayMode: DisplayMode,
     onNavigateToSettings: () -> Unit,
+    onResetConnection: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
     // Key state on carlinkManager identity — when manager is replaced (display mode reinit),
@@ -212,6 +214,16 @@ fun MainScreen(
                     Modifier.fillMaxSize()
                 }
 
+            // Key the VideoSurface on (manager identity, displayMode) so any reinit
+            // path (display-mode change, resolution change, Reset Connection via the
+            // manager-rebuild path) drops the AndroidView composition slot, disposing
+            // the old VideoSurfaceView and releasing its HWC overlay plane. A fresh
+            // SurfaceView is then inflated against the current window rect — the only
+            // reliable way to migrate the HWC plane when system insets change post-boot.
+            // Parent-size deltas alone are NOT included here: they would rebuild the
+            // SurfaceView on every transient resize (e.g. bar animation frames) and
+            // cause video flicker. Only identity-level changes force recreation.
+            key(carlinkManager, displayMode) {
             VideoSurface(
                 modifier = surfaceModifier,
                 onSurfaceAvailable = { surface, width, height ->
@@ -258,6 +270,7 @@ fun MainScreen(
                     true
                 },
             )
+            } // end key(carlinkManager, displayMode)
         }
 
         // Loading overlay
@@ -331,11 +344,25 @@ fun MainScreen(
                     onClick = {
                         if (!isResetting) {
                             isResetting = true
-                            scope.launch {
-                                try {
-                                    carlinkManager.restart()
-                                } finally {
-                                    isResetting = false
+                            // Prefer the Activity-level manager-rebuild path when wired
+                            // (it recreates the SurfaceView against fresh WindowMetrics and
+                            // renegotiates Open() with current dims — deterministic repair).
+                            // Fall back to in-manager restart() for callers that don't plumb
+                            // the callback (e.g. tests/previews).
+                            val reset = onResetConnection
+                            if (reset != null) {
+                                reset()
+                                // Activity releases the old manager; Compose key(carlinkManager, ...)
+                                // will drop this subtree shortly. Clear the spinner promptly so
+                                // the UI doesn't flash a stale "resetting" state during teardown.
+                                isResetting = false
+                            } else {
+                                scope.launch {
+                                    try {
+                                        carlinkManager.restart()
+                                    } finally {
+                                        isResetting = false
+                                    }
                                 }
                             }
                         }
