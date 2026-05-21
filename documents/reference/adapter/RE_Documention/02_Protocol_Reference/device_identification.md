@@ -136,13 +136,79 @@ On first connection to the host unit, the firmware creates `/tmp/.FisrtConnectHU
 
 ---
 
+## iAP2 Identification (0x1D00 / 0x1D01 / 0x1D02)
+
+Before WiFi exists, the adapter identifies itself to the iPhone over the iAP2 accessory profile
+on Bluetooth RFCOMM. This is the message that **advertises wireless CarPlay capability** — it
+carries the adapter's transports, vehicle identity and supported message IDs, but **no
+resolution** (resolution is negotiated later, over AirPlay — see `carplay_handshake.md`).
+
+| Type | Direction | Name | Purpose |
+|------|-----------|------|---------|
+| `0x1D00` | iPhone → adapter | StartIdentify | Begin identification |
+| `0x1D01` | adapter → iPhone | IdentificationInformation | Adapter components / capabilities |
+| `0x1D02` | iPhone → adapter | IdentifyAccept | Identification accepted |
+
+Live-captured payload: `capture/carplay-20260521-101016/ttyLog.txt` lines 145-333.
+
+### TLV format
+
+Each parameter inside `0x1D01` is a TLV:
+
+```
+[length u16-BE][param-id u16-BE][payload]
+```
+
+`length` **includes** the 4-byte TLV header. A "none"-type parameter is a bare 4-byte TLV with
+no payload — its *presence* is a boolean flag.
+
+### Component / parameter IDs
+
+| param id | Name | Notes |
+|----------|------|-------|
+| 0 | name | utf8 — e.g. `CarLink` |
+| 1 | modelIdentifier | utf8 — e.g. `Magic-Car-Link-1.00` |
+| 2 | manufacturer | utf8 — e.g. `Magic Tec.` |
+| 3 | serialNumber | utf8 |
+| 4 | firmwareVersion | utf8 |
+| 5 | hardwareVersion | utf8 |
+| 6 | messagesSentByAccessory | blob (u16 list) |
+| 7 | messagesReceivedFromDevice | blob (u16 list) |
+| 8 | powerProvidingCapability | uint8 |
+| 9 | maximumCurrentDrawnFromDevice | uint16 |
+| 12 | currentLanguage | utf8 |
+| 13 | supportedLanguage | utf8 |
+| 17 | bluetoothTransportComponent | group |
+| 20 | vehicleInformationComponent | group |
+| 24 | wirelessCarPlayTransportComponent | group |
+| 30 | routeGuidanceDisplayComponent | group — **WiFi re-identify pass only** |
+
+### The wireless-CarPlay enable flag
+
+The single field that enables wireless CarPlay is **`transportSupportsCarPlay`** — sub-param
+**id 4** inside the `wirelessCarPlayTransportComponent` (component 24). It is an iAP2
+**"none"-type** parameter (4-byte TLV `[00 04][00 04]`, no payload); its presence is the
+boolean flag.
+
+### BT pass vs WiFi re-identify
+
+`0x1D01` is sent twice. The **BT pass** carries **14 components**. After WiFi handover the
+adapter re-identifies (`bMediumTypeIsBT_` flips 1→0); the **WiFi re-identify pass** carries
+**16 components** — it adds `routeGuidanceDisplayComponent` (id 30) and a larger supported
+message set. `0x1D01` carries **no resolution** in either pass.
+
+> Cross-references: `wireless_carplay.md` (iAP2 + MFi handshake) and `carplay_handshake.md`
+> (full ordered phases A–G).
+
+---
+
 ## BoxSettings Message (0x19)
 
 BoxSettings is bidirectional and contains the richest device information.
 
 ### Direction: IN (Adapter → Host)
 
-**Initial Config (sent early in session):**
+**Initial Config (sent early in session)** — *illustrative; from an older capture, field values not re-verified against `carplay-20260521-101016`:*
 ```json
 {
   "uuid": "651ede982f0a99d7f9138131ec5819fe",
@@ -187,6 +253,10 @@ BoxSettings is bidirectional and contains the richest device information.
   "cpuTemp": 55
 }
 ```
+
+> **Note (2026-05-21):** the `935.x` AirPlay / `23D5103d` build values above are **stale**
+> examples. The capture `carplay-20260521-101016` shows the iPhone as AirPlay **950.7.1**,
+> iOS **26.5 (build 23F77)**, model **iPhone18,4**.
 
 For complete BoxSettings field documentation, see `01_Firmware_Architecture/configuration.md` > BoxSettings JSON Mapping.
 
@@ -337,8 +407,9 @@ Payload: 17 bytes - Connected phone's BT MAC address
 | phoneType | Device | Transport | Capture Date | Status |
 |-----------|--------|-----------|--------------|--------|
 | 3 | CarPlay | USB | 2026-01-20 | ✓ VERIFIED |
+| 3 + wifi=1 | CarPlay | Wireless | 2026-05-21 | ✓ VERIFIED (current firmware) |
 | 5 | AndroidAuto | USB | 2026-01-19 | ✓ VERIFIED |
-| 8 | CarPlay | Wireless | 2025-12-29 | ✓ VERIFIED |
+| 8 | CarPlay | Wireless | 2025-12-29 | Legacy firmware / superseded — current firmware uses phoneType=3 + wifi=1 |
 | 1 | AndroidMirror | USB | - | Unverified |
 | 2 | Carlife | USB | - | Unverified |
 | 4 | iPhoneMirror | USB | - | Unverified |
@@ -351,6 +422,8 @@ Payload: 17 bytes - Connected phone's BT MAC address
 ## Related Documentation
 
 - `usb_protocol.md` - USB message format and payload details
+- `wireless_carplay.md` - Wireless CarPlay protocol, iAP2 + MFi handshake
+- `carplay_handshake.md` - Consolidated end-to-end wireless CarPlay handshake (phases A–G)
 - `../03_Security_Analysis/crypto_stack.md` - SessionToken encryption details
 - `../04_Implementation/session_examples.md` - Full session capture examples
 

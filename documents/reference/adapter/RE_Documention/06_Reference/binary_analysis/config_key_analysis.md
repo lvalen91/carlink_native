@@ -503,7 +503,12 @@ void setup_video_service(session, ...) {
 - **ARMadb-driver:** The `"fps"` JSON field maps to `"CustomFrameRate"` config key via the BoxSettings mapping table at 0x93f90 (entry [2], confirmed in boxsettings_mapping.json:27 and boxsettings_full_decomp.txt:46). When the host app sends a BoxSettings command (cmd 0x19 or 0xA2), the value is written via `SetBoxConfig("CustomFrameRate", value)`. The data xref at 0x93fa4 is the mapping table entry pointer itself, classified as "dead candidate" because there is no code-level `GetBoxConfig("CustomFrameRate")` call in ARMadb-driver.
 - **AppleCarPlay:** Zero code xrefs. The value is consumed by the protocol negotiation layer at a lower level -- it is included in the CarPlay `Open` message's `frameRate` field, which is assembled from config values during session setup. The protocol message builder reads it through the shared config library, but the string reference is resolved at runtime (indirect call through function pointer table).
 - **server.cgi:** Reads/writes for web API (`"fps"` web field, separate from the BoxSettings `"fps"` field).
-- **Protocol path:** Value is packed into the CarPlay video `Open` message bytes 8-11 (32-bit LE integer) per configuration.md:1734.
+- **Protocol path (live-verified 2026-05-21):** CustomFrameRate populates the `fps` field (offset 8)
+  of the host→adapter Open USB message (type `0x01`, 28-byte `7×uint32-LE` payload
+  `[width, height, fps, format, packetMax, boxVersion, phoneMode]`); handler ARMadb-driver
+  `ProceessCmdOpen` (`fcn.00021cb0`). Live capture `ttyLog:64` `Recv start linkParam: 2400, 960,
+  60, 2`. The frame rate the iPhone is actually told is `kScreenProperty_MaxFPS` registered by
+  AppleCarPlay, derived from this value.
 
 #### Side Effects
 
@@ -567,6 +572,12 @@ void setup_video_service(session, ...) {
 - **server.cgi (FUN_00014040):** Only binary with code xrefs. Reads via `GetBoxConfig("VideoResolutionWidth")` and serializes to JSON.
 - **AppleCarPlay / ARMadb-driver:** Zero direct code xrefs in Ghidra/r2. Value consumed by the protocol layer through the shared config library at init time. The protocol message builder reads it to populate the video channel `Open` message width field.
 - Init-read, passed as protocol parameter to the phone's video encoder setup.
+- **CarPlay resolution path (live-verified 2026-05-21):** This key feeds the host→adapter Open
+  (`0x01`) width field and the encoder size; it does **not** directly populate the CarPlay
+  resolution descriptor sent to the iPhone. iAP2 `0x1D01` carries no resolution; the AirPlay
+  `viewAreas{widthPixels,heightPixels}` plist is built by AppleCarPlay `_CopyDisplayDescriptions`
+  (`fcn.0001c0b4`) from `HU_VIEWAREA_INFO` `uint32[0]`/`[1]`. `ProceessCmdOpen` auto-rewrites
+  `HU_VIEWAREA_INFO` from the Open width/height, which is the indirect link.
 
 #### Side Effects
 
@@ -608,6 +619,12 @@ void setup_video_service(session, ...) {
 - **server.cgi:** Two xrefs -- one in FUN_00014040 (standard API serializer at 0x14342), one in FUN_00013760 (at 0x13770), suggesting it may be used in a secondary context (possibly the `/getinfo` endpoint for reporting current video resolution).
 - **All protocol binaries:** Zero code xrefs. Same init-read pattern as VideoResolutionWidth.
 - Functionally identical architecture to VideoResolutionWidth -- always set and consumed as a pair.
+- **CarPlay resolution path (live-verified 2026-05-21):** This key feeds the host→adapter Open
+  (`0x01`) height field and the encoder size; it does **not** directly populate the CarPlay
+  resolution descriptor sent to the iPhone. iAP2 `0x1D01` carries no resolution; the AirPlay
+  `viewAreas{widthPixels,heightPixels}` plist is built by AppleCarPlay `_CopyDisplayDescriptions`
+  (`fcn.0001c0b4`) from `HU_VIEWAREA_INFO` `uint32[0]`/`[1]`. `ProceessCmdOpen` auto-rewrites
+  `HU_VIEWAREA_INFO` from the Open width/height, which is the indirect link.
 
 #### Side Effects
 
@@ -2968,6 +2985,9 @@ ScreenPhysicalW and ScreenPhysicalH are **always read as a pair**. If either val
 - Paired with ScreenPhysicalW; both must be >0 for either to take effect
 - Affects CarPlay touch target sizing and font rendering DPI
 - No effect on Android Auto (AA uses its own DPI from ScreenDPI or protocol negotiation)
+- **Live capture 2026-05-21:** both `ScreenPhysicalW`/`ScreenPhysicalH` are 0 on the test unit
+  → `widthPhysical:0`/`heightPhysical:0` in the AirPlay displayInfo plist → iPhone derives DPI
+  itself. The `FUN_0001604c → GetBoxConfig → FUN_0004fefa` chain is unchanged.
 
 ---
 
@@ -3295,6 +3315,7 @@ void update_gnss_cap(int new_sentences) {
 - **NMEA pipeline:** Host sends NMEA via USB cmd 0x29 (GnssData) -> ARMadb writes `/tmp/gnss_info` -> IAP2 reads and converts to iAP2 `LocationInformation` (msg 0xFFFB) -> iPhone.
 - **Init-time only:** Read during iAP2 identification. Changes after session establishment have no effect until reconnect.
 - **FUN_0002c1b8 runtime OR:** The firmware can dynamically add GPRMC (bit1) to the capability bitmask during session runtime, but this only affects the persisted config value, not the active session.
+- **Live value 2026-05-21:** `GNSSCapability:3` (GPGGA+GPRMC) on the test unit.
 
 ---
 
@@ -3365,6 +3386,14 @@ void handle_dashboard_msg(int msg_type, int data) {
 - **MediaData assembly:** When engines are registered, the IAP2 binary assembles MediaData JSON (msg 0x2A) from the iAP2 engine callbacks and forwards it to ARMadb-driver for USB transmission. Disabling a bit means that engine's data is simply absent from msg 0x2A.
 - **Default=1:** Out of the box, only MediaPlayer (NowPlaying) is enabled. Host apps that want turn-by-turn nav data must set DashboardInfo to 5 or 7.
 
+#### Live-Capture Evidence (2026-05-21)
+
+Live-verified 2026-05-21 (`carplay-20260521-101016`): this unit's `DashboardInfo:5` (bits 0+2)
+produced a `routeGuidanceDisplayComponent` (iAP2 component id 30) on the WiFi re-identify pass
+and **no** `vehicleStatusComponent`, confirming bit1 = vehicle-status off and bit2 = route-guidance
+gates component 30. Engines enabled: `iAP2MediaPlayerEngine`, `iAP2RouteGuidanceEngine`,
+`iAP2LocationEngine` (ttyLog 77-82).
+
 ---
 
 
@@ -3399,15 +3428,24 @@ if (strcmp(field, "DockPosition") == 0) {
     int screen_info[6] = {0};  // 24 bytes
     ReadSharedMemory("HU_SCREEN_INFO", screen_info, 0x18);
     int viewarea[6] = {0};
-    viewarea[0] = screen_info[0];  // width
-    viewarea[1] = screen_info[0];  // width_dup
-    viewarea[2] = screen_info[1];  // height
-    viewarea[3] = screen_info[1];  // height_dup
+    // HU_VIEWAREA_INFO 24B layout: [width, height, width, height, originX, originY]
+    viewarea[0] = screen_info[0];  // 0x00 width
+    viewarea[1] = screen_info[1];  // 0x04 height
+    viewarea[2] = screen_info[0];  // 0x08 width  (duplicates width)
+    viewarea[3] = screen_info[1];  // 0x0C height (duplicates height)
+    viewarea[4] = 0;               // 0x10 originX
+    viewarea[5] = 0;               // 0x14 originY
     WriteSharedMemory("HU_VIEWAREA_INFO", viewarea, 0x18);
     goto generic_path;  // FUN_0001658c maps "DockPosition" → "DuckPosition"
                         // then SetBoxConfig("DuckPosition", val)
 }
 ```
+
+**HU struct layouts (live-verified 2026-05-21, on-device byte dump):**
+- `HU_VIEWAREA_INFO` 24B = `[width, height, width, height, originX, originY]` (0x08/0x0C
+  empirically duplicate width/height; 0x10/0x14 = origin, 0,0 = full-screen).
+- `HU_SAFEAREA_INFO` 20B = `[width, height, originX, originY, drawUIOutsideSafeArea]`.
+- `HU_SCREEN_INFO` 24B = `[width, height, 0, 0, fps, dpi]`.
 
 #### CarPlay Session Negotiation (AppleCarPlay FUN_0001c0b4)
 
@@ -3415,14 +3453,15 @@ if (strcmp(field, "DockPosition") == 0) {
 // Called during AirPlay session setup
 // Gate: phone.featureViewAreas != 0 AND g_bSupportViewarea != 0
 void buildViewAreaInfo(AirPlaySession *session) {
+    // HU_VIEWAREA_INFO 24B = [width, height, width, height, originX, originY]
     int viewarea[6]; ReadSharedMemory("HU_VIEWAREA_INFO", viewarea, 0x18);
     if (viewarea[0] <= 0 || viewarea[1] <= 0) return;  // no valid ViewArea
 
     CFLDict viewAreaDict = CFLDictionaryCreate();
     CFLDictSetInt64(viewAreaDict, "widthPixels",   viewarea[0]);
     CFLDictSetInt64(viewAreaDict, "heightPixels",  viewarea[1]);
-    CFLDictSetInt64(viewAreaDict, "originXPixels", viewarea[2]);
-    CFLDictSetInt64(viewAreaDict, "originYPixels", viewarea[3]);
+    CFLDictSetInt64(viewAreaDict, "originXPixels", viewarea[4]);
+    CFLDictSetInt64(viewAreaDict, "originYPixels", viewarea[5]);
 
     // DuckPosition → viewAreaStatusBarEdge
     int duckPos = GetBoxConfig("DuckPosition");  // 0, 1, or 2
@@ -3537,7 +3576,9 @@ This is a **hot-change** key: modifying it triggers an immediate WiFi+BT restart
 - **Requires reboot** for clean operation despite hot-change capability (documented in config reference)
 - The `close_bluetooth_wifi.sh` script kills wpa_supplicant, hostapd, bluetoothd; `start_bluetooth_wifi.sh` re-initializes all wireless
 - Setting to 0 reverts to firmware-default auto selection
-- WiFi channel is shared with the phone via iAP2 WiFiConfig during CarPlay setup
+- WiFi channel is sent to the iPhone inside the iAP2 `0x5703` WifiConfigInfo message
+  (sub-param id 4 = channel) during the WiFi-handover phase. Live capture (`ttyLog:401`):
+  `0x5703` payload `... 00 05 00 03 02 00 05 00 04 24` — id 3 securityType=2, id 4 channel=0x24 (36).
 
 ---
 
@@ -4506,6 +4547,11 @@ if (sb & 1) {                               // 0x1bd5a: tst.w sb, 1
 | `HU_NAVISCREEN_INFO` | 24B | `[width_px, height_px, width_mm, height_mm, fps, 0]` |
 | `HU_NAVISCREEN_SAFEAREA_INFO` | 20B | `[width, height, originX, originY, drawUIOutside]` (if safearea present) |
 | `HU_NAVISCREEN_VIEWAREA_INFO` | 24B | `[width, height, width_dup, height_dup, 0, 0]` (if safearea present) |
+
+**Cross-reference (live-verified 2026-05-21):** the main `HU_SCREEN_INFO` (24B) is on-device
+verified as `[width, height, 0, 0, fps, dpi]` — slot 5 = dpi = 160 on the test unit (not 0). The
+`HU_NAVISCREEN_INFO` slot-5 contents shown above (`0`) should be re-verified against on-device
+bytes; the navi-screen struct was not dumped in this capture.
 
 #### AppleCarPlay Indirect Effect
 
@@ -5819,6 +5865,8 @@ FUN_0001dd98 (cmd dispatcher, 6694 bytes)
 | 28 | `DockPosition` | DuckPosition | HU_VIEWAREA_INFO shm |
 
 **Note:** `DockPosition` → `DuckPosition` is a firmware typo (confirmed in decompilation).
+
+**Live-confirmed against capture `carplay-20260521-101016` (2026-05-21).**
 
 ### Special BoxSettings Fields (not in mapping table, not riddleBoxCfg)
 

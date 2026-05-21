@@ -10,6 +10,7 @@ import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
+import android.os.Build
 import androidx.core.content.ContextCompat
 import com.carlink.logging.Logger
 import com.carlink.logging.logDebug
@@ -155,14 +156,18 @@ class UsbDeviceWrapper(
                     ContextCompat.RECEIVER_NOT_EXPORTED,
                 )
 
-                // Create pending intent with explicit Intent (package set) for Android 12+ security
-                // FLAG_MUTABLE is required because UsbManager adds extras to the intent
+                // Create pending intent with explicit Intent (package set) for Android 12+ security.
+                // FLAG_MUTABLE (API 31+) is required because UsbManager injects EXTRA_DEVICE /
+                // EXTRA_PERMISSION_GRANTED into the intent at send time. Pre-31 PendingIntents are
+                // mutable by default, so the flag is omitted there (it does not exist below API 31).
+                val mutableFlag =
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
                 val pendingIntent =
                     PendingIntent.getBroadcast(
                         context,
                         0,
                         Intent(ACTION_USB_PERMISSION).apply { setPackage(context.packageName) },
-                        PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                        mutableFlag or PendingIntent.FLAG_UPDATE_CURRENT,
                     )
                 usbManager.requestPermission(device, pendingIntent)
 

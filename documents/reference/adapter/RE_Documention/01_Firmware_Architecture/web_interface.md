@@ -236,6 +236,8 @@ The `infos` command returns comprehensive adapter information:
 | `upTime` | Seconds since boot |
 | `needActive` | Activation required flag |
 
+**Note — CarInfo screen fields:** The `CarInfo` object's `screen`, `screenFps`, and `screenSize` fields are **head-unit-reported metadata** (populated from what the vehicle/host declares). They are unrelated to the `HU_VIEWAREA_INFO` / AirPlay resolution path that actually determines what the iPhone renders to — see `configuration.md` "ViewArea / SafeArea Configuration" and the resolution-path discussion. Do not treat `CarInfo.screen` as the effective CarPlay resolution.
+
 **Active Android Auto Session Example (Jan 2026 Capture):**
 
 When a device is connected, the `infos` response includes real-time session data:

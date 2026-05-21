@@ -28,6 +28,7 @@
 | Connection Timeout | LOW | Predictable timeout values enable DoS |
 | Expired Certificates | LOW | MFi certificate expired but functional |
 | Custom Init Hook | INFO | `/script/custom_init.sh` executes on boot if present |
+| Anti-Debug Hardening | INFO | Kernel rejects ptrace (EINVAL); no ftrace — blocks on-device tracing |
 
 ---
 
@@ -454,22 +455,47 @@ Debug mode may expose:
 
 | Property | Value |
 |----------|-------|
-| **Validity** | 2007-2015 (expired) |
+| **Source** | Hardware MFi coprocessor — I²C `/dev/i2c-1:0x11`, register `0x31` (not a file) |
+| **Format** | 945-byte PKCS#7 SignedData wrapping an X.509 certificate |
+| **Issuer** | `Apple iPod Accessories Certificate Authority` (**CA-issued, NOT self-signed**) |
+| **Subject CN** | `IPA_3333AA071227AA02AA0011AA003045` |
+| **Public key** | RSA-1024 |
+| **Signature algorithm** | SHA-1 with RSA |
+| **Validity** | 2007-12-27 → 2015-12-27 (expired; iOS does not reject it) |
 | **Status** | Still functional |
-| **Type** | Self-signed |
 
-### Additional Findings
+**Note:** the absurd-validity (year 3911–3921) plist certificates belong to the **iOS
+host-pairing layer** in `/var/lib/lockdown/`, not to MFi.
 
-| Path | Content |
-|------|---------|
-| `/var/lib/lockdown/common.cert` | Auth certificates (plaintext plist) |
-| `/var/lib/lockdown/root_key.pem` | RSA private key (2048-bit, plaintext) |
+### Additional Findings — `/var/lib/lockdown/*` are iOS host-pairing files, NOT MFi credentials
+
+The files under `/var/lib/lockdown/` are the adapter's **iOS USB host-pairing identity** — they
+are *not* MFi accessory credentials:
+
+| Path | Size | Content |
+|------|------|---------|
+| `/var/lib/lockdown/common.cert` | 7612 B | plist `HostCertificate` / `RootCertificate` — iOS USB host-pairing identity used by `usbmuxd` / `lockdownd` when the adapter acts as a USB **host** to an iPhone |
+| `/var/lib/lockdown/root_key.pem` | 1675 B | RSA-2048 private key — same host-pairing layer |
+| `/Library/Keychains/default.keychain` | — | AirPlay pairing-identity store |
+
+The actual **MFi accessory credentials** are a 945-byte PKCS#7 certificate (RSA-1024) held on the
+**hardware MFi 2.0C coprocessor** at `/dev/i2c-1:0x11`, register `0x31` — confirmed by the
+lockdown-files-removed test (the chip cert is byte-identical with the lockdown files renamed away).
+See `MFi_research/docs/findings.md`.
 
 ### Risk
 
-- No certificate revocation checking
-- Self-signed certificates with absurd validity (year 3911-3921 observed)
-- Private keys stored without protection
+- No certificate revocation checking on the (expired) MFi certificate
+- `root_key.pem` is a **plaintext, world-readable RSA-2048 host-pairing private key** stored
+  without protection
+
+### MFi Coprocessor — Shared Credential Set (Research Note)
+
+The MFi 2.0C coprocessor is genuine hardware, but two physically distinct Carlinkit units
+returned a **bit-for-bit identical chip image** — same cert serial, same RSA-1024 public key, and
+the same 128-byte signature for the same fixed challenge. This indicates a **shared / cloned
+Apple-issued credential set** burned across the fleet rather than per-unit credentials. The
+private key is not extractable over I²C. See `MFi_research/docs/findings.md`.
 
 ---
 
@@ -667,6 +693,15 @@ This hook is intended for:
 - Enabling dropbear/SSH
 - Custom configuration
 - Development purposes
+
+---
+
+## 11. Anti-Debug Hardening (INFO)
+
+The kernel rejects `ptrace` entirely (every request returns `EINVAL`, kernel-wide) and ships no
+ftrace (`/sys/kernel/debug/tracing` absent), blocking on-device syscall/I²C/function tracing.
+This is deliberate Carlinkit anti-RE hardening (the mechanism behind the known "blocked strace").
+See `kernel_encryption.md` → "Anti-Debug: ptrace and ftrace Disabled".
 
 ---
 

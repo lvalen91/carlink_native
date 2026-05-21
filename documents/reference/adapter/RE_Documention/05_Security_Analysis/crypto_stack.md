@@ -16,6 +16,7 @@ The CPC200-CCPA uses a multi-layer cryptographic stack for different purposes:
 | Key Exchange | X25519 | Session key derivation |
 | Transport | ChaCha20-Poly1305 | Encrypted stream transport |
 | Symmetric | AES-256-GCM | General encryption |
+| MFi Accessory Auth | RSA-1024 challenge-response | Apple accessory authentication (hardware coprocessor) |
 | USB Protocol Payload | AES-128-CBC | USB message payload encryption (key: `SkBRDy3gmrw1ieH0`) |
 | SessionToken | AES-128-CBC | Session telemetry encryption (key: `W2EC1X1NbZ58TXtn`) |
 | Firmware | AES-128-CBC | Firmware image encryption |
@@ -119,6 +120,46 @@ DMSDPGetPBKDF2Key();  // PBKDF2 key derivation
 "Pair-Setup-Encrypt-Info"
 ```
 
+### Live Capture (2026-05-21)
+
+A fresh wireless CarPlay pairing was captured (`MFi_research/capture/carplay-20260521-101016/`).
+This SRP-6a pairing is the **wireless-CarPlay AirPlay-layer pairing**, carried on the
+AirPlay/RTSP control channel **TCP port 5000**. On the wire it is **3× `POST /pair-setup`** with
+the HTTP header `X-Apple-HKP: 0` (HomeKit-style pair-setup — M1–M6 carried over 3 round-trips).
+The firmware logs `Control pair-setup HK, type 0` for each. The SRP-6a parameters above are the
+HomeKit-standard set. This pairing is **in addition to** the iAP2 MFi challenge-response (see
+"MFi Authentication Coprocessor" below) — the two are independent: iAP2 MFi auth gates the
+Bluetooth side, HomeKit pair-setup/pair-verify secures the AirPlay side.
+
+---
+
+## MFi Authentication Coprocessor (Hardware — NOT software-spoofed)
+
+The CPC200-CCPA carries a **real hardware Apple MFi 2.0C authentication coprocessor**. Apple-side
+wireless-CarPlay accessory authentication is performed by this chip — there is **no software
+emulation** of MFi credentials.
+
+| Property | Value |
+|----------|-------|
+| **Bus / address** | I²C bus 1 (`/dev/i2c-1`), 7-bit slave `0x11` (8-bit `0x22`) |
+| **Live verification** | `i2cdetect` shows a device at `0x11`; firmware caches `/tmp/mfi_i2c_addr=0x22` |
+| **Protocol** | MFi 2.0C (DeviceVersion register reads `0x03`) |
+| **Certificate** | 945-byte PKCS#7 SignedData; subject serial `IPA_3333AA071227AA02AA0011AA003045` |
+| **Public key** | RSA-1024 |
+| **Signature** | 128-byte RSA-1024, PKCS#1 v1.5 |
+| **Register map** | See `MFi_research/docs/register_map.md` |
+
+The coprocessor is exercised **twice per wireless pairing**:
+
+1. **iAP2-over-Bluetooth** — `0xAA00 ReqAuthCert` → `0xAA01` 945-byte cert → `0xAA02 ReqChallenge`
+   (20-byte challenge) → `mfi_auth_processchallenge` drives the chip → `0xAA03 ChallengeResponse`
+   (128-byte RSA signature) → `0xAA05 AuthSuccess`.
+2. **AirPlay-over-WiFi** — after pair-setup / pair-verify, the firmware logs
+   `MFi auth create signature` and signs again at the chip — a second 128-byte signature.
+
+**No FairPlay layer:** no `/fp-setup` or `/auth-setup` RTSP endpoint was observed anywhere in the
+capture. `AppleCarPlay` has no FairPlay code path.
+
 ---
 
 ## Key Exchange (X25519)
@@ -141,6 +182,16 @@ Used after SRP-6a pairing to establish per-session keys:
 3. Derive session keys using HKDF
 ```
 
+### Live Capture (2026-05-21)
+
+This X25519 step is the **AirPlay pair-verify exchange**. It was live-captured as **2× `POST
+/pair-verify`** (HTTP headers `X-Apple-HKP: 2`, `X-Apple-PD: 1`) on RTSP port 5000, following the
+3× pair-setup. The firmware logs `pair-verify 1`, `pair-verify 2`, `Control pair-verify HK done`,
+and `_HandlePairVerifyHomeKitCompletion`. The exchange uses Curve25519 ECDH plus an Ed25519
+signature; the resulting session keys feed the ChaCha20-Poly1305 transport layer. HKDF labels:
+`Pair-Verify-ECDH-Salt` / `Pair-Verify-ECDH-Info` and `Pair-Verify-Encrypt-Salt` /
+`Pair-Verify-Encrypt-Info`.
+
 ---
 
 ## Transport Encryption (ChaCha20-Poly1305)
@@ -161,6 +212,11 @@ Used after SRP-6a pairing to establish per-session keys:
 | Encrypted Data    | Auth Tag (16 bytes)| Nonce Counter  |
 +-------------------+--------------------+----------------+
 ```
+
+The 32-byte session key is derived from the pair-verify shared secret via HKDF, with per-channel
+labels `Control-Read-Encryption-Key` / `Control-Write-Encryption-Key`,
+`DataStream-Input-Encryption-Key` / `DataStream-Output-Encryption-Key`, and
+`Events-Read-Encryption-Key` / `Events-Write-Encryption-Key`.
 
 ---
 

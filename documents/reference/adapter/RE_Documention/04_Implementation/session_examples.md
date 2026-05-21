@@ -1,14 +1,84 @@
 # Captured Session Examples
 
 **Status:** VERIFIED via USB capture analysis
-**Source:** Pi-Carplay session captures (Jan 2026)
-**Last Updated:** 2026-01-22
+**Source:** Pi-Carplay session captures (Jan 2026); wireless pairing capture `carplay-20260521-101016`
+**Last Updated:** 2026-05-21
 
 ---
 
 ## Overview
 
 This document contains real captured session examples showing the exact packet sequences exchanged between a host application and the CPC200-CCPA adapter during CarPlay and Android Auto sessions.
+
+---
+
+## Wireless CarPlay Pairing — iPhone↔Adapter Handshake (2026-05-21 capture)
+
+**Status:** VERIFIED via simultaneous WiFi (`wifi.pcap`), Bluetooth HCI (`bt.pcap`) and firmware
+log (`ttyLog.txt`) capture — `capture/carplay-20260521-101016`.
+**Peers:** iPhone `iPhone18,4`, iOS `26.5` (AirPlay `950.7.1`); adapter `CarLink` /
+`Magic-Car-Link-1.00`, AirPlay/AirTunes `320.17`.
+
+This section documents the **iPhone↔adapter** pairing — a layer *below* the USB host protocol.
+The host app never participates in it; the adapter terminates iAP2/MFi/AirPlay on its own.
+
+### Ordered handshake
+
+```
+1. BT RFCOMM iAP2 link
+   ff55 probe  →  ff5a link-sync
+2. iAP2 identification
+   0x1D00 StartIdentify  →  0x1D01 IdentificationInformation  →  0x1D02 IdentifyAccept
+3. MFi authentication (over iAP2 / BT RFCOMM)
+   0xAA00 ReqAuthCert  →  0xAA01 cert (945 B)
+   0xAA02 challenge (20 B)  →  0xAA03 RSA signature (128 B)  →  0xAA05 AuthSuccess
+4. WiFi credential handover
+   0x5702 ReqWifiConfig  →  0x5703 WifiConfigInfo
+   0x4E0A / 0x4E0B / 0x4E0D / 0x4E0E   (language / time / CarPlay-update / transport-notify)
+5. AppleCarPlay starts  (AirPlay 320.17)
+   mDNS advertises  _airplay._tcp  on  TCP port 5000
+6. RTSP on port 5000
+   3× POST /pair-setup   (HomeKit / SRP, M1–M6 over 3 round-trips)
+   2× POST /pair-verify  (HomeKit, Curve25519)
+7. AirPlay session active
+```
+
+### AirPlay / RTSP control port
+
+> The AirPlay/RTSP control channel is **TCP port 5000**, not 7000. The adapter advertises
+> `_airplay._tcp` on 5000 via mDNS and the iPhone connects out to `:5000`. All `/pair-setup` and
+> `/pair-verify` requests are on port 5000.
+
+### No FairPlay — security layers
+
+Wireless CarPlay on this adapter uses **NO FairPlay** — there is no `/fp-setup` and no
+`/auth-setup` RTSP endpoint anywhere in the capture. The AirPlay channel is secured instead by:
+
+- **HomeKit pairing** — `POST /pair-setup` ×3 (SRP) + `POST /pair-verify` ×2 (Curve25519);
+- **a second MFi chip signature** performed after `/pair-verify` (AirPlay-layer auth).
+
+The **MFi coprocessor is exercised twice per pairing** — once for the iAP2 `0xAA0x`
+challenge-response over BT, and once for the AirPlay-layer signature over WiFi.
+
+### MFi is a real hardware coprocessor
+
+> The MFi authentication IC is a **real hardware coprocessor** on the adapter — I2C bus 1,
+> 7-bit address `0x11` (8-bit `0x22`). It is exercised twice per pairing (see above) and is
+> **not software-spoofed** on this A15W adapter. The accessory certificate, 20-byte challenge
+> and 128-byte RSA signature all ride the BT RFCOMM wire inside iAP2 `0xAA00`–`0xAA05`.
+>
+> Note: `/var/lib/lockdown/*` records are **separate** — those are `usbmuxd` USB-trust pairing
+> records, unrelated to the MFi auth chip.
+
+### iAP2 0x1D01 IdentificationInformation — component summary
+
+The `0x1D01` message is built by `ARMiPhoneIAP2` and sent over BT RFCOMM. It carries transports,
+vehicle identity and supported message IDs — **no resolution, no audio format**. Key captured
+components: `name=CarLink`, `modelIdentifier=Magic-Car-Link-1.00`, `manufacturer=Magic Tec.`,
+`bluetoothTransportComponent`, `vehicleInformationComponent`, and
+`wirelessCarPlayTransportComponent` whose `transportSupportsCarPlay` "none"-type parameter is the
+single flag that enables wireless CarPlay. For the full component table see
+`02_Protocol_Reference/carplay_handshake.md`.
 
 ---
 
@@ -378,6 +448,19 @@ Both CarPlay and Android Auto sessions include a single Type 163 packet:
 
 - **CarPlay:** Host sends `naviScreenInfo` in BoxSettings → adapter negotiates second video stream
 - **Android Auto:** Host does NOT send `naviScreenInfo` → no second video stream protocol exists
+
+**Wireless CarPlay pairing security (2026-05-21 capture):**
+
+- Wireless CarPlay uses **NO FairPlay** — no `/fp-setup`, no `/auth-setup` RTSP endpoint.
+- The AirPlay channel is secured by **HomeKit** `/pair-setup` ×3 (SRP) + `/pair-verify` ×2,
+  **plus a second MFi chip signature** performed after `/pair-verify`.
+- The **MFi coprocessor is exercised twice per pairing** — once for the iAP2 `0xAA0x` BT
+  challenge-response, once for the AirPlay-layer signature over WiFi.
+- See § *Wireless CarPlay Pairing — iPhone↔Adapter Handshake* for the full ordered handshake.
+
+> **Newer capture device info (2026-05-21):** iPhone `iPhone18,4` on iOS `26.5`, AirPlay
+> `950.7.1`; adapter AirPlay/AirTunes `320.17`. The detailed CarPlay Session Example above is
+> the older Jan 2026 pi-carplay USB capture and retains its own session metadata.
 
 ---
 

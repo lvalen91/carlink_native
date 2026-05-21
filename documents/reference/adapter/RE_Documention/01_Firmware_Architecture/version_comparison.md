@@ -163,6 +163,8 @@ cdc_ncm.ko
 | 2022-2023.09 | 36 |
 | 2024.01+ | 149 |
 
+**Note — SoftAP channel vs WiFi-Direct channel:** `p2p_oper_channel` is the **WiFi-Direct (p2p)** operating channel, used **only when `WiFiP2PMode=1`**. It is distinct from the **SoftAP** `WiFiChannel` (hostapd), whose default is **36**. The 2026-05-21 capture confirmed SoftAP operation on **channel 36 / 5180 MHz**; the `0x5703 WifiConfigInfo` handed to the iPhone carried channel `0x24` (36). The change to `p2p_oper_channel=149` in 2024.01+ therefore does not affect the default SoftAP channel.
+
 ### udhcpd.conf
 
 | Version | IP Range |
@@ -186,6 +188,12 @@ For bricked devices, use firmware version based on WiFi chipset:
 | IW416 | 0x9159 | 2025.02.25 |
 
 **Safest universal recovery:** 2023.09.27 (supports BCM4358, RTL8822CS, SD8987)
+
+---
+
+## iAP2 serialNumber Is Not the Firmware Version
+
+The iAP2 `IdentificationInformation` (`0x1D01`) message advertises a `serialNumber` parameter that carries a **firmware build string** — on the 2026-05-21 capture unit this was `2025.02.25.1521626a`. This string is **not** the running firmware version and should not be used to identify the firmware release. The authoritative firmware version is `/etc/software_version` (or the `ver` field in the web `infos` response, e.g. `2025.10.15.1127`); the version table at the top of this document is keyed off that. The iAP2 `firmwareVersion` parameter is likewise a fixed `1.0.0` and not a release identifier.
 
 ---
 

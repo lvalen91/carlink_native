@@ -585,6 +585,10 @@ Offset  Size  Field        Description
 - format=5: 107 IDR frames received, 118 SPS repetitions
 - format=1: 27 IDR frames received, 33 SPS repetitions
 
+**Handler note (binary verified):** `ProceessCmdOpen` (`fcn.00021cb0`) auto-rewrites
+`HU_VIEWAREA_INFO` to full-screen when the Open `width`/`height` differ from the stored value.
+`phoneMode` 2 = CarPlay.
+
 ### Command (0x08) - Control Commands
 
 **Payload:** 4-byte command ID
@@ -614,6 +618,59 @@ For the complete per-ID command listing, see `command_ids.md`. For per-command b
 **⚠️ SECURITY WARNING:** The `wifiName`, `btName`, and `oemIconLabel` fields are vulnerable to **command injection**. These values are passed to `popen()` shell commands without sanitization. See `03_Security_Analysis/vulnerabilities.md` for details.
 
 #### Host → Adapter Fields (Binary Verified Jan 2026)
+
+**Verified 29-key field→key table (capture `carplay-20260521-101016`, `ARMadb-driver` table @ `0x93f90`):**
+
+The generic BoxSettings parser path (`FUN_0001658c`) walks a **29-entry field→`riddle.conf`-key
+table @ `0x93f90`**: a cJSON string → `SetBoxConfigStr`, a number → `SetBoxConfig`, both written
+to `/etc/riddle.conf`.
+
+| # | JSON field | riddle.conf key | Effect |
+|---|------------|-----------------|--------|
+| 0 | `btName` | CustomBluetoothName | BT name (⚠ popen cmd-injection) |
+| 1 | `wifiName` | CustomWifiName | WiFi SSID (⚠ cmd-injection) |
+| 2 | `fps` | CustomFrameRate | → `Open` fps field |
+| 3 | `gps` | HudGPSSwitch | GPS/dashboard enable |
+| 4 | `lang` | BoxConfig_UI_Lang | UI language |
+| 5 | `bgMode` | BackgroundMode | connection-UI visibility |
+| 6 | `syncMode` | iAP2TransMode | iAP2 framing mode |
+| 7 | `startDelay` | BoxConfig_DelayStart | USB init delay |
+| 8 | `mediaDelay` | MediaLatency | audio buffer ms |
+| 9 | `mediaSound` | MediaQuality | 0=44.1 kHz, 1=48 kHz PCM |
+| 10 | `autoConn` | NeedAutoConnect | auto-reconnect |
+| 11 | `androidWorkMode` | AndroidWorkMode | also `fwrite /etc/android_work_mode` (0..5) |
+| 12 | `drivePosition` | CarDrivePosition | 0=LHD, 1=RHD |
+| 13 | `echoDelay` | EchoLatency | WebRTC AEC delay |
+| 14 | `androidAutoSizeW` | AndroidAutoWidth | AA video width |
+| 15 | `androidAutoSizeH` | AndroidAutoHeight | AA video height |
+| 16 | `screenPhysicalW` | ScreenPhysicalW | physical mm → CarPlay DPI |
+| 17 | `screenPhysicalH` | ScreenPhysicalH | physical mm → CarPlay DPI |
+| 18 | `brand` | CarBrand | OEM brand (special handler `FUN_00068218`: rewrites airplay.conf + logo) |
+| 19 | `ScreenDPI` | ScreenDPI | CarPlay render density |
+| 20 | `boxName` | CustomBoxName | device display name |
+| 21 | `WiFiChannel` | WiFiChannel | adapter AP channel (→ `0x5703 WifiConfigInfo`) |
+| 22 | `UseBTPhone` | UseBTPhone | route calls via BT-HFP |
+| 23 | `HiCarConnectMode` | HiCarConnectMode | HiCar mode |
+| 24 | `GNSSCapability` | GNSSCapability | GPS capability advertised |
+| 25 | `AutoResetUSB` | AutoResetUSB | USB reset on disconnect |
+| 26 | `DashboardInfo` | DashboardInfo | cluster/dashboard capability bitmask |
+| 27 | `DayNightMode` | DayNightMode | day/night mode |
+| 28 | `DockPosition` | DuckPosition (fw typo) | copies `HU_SCREEN_INFO` → `HU_VIEWAREA_INFO` |
+
+**Special handlers** (intercepted *before* the table — NOT stored in `riddle.conf`):
+
+| JSON field | Target | Mechanism |
+|------------|--------|-----------|
+| `syncTime` | system clock | `settimeofday(val + 28800)` — hardcoded UTC+8 |
+| `mediaVol` / `callVol` / `speechVol` / `ringVol` / `navVol` / `otherVol` | `HU_AUDIOVOLUME_INFO[0..5]` | shared memory |
+| `naviScreenInfo{width,height,fps}` | `HU_NAVISCREEN_INFO` (24 B) | shared memory — enables CarPlay nav/cluster video (USB type `0x2C`) |
+| `naviScreenInfo.safearea{width,height,x,y,outside}` | `HU_NAVISCREEN_SAFEAREA_INFO` (20 B) + `HU_NAVISCREEN_VIEWAREA_INFO` (24 B) | shared memory |
+
+> **No main-screen SafeArea key in BoxSettings** — `HU_SAFEAREA_INFO` is settable only via
+> `SendFile` (0x99) (or SSH). There is no BoxSettings JSON field for it.
+
+The fragmented field tables below are retained for cross-reference; the 29-key table above is
+the authoritative generic-path mapping.
 
 **Core Configuration:**
 
@@ -807,6 +864,9 @@ UPLOAD FILE Length Error!!!   - Size validation exists
 | `/tmp/carplay_mode` | Value | CarPlay mode setting |
 | `/tmp/manual_disconnect` | Flag | Manual disconnect trigger |
 | `/etc/android_work_mode` | 0-5 | **Critical**: Phone link daemon mode selector (0=Idle, 1=AA, 2=CarLife, 3=Mirror, 4=HiCar, 5=ICCOA) |
+| `/etc/RiddleBoxData/HU_SCREEN_INFO` | 24B struct (uint32-LE) | width, height, 0, 0, fps, dpi |
+| `/etc/RiddleBoxData/HU_VIEWAREA_INFO` | 24B struct (uint32-LE) | width, height, viewW, viewH, originX, originY |
+| `/etc/RiddleBoxData/HU_SAFEAREA_INFO` | 20B struct (uint32-LE) | width, height, originX, originY, drawUIOutsideSafeArea — **only path to set main-screen SafeArea** |
 | `/tmp/carlogo.png` | PNG data | Custom car logo (copied to `/etc/boa/images/`) |
 | `/tmp/hwfs.tar.gz` | Archive | **Auto-extracted to /tmp** via `tar -xvf` |
 | `/tmp/*Update.img` | Firmware | Triggers OTA update process |
@@ -836,6 +896,10 @@ Files uploaded to `/tmp/hwfs.tar.gz` are automatically extracted to `/tmp`.
 
 **Firmware Update:** Files matching `*Update.img` pattern auto-trigger OTA update.
 See `04_Implementation/firmware_update.md` for complete update procedure.
+
+> **Cross-reference:** For the iAP2 link-layer (`ff55`/`ff5a`), identification (`0x1D0x`) and
+> MFi auth (`0xAA0x`) over Bluetooth RFCOMM, see `wireless_carplay.md`,
+> `device_identification.md` and `carplay_handshake.md`.
 
 #### Charge Mode (Binary Verified Jan 2026)
 

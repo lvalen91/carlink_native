@@ -482,16 +482,35 @@ SndPushInput total 3645440                 ← ~228 seconds of mic audio capture
 
 16000 samples/sec on the ALSA bridge = 16kHz. Total 3,645,440 samples = ~228 seconds of continuous mic audio.
 
-### CarPlay Audio Format Negotiation (iAP2)
+### CarPlay Audio Format Negotiation (AirPlay)
 
-From adapter startup:
+> **[Corrected 2026-05-21]** `audioInputFormats` is **NOT an iAP2 field**. It belongs to the
+> AirPlay **`WifiAudioFormats`** array sent over **RTSP:5000** during **AirPlay session SETUP**
+> (after the BT→WiFi handover). iAP2 `0x1D01 IdentificationInformation` carries transports /
+> vehicle identity / message IDs only — **no audio format**. The earlier "iAP2 session setup"
+> wording was wrong.
+
+From the `AppleCarPlay` AirPlay SETUP exchange:
 ```
-audioInputFormats : 16          ← 16kHz supported
-audioInputFormats : 67108864    ← additional format codes
+audioInputFormats : 16          ← 0x10  PCM 16-bit 16 kHz mono (mic / telephony input)
+audioInputFormats : 67108864    ← 0x4000000  AAC-ELD 48 kHz stereo duplex
 supportsRTPPacketRedundancy : true
 ```
 
-`audioInputFormats: 16` indicates 16kHz mic input is advertised to iPhone during iAP2 session setup. The iPhone selects this rate for both Siri and telephony.
+`audioInputFormats` values are the **AirPlay format bitmask** — `16` = `0x10` (PCM 16 kHz mono),
+`67108864` = `0x4000000` (AAC-ELD 48 kHz duplex). They are advertised to the iPhone inside the
+`WifiAudioFormats` array during AirPlay SETUP; the iPhone selects a rate for Siri and telephony
+from this set. `supportsRTPPacketRedundancy : true` is likewise a real **AirPlay-layer** SETUP
+field (RTP redundancy negotiation), not an iAP2 field.
+
+For the complete `WifiAudioFormats` struct, the full bitmask table, and the captured 8-entry
+array, cross-reference `audio_formats.md` § *AirPlay Audio Capability Advertisement
+(WifiAudioFormats)*.
+
+> **Mic uplink capability advertisement:** the host→phone microphone path is advertised via the
+> `audioInputFormats` field on the `telephony` / `speechRecognition` / `default` rows of the
+> AirPlay `WifiAudioFormats` array (`0x4000000` = AAC-ELD duplex), plus `compatibility/100`
+> `audioInputFormats = 0x10` (PCM 16 kHz mono).
 
 ### No BT SCO During CarPlay Calls
 

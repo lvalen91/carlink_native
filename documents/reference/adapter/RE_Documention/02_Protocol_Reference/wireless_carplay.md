@@ -2,7 +2,10 @@
 
 **Status:** VERIFIED via capture analysis
 **Consolidated from:** GM_research, carlink_native
-**Last Updated:** 2026-01-16
+**Last Updated:** 2026-05-21 — re-verified against live capture `carplay-20260521-101016` (full fresh wireless CarPlay pairing: BT HCI + WiFi pcap + firmware ttyLog).
+
+> For the consolidated end-to-end ordered handshake (BT iAP2 → MFi auth → WiFi handover →
+> AirPlay), see `carplay_handshake.md`.
 
 ---
 
@@ -13,9 +16,14 @@ Wireless CarPlay uses a multi-stage connection process:
 ```
 1. Bluetooth Pairing (BR/EDR)
    ↓
-2. WiFi Credentials Exchange (BTLE/BT SPP)
+1b. iAP2 link bring-up (ff55 probe / ff5a link-sync) + identification (0x1D00/0x1D01/0x1D02)
    ↓
-3. TCP/IP Connection (WiFi Direct)
+1c. MFi authentication over iAP2
+    (0xAA00 ReqAuthCert → 0xAA01 cert → 0xAA02 challenge → 0xAA03 RSA sig → 0xAA05 AuthSuccess)
+   ↓
+2. WiFi Credentials Exchange (iAP2 0x5702/0x5703 over BT Classic RFCOMM)
+   ↓
+3. WiFi association — iPhone joins the adapter's WPA2 SoftAP; DHCP lease assigned
    ↓
 4. RTSP Session (Port 5000)
    ↓
@@ -42,9 +50,11 @@ Wireless CarPlay uses a multi-stage connection process:
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
-| 5000 | TCP | RTSP control |
-| 7000 | TCP | Video stream |
-| 7001 | TCP | Audio stream |
+| 5000 | TCP | RTSP / AirPlay control (adapter advertises `_airplay._tcp` on this port) |
+
+**Note:** Video and audio streams use ephemeral high TCP ports negotiated per-session in the
+AirPlay SETUP response (eventPort 59615, timingPort 43140; stream sockets observed `:49376` /
+`:49346`). There is no fixed 7000/7001.
 
 ---
 
@@ -52,24 +62,33 @@ Wireless CarPlay uses a multi-stage connection process:
 
 ```
 Service: Wireless iAP
-UUID: 00000000-deca-fade-deca-deafdecacafe
-RFCOMM Channel: 1
+UUID: 00000000-deca-fade-deca-deafdecacafe   (unverified by capture)
+RFCOMM Channel: 1                            (unverified by capture)
 ```
+
+**Verified (capture `carplay-20260521-101016`):** the accepted RFCOMM service is the iAP2
+accessory profile, bound to `/dev/rfcomm0`.
 
 ---
 
 ## HomeKit Pairing v2
 
+HomeKit pair-setup uses SRP — **CONFIRMED** by capture (`Control pair-setup HK` ×3,
+`X-Apple-HKP: 0` on the AirPlay/RTSP channel).
+
 ### Cryptographic Parameters
 
 | Algorithm | Parameters |
 |-----------|------------|
-| **Pairing** | SRP-6a, 3072-bit prime, SHA-512 |
+| **Pairing** | SRP-6a — **3072-bit prime, SHA-512, 16-byte salt unverified by this capture** (HomeKit-spec defaults; not extracted from the wire) |
 | **Transport** | ChaCha20-Poly1305 |
-| **Key Exchange** | X25519 (Curve25519) |
+| **Key Exchange** | X25519 (Curve25519) — confirmed: pair-verify uses Curve25519 |
 | **Symmetric** | AES-256-GCM |
 
 ### SRP-6a Flow
+
+> **Generic HomeKit-spec description.** Only the round-trip count (3× `pair-setup`) is
+> capture-confirmed; the individual M-message contents below are NOT extracted from this capture.
 
 ```
 1. Host sends M1 (client public key + username)
@@ -80,6 +99,8 @@ RFCOMM Channel: 1
 ```
 
 ### Key Derivation
+
+> **Generic HomeKit-spec description** — not capture-confirmed.
 
 ```
 session_key = HKDF-SHA512(
@@ -94,7 +115,15 @@ session_key = HKDF-SHA512(
 
 ## Pairing Protocol: pair-setup (First-Time)
 
-First-time pairing uses **SRP-6a** (Secure Remote Password) with a PIN code displayed on the adapter screen.
+First-time pairing uses **SRP-6a** (Secure Remote Password). Wireless CarPlay pair-setup is
+performed transparently over the AirPlay/RTSP channel — **no PIN is displayed** (the adapter has
+no screen); user trust is handled iPhone-side via the "Use This Car" prompt.
+
+> **Verified by capture (`carplay-20260521-101016`):** pair-setup carries `X-Apple-HKP: 0`;
+> pair-verify carries `X-Apple-HKP: 2` + `X-Apple-PD: 1`; the sequence is exactly **3× pair-setup
+> then 2× pair-verify**; pair-verify uses Curve25519. The specific `Content-Length` byte counts
+> shown below (409, 457, 69, 159, 37, 125, 3) are **illustrative / unverified** by this capture.
+> The iPhone `User-Agent` is `AirPlay/950.7.1`; the adapter `Server` is `AirTunes/320.17`.
 
 ### Step 1: Method Selection (CSeq: 0)
 
@@ -107,7 +136,7 @@ X-Apple-Client-Name: Luis
 Content-Length: 6
 Content-Type: application/x-apple-binary-plist
 CSeq: 0
-User-Agent: AirPlay/935.3.1
+User-Agent: AirPlay/950.7.1
 
 [6 bytes - bplist method selector]
 ```
@@ -187,7 +216,7 @@ X-Apple-PD: 1
 Content-Length: 37
 Content-Type: application/octet-stream
 CSeq: 0
-User-Agent: AirPlay/935.3.1
+User-Agent: AirPlay/950.7.1
 
 [37 bytes binary - curve25519 public key]
 ```
@@ -259,29 +288,29 @@ Apple epoch timestamp (seconds since 2001-01-01 00:00:00 UTC).
 
 ## Encrypted Session
 
-After pair-verify completes (3-byte success response), all subsequent data is encrypted:
+After pair-verify completes (3-byte success response), all subsequent AirPlay data is encrypted:
 
-### Encrypted Packet Format
+### AirPlay Media Framing (over WiFi)
 
 ```
 ┌────────────────────────────────────────────────────┐
 │              Encrypted Wrapper                      │
-│         (ChaCha20-Poly1305 AEAD)                   │
+│         (ChaCha20-Poly1305 AEAD)                    │
 ├────────────────────────────────────────────────────┤
-│              Protocol Header (16 bytes)            │
-│  Magic: 0x55aa55aa                                 │
-│  Length: payload size                              │
-│  Type: message type                                │
-│  Check: ~type                                      │
-├────────────────────────────────────────────────────┤
-│              Protocol Payload                      │
-│  VIDEO_DATA: 20-byte header + H.264                │
-│  AUDIO_DATA: 12-byte header + PCM/AAC              │
-│  TOUCH: 16 bytes (action, x, y, flags)             │
+│              AirPlay media payload                  │
+│  Video: H.264 elementary stream                     │
+│  Audio: AAC-LC / AAC-ELD / PCM (per WifiAudioFormat)│
+│  HID / control: AirPlay screen + input events       │
 └────────────────────────────────────────────────────┘
 ```
 
-**Note:** After encryption, packets are typically 1042 bytes (MTU-optimized).
+**Note:** After encryption, packets are typically MTU-optimized (~1042 bytes). Stream sockets
+were observed on ephemeral ports `:49376` (video) and `:49346` (audio).
+
+> **Correction:** the `0x55AA55AA` 16-byte header is **host↔adapter USB framing**, not
+> AirPlay-over-WiFi framing. It does **not** appear in the WiFi AirPlay stream. For the
+> `0x55AA55AA` USB protocol header and the VIDEO/AUDIO/TOUCH USB payload formats, see
+> `usb_protocol.md`.
 
 ---
 
@@ -291,12 +320,12 @@ After pair-verify completes (3-byte success response), all subsequent data is en
 |--------|------------------|-------------|
 | **Transport** | IPv4 WiFi | IPv6 USB-NCM |
 | **Port** | TCP 5000 | TCP 5000 |
-| **Auth Method** | HomeKit Pairing v2 | MFi Certificate |
-| **Auth Endpoint** | `/pair-setup`, `/pair-verify` | `/auth-setup` |
+| **Auth Method** | HomeKit Pairing v2 + iAP2 MFi auth | MFi Certificate |
+| **Auth Endpoint** | `/pair-setup`, `/pair-verify` (HomeKit) + iAP2 `0xAA0x` MFi auth over BT | MFi cert exchange |
 | **Pairing Storage** | Ed25519 keys in keychain | Certificate trust |
 | **Session Setup** | Implicit after pairing | Explicit `SETUP` + `RECORD` |
 | **Encryption** | ChaCha20-Poly1305 | Standard AirPlay |
-| **First Connect** | PIN code on screen | Trust dialog on iPhone |
+| **First Connect** | iPhone "Use This Car" prompt | Trust dialog on iPhone |
 
 ---
 
@@ -304,16 +333,19 @@ After pair-verify completes (3-byte success response), all subsequent data is en
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/pair-setup` | POST | Initial pairing (SRP-6a) |
-| `/pair-verify` | POST | Verify existing pairing |
-| `/auth-setup` | POST | MFi certificate auth (USB only) |
-| `/fp-setup` | POST | FairPlay setup |
+| `/pair-setup` | POST | Initial pairing (SRP-6a) — **capture-confirmed** |
+| `/pair-verify` | POST | Verify existing pairing — **capture-confirmed** |
 | `/info` | GET | Device information |
 | `/stream` | POST | Start media stream |
 | `/feedback` | POST | Playback feedback |
 | `/command` | POST | Control commands |
 | `/audio` | POST | Audio stream setup |
 | `/video` | POST | Video stream setup |
+
+**Note:** No FairPlay (`/fp-setup`) or `/auth-setup` endpoint exists on this firmware —
+confirmed by capture and by binary RE of `AppleCarPlay`. The only capture-confirmed RTSP
+endpoints are `/pair-setup` and `/pair-verify`; the others are generic AirPlay and unverified
+here.
 
 ---
 
@@ -338,9 +370,12 @@ mv /Library/Keychains/default.keychain /Library/Keychains/default.keychain.bak
 
 ### Discovery
 
+The adapter advertises `_airplay._tcp` (on port 5000). The iPhone advertises
+`_carplay-ctrl._tcp`; the adapter browses for it and connects out to the iPhone.
+
 ```
-_carplay._tcp.local.
-_airplay._tcp.local.
+adapter advertises :  _airplay._tcp.local.        (port 5000)
+iPhone advertises  :  _carplay-ctrl._tcp.local.   (e.g. Luis._carplay-ctrl._tcp, :49372)
 ```
 
 ### RTSP Commands
@@ -378,34 +413,80 @@ C→S: SETUP rtsp://192.168.43.1:5000/audio RTSP/1.0
 
 ## AirPlay Version
 
-The adapter reports:
+The adapter reports (AirPlay/AirTunes):
 ```
 AirPlay/320.17
+```
+
+The iPhone side reports (capture `carplay-20260521-101016`):
+```
+AirPlay/950.7.1
 ```
 
 ---
 
 ## mDNS Service Configuration
 
-### CarPlay Advertisement
+### Adapter Advertisement — `_airplay._tcp`
+
+The adapter advertises **`_airplay._tcp` on TCP port 5000** (NOT `_carplay._tcp`).
 
 ```
-_carplay._tcp.local.
-  Name: AutoBox-XXXX
+_airplay._tcp.local.
   Port: 5000
   TXT Records:
-    model=A15W
-    features=0x5A7FFFFH
+    deviceid=00:E0:4C:91:B0:DF
+    features=0x44440B80,0x61
+    srcvers=320.17
 ```
 
-### Required TXT Records
+### iPhone Advertisement — `_carplay-ctrl._tcp`
+
+The iPhone advertises `_carplay-ctrl._tcp`; the adapter browses for it and connects out.
+
+```
+_carplay-ctrl._tcp.local.
+  TXT Records:
+    id=<iPhone BT MAC>
+    srcvers=950.7.1
+```
+
+### Adapter `_airplay._tcp` TXT Records (capture-verified)
 
 | Key | Value | Description |
 |-----|-------|-------------|
-| model | A15W | Product model |
-| features | hex flags | Capability bits |
+| deviceid | 00:E0:4C:91:B0:DF | Adapter device ID |
+| features | 0x44440B80,0x61 | AirPlay capability bits |
 | srcvers | 320.17 | AirPlay version |
-| vv | 2 | Protocol version |
+
+---
+
+## iAP2 + MFi Handshake (over Bluetooth RFCOMM)
+
+Before WiFi exists, the entire CarPlay capability negotiation and MFi authentication run over
+the iAP2 accessory profile on Bluetooth RFCOMM (`/dev/rfcomm0`). Live-captured order
+(`carplay-20260521-101016`):
+
+| Step | Direction | iAP2 message | Purpose |
+|------|-----------|--------------|---------|
+| 1 | — | `ff 55` probe → `ff 5a` link-sync | iAP2 link bring-up (linkVersion 1, maxOutstandingPackets 127) |
+| 2 | iPhone → adapter | `0x1D00 StartIdentify` | begin identification |
+| 3 | adapter → iPhone | `0x1D01 IdentificationInformation` | advertises components incl. `wirelessCarPlayTransportComponent` / `transportSupportsCarPlay` |
+| 4 | iPhone → adapter | `0x1D02 IdentifyAccept` | identification accepted → firmware `OnCarPlayPhase 100` |
+| 5 | iPhone → adapter | `0xAA00 ReqAuthCert` | request MFi accessory certificate |
+| 6 | adapter → iPhone | `0xAA01` (945-byte cert) | MFi certificate from real chip cache |
+| 7 | iPhone → adapter | `0xAA02 ReqChallenge` (20-byte challenge) | challenge for the MFi chip |
+| 8 | adapter → iPhone | `0xAA03` (128-byte RSA signature) | adapter drives `/dev/i2c-1` MFi chip to sign |
+| 9 | iPhone → adapter | `0xAA05 AuthSuccess` | MFi authentication accepted |
+| 10 | iPhone → adapter | `0x5702 ReqWifiConfig` | request WiFi credentials |
+| 11 | adapter → iPhone | `0x5703 WifiConfigInfo` | `ssid`, `passphrase`, security type, channel |
+| 12 | iPhone → adapter | `0x4E0A/0x4E0B/0x4E0D/0x4E0E` | language / time / WirelessCarPlayUpdate / TransportNotify |
+
+After step 12 the iPhone joins the adapter's WiFi SoftAP and the BT iAP2 link is torn down
+(`kAirPlayCommand_DisableBluetooth`); the AirPlay session then runs entirely over WiFi.
+
+See `device_identification.md` (iAP2 Identification, `0x1D00/0x1D01/0x1D02`) and
+`carplay_handshake.md` (full ordered phases A–G) for the complete detail.
 
 ---
 
@@ -415,7 +496,7 @@ _carplay._tcp.local.
 IDLE
  ↓ (BT pairing initiated)
 BT_PAIRING
- ↓ (PIN verified)
+ ↓ (iAP2 link + identification + MFi auth complete)
 BT_PAIRED
  ↓ (WiFi credentials received)
 WIFI_CONNECTING
@@ -477,11 +558,12 @@ Fresh pairing fails unless `androidWorkMode: true` is enabled in BoxSettings.
 
 | Path | Purpose |
 |------|---------|
-| `/var/lib/lockdown/common.cert` | Auth certificates (plist) |
-| `/var/lib/lockdown/root_key.pem` | RSA private key (2048-bit) |
-| `/Library/Keychains/default.keychain` | Pairing data |
+| `/var/lib/lockdown/common.cert` | usbmuxd/lockdown USB-trust records (plist) — **distinct from MFi auth** |
+| `/var/lib/lockdown/root_key.pem` | usbmuxd/lockdown RSA private key (2048-bit) — **distinct from MFi auth** |
+| `/Library/Keychains/default.keychain` | HomeKit pairing data |
 | `/tmp/rfcomm_IAP2` | Bluetooth RFCOMM socket |
 | `/tmp/.mfi_auth_lock` | Auth mutex |
+| **MFi coprocessor** — `/dev/i2c-1` addr 0x11 (8-bit 0x22) | Real Apple MFi auth IC — cert serial `IPA_3333AA071227AA02AA0011AA003045` |
 
 ---
 

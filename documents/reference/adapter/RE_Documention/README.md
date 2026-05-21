@@ -119,7 +119,7 @@ RE_Documention/
     ├── vehicle_platforms/gminfo/       # GM Info 3.7 platform specs
     └── binary_analysis/
         ├── key_binaries.md             # Firmware binary analysis
-        └── config_key_analysis.md      # 79 config keys deep analysis
+        └── config_key_analysis.md      # 106 config keys deep analysis (85 ALIVE / 12 DEAD / 9 PASS-THROUGH)
 ```
 
 ---
@@ -136,12 +136,13 @@ RE_Documention/
 
 | Type | Hex | Name | Purpose |
 |------|-----|------|---------|
-| 1 | 0x01 | Open | Session initialization |
+| 1 | 0x01 | Open | Session init — 28-byte 7×uint32-LE payload `[width,height,fps,format,packetMax,boxVersion,phoneMode]`; handler `ProceessCmdOpen` |
 | 6 | 0x06 | VideoData | H.264 video frames |
 | 7 | 0x07 | AudioData | PCM audio or commands |
 | 8 | 0x08 | Command | Control commands |
-| 25 | 0x19 | BoxSettings | JSON configuration |
+| 25 | 0x19 | BoxSettings | JSON config — parsed by ARMadb-driver `FUN_00016c20`, 29-entry map at `0x93f90` |
 | 41 | 0x29 | GnssData | GPS/GNSS to phone (NMEA) |
+| 153 | 0x99 | SendFile | Flat-file + `HU_*` struct upload (staging `/tmp/uploadFileTmp`, runs as root) |
 | 170 | 0xAA | HeartBeat | Keep-alive (2s interval) |
 
 ### Audio Types
@@ -271,6 +272,7 @@ This consolidation drew from:
 
 | Date | Change |
 |------|--------|
+| 2026-05-21 | **Live wireless CarPlay pairing capture** (`MFi_research/capture/carplay-20260521-101016`): RTSP control port confirmed 5000 (not 7000); HomeKit `/pair-setup`×3 + `/pair-verify`×2; no FairPlay; real MFi coprocessor on I2C-1 `0x11` exercised twice/pairing; `HU_*` struct layouts verified on-device; iAP2 `0x1D01` component table captured; DuckPosition `HU_VIEWAREA_INFO` field order corrected. New doc: `02_Protocol_Reference/carplay_handshake.md`. |
 | 2026-03-14 | **Comprehensive verification pass (Mar 2026):** 50+ agents cross-checked all docs against firmware binary, APK decompilation, and carlink_native source. ~40 errors fixed: decode_type=3 corrected from "vestigial" to "active for AA phone calls" (4 files); wireless_carplay.md encryption key/algorithm corrected (AES-128-CBC, `SkBRDy3gmrw1ieH0`); inbound_session_sequence.md type IDs rewritten (10+ wrong IDs); session_examples.md command labels corrected; video nav header fields renamed; firmware_update.md status codes updated to 2025.10; key_binaries.md binary sizes corrected; config_key_analysis.md classification fixes; host_app_guide.md touch format and VID/PID updated; Box Code Taxonomy and SoftwareVersion format added to configuration.md; MultiTouch/StModeChange/Camera structs and UseBTPhone added to usb_protocol.md; manufacturer frame-drop reference added to video_protocol.md; mic delay note added to host_app_guide.md; XX_Binary_Verification removed (content in canonical docs); README directory structure and adapter role updated. |
 | 2026-02-18 | **ViewArea/SafeArea live verified:** `g_bSupportViewarea` is NOT set by AdvancedFeatures — it's set from `HU_VIEWAREA_INFO` file content (r2 init at ~0x16ca2). Writing `HU_VIEWAREA_INFO` (24B) + `HU_SAFEAREA_INFO` (20B) to `/etc/RiddleBoxData/` + reboot enables main screen SafeArea. Live test: 100px inset on 2400×960, CarPlay correctly inset interactive UI while wallpaper rendered full-screen (`drawUIOutsideSafeArea=true`). AdvancedFeatures corrected back to Boolean (0-1, max enforced by riddleBoxCfg), only bit 0 tested in firmware (`tst.w sb, 1`); corrected all docs. |
 | 2026-02-18 | **riddleBoxCfg feature gate analysis:** AdvancedFeatures default/range documented; HudGPSSwitch factory default corrected to 0 (--info shows current value, not factory); added performance warning for AdvancedFeatures (second H.264 stream); documented 9 MiddleMan IPC interfaces (CarPlay, AA, HiCar, ICCOA, DVR, AndroidMirror, iOS, NoAirPlay); documented 15 adapter filesystem config paths; added 7 AppleCarPlay runtime global flags; updated configuration.md, firmware_internals.md, host_app_guide.md |

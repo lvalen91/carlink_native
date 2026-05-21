@@ -46,6 +46,28 @@ insmod /tmp/snd-soc-bt-sco.ko
 insmod /tmp/snd-soc-imx-btsco.ko
 ```
 
+## MFi Authentication Coprocessor
+
+The adapter carries a **genuine Apple MFi authentication IC** — not a software MFi spoof. The firmware drives it over I2C during every wireless CarPlay pairing.
+
+| Parameter | Value |
+|-----------|-------|
+| **Bus** | `/dev/i2c-1` (I2C bus 1) |
+| **Address** | 7-bit `0x11` (8-bit `0x22`) |
+| **Type** | Genuine Apple MFi authentication IC — firmware log: `mfi ic is from APPLE` |
+| **Certificate serial** | `IPA_3333AA071227AA02AA0011AA003045` (subject serial `33 33 AA 07 12 27 AA 02 AA 00 11 AA 00 30 45`) |
+| **Output** | 128-byte RSA signature (RSA-1024, PKCS#1 v1.5) |
+
+The firmware reads `MFI_AUTH_COP_REG_ADDR_SIGNATURE_LEN` then `MFI_AUTH_COP_REG_ADDR_SIGNATURE_DATA` to retrieve the signature after writing the challenge.
+
+**This is real hardware, NOT a software MFi spoof.** (Contrast the CPC200-U2W, which spoofs MFi in software.) The chip is exercised **twice per wireless pairing**:
+1. **iAP2 / Bluetooth layer** — challenge-response carried in iAP2 messages `0xAA00`–`0xAA05` over BT RFCOMM (945-byte cert, 20-byte challenge, 128-byte signature).
+2. **AirPlay layer** — a second `MFi auth create signature` after the HomeKit `pair-verify` exchange, on the WiFi side.
+
+The cert is identical between the two; the signatures differ because the input challenges differ. See `02_Protocol_Reference/carplay_handshake.md` and the "Wireless CarPlay Handshake" section of `initialization.md` for the full flow.
+
+> **RE caveat:** A live register-level I2C trace of this chip was *not* captured — the firmware's kernel rejects `ptrace` (`EINVAL`, kernel-wide) and has no ftrace, so `/dev/i2c-1` cannot be snooped in-place. The cryptographic material was instead captured on the wire (BT iAP2 `0xAA0x` + firmware `ttyLog`).
+
 ## USB Interfaces
 
 ### iPhone-Facing (Gadget Mode)
@@ -127,6 +149,7 @@ usb 1-1: SerialNumber: 57281FDCR00673
 |------|---------|
 | `/dev/android_iap2` | USB IAP2 device |
 | `/dev/hwaes` | Hardware AES engine |
+| `/dev/i2c-1` | MFi authentication coprocessor (genuine Apple IC, 7-bit addr 0x11) |
 | `/sys/class/android_usb/android0/` | USB gadget control |
 | `/sys/bus/platform/devices/ci_hdrc.1/` | USB OTG controller |
 

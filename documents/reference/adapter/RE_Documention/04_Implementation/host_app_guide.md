@@ -157,6 +157,27 @@ t=2000ms  → First heartbeat (timer fires)
 t=4000ms  → Second heartbeat
 ```
 
+**Resolution path, end-to-end (capture-verified 2026-05-21):**
+
+The `width`/`height` you put in the `Open` (0x01) message is what the iPhone ultimately renders
+to, but the value travels through several adapter-internal stages:
+
+```
+host Open(0x01) w/h
+  → ARMadb-driver ProceessCmdOpen          (rewrites /etc/RiddleBoxData/HU_VIEWAREA_INFO)
+  → AppleCarPlay._CopyDisplayDescriptions  (reads HU_VIEWAREA_INFO + HU_SAFEAREA_INFO)
+  → AirPlay SETUP  viewAreas{ widthPixels, heightPixels, safeArea{...} }
+  → iPhone
+```
+
+- iAP2 `0x1D01 IdentificationInformation` (sent over BT before WiFi exists) carries **no
+  resolution** — it advertises transports / vehicle identity / message IDs only.
+- **DPI is a separate path:** `riddleBoxCfg ScreenPhysicalW/H` → AirPlay `widthPhysical` /
+  `heightPhysical`. When both are `0` the iPhone derives DPI itself.
+
+See § *HU_\* Geometry Structs (/etc/RiddleBoxData/)* and the *Open Message* section below for
+the struct layouts and the `ProceessCmdOpen` side effect.
+
 ### 3. Message Processing Loop
 
 ```
@@ -438,6 +459,35 @@ fun sendMultiTouch(points: List<TouchPoint>) {
 
 ## Configuration
 
+### riddleBoxCfg — Persistent Config Store
+
+The adapter's persistent configuration lives in **`/etc/riddle.conf`** (JSON key:value), with a
+factory backup at **`/etc/riddle_default.conf`**. It is read/written from the shell via the CLI
+`riddleBoxCfg <Key> [Value]` (read with the key alone, write with key + value). `ARMadb-driver`'s
+`BoxSettings` parser ultimately writes the same file (see the 29-key mapping table below).
+
+Capability keys that change what the iPhone is told about the head unit:
+
+| Key | Effect |
+|-----|--------|
+| `CustomFrameRate` | frame rate → `Open` fps field |
+| `VideoResolutionWidth` / `VideoResolutionHeight` | display resolution |
+| `ScreenDPI` | CarPlay render density |
+| `ScreenPhysicalW` / `ScreenPhysicalH` | physical mm → AirPlay `widthPhysical`/`heightPhysical` (0 ⇒ iPhone derives DPI) |
+| `CarBrand` | OEM brand (rewrites airplay.conf + logo) |
+| `WiFiChannel` | adapter AP channel |
+| `CarDrivePosition` | 0=LHD, 1=RHD |
+| `DayNightMode` | day/night mode |
+| `GNSSCapability` | GPS capability advertised over iAP2 |
+| `DashboardInfo` | cluster/dashboard bitmask — bit0 media-player, bit1 vehicle-status, bit2 route-guidance |
+| `AdvancedFeatures` | gates `g_bSupportNaviScreen` (CarPlay nav/cluster video) |
+
+> **Adapter-side iPhone handshake.** The iPhone↔adapter pairing — iAP2 over BT RFCOMM → MFi
+> authentication → BT→WiFi handover → AirPlay/RTSP on port 5000 — is a **separate layer** from
+> the USB host protocol described in this guide. The host app never participates in it. It is
+> documented in `session_examples.md` § *Wireless CarPlay Pairing — iPhone↔Adapter Handshake*
+> and in `02_Protocol_Reference/carplay_handshake.md`.
+
 ### BoxSettings JSON (Binary Verified Jan 2026)
 
 **⚠️ SECURITY NOTE:** The `wifiName`, `btName`, and `oemIconLabel` fields are passed to shell commands via `popen()` without sanitization. This enables command injection - any shell command can be executed as root by including shell metacharacters in these fields. See `03_Security_Analysis/vulnerabilities.md` for details.
@@ -523,22 +573,96 @@ fun sendBoxSettings() {
 }
 ```
 
+#### BoxSettings field → riddle.conf mapping (29-key table @ `0x93f90`)
+
+`BoxSettings` (USB type `0x19`, JSON body) is parsed by `ARMadb-driver` `FUN_00016c20`. The
+generic path `FUN_0001658c` walks a **29-entry field→key table at `0x93f90`**: each JSON field is
+mapped to a `riddle.conf` key (string → `SetBoxConfigStr`, number → `SetBoxConfig`).
+
+| # | JSON field | riddle.conf key | Capability effect |
+|---|------------|-----------------|-------------------|
+| 0 | `btName` | `CustomBluetoothName` | BT name (⚠ popen cmd-injection) |
+| 1 | `wifiName` | `CustomWifiName` | WiFi SSID (⚠ cmd-injection) |
+| 2 | `fps` | `CustomFrameRate` | → `Open` fps field |
+| 3 | `gps` | `HudGPSSwitch` | GPS/dashboard enable |
+| 4 | `lang` | `BoxConfig_UI_Lang` | UI language |
+| 5 | `bgMode` | `BackgroundMode` | connection-UI visibility |
+| 6 | `syncMode` | `iAP2TransMode` | iAP2 framing mode |
+| 7 | `startDelay` | `BoxConfig_DelayStart` | USB init delay |
+| 8 | `mediaDelay` | `MediaLatency` | audio buffer ms |
+| 9 | `mediaSound` | `MediaQuality` | 0=44.1 kHz, 1=48 kHz PCM |
+| 10 | `autoConn` | `NeedAutoConnect` | auto-reconnect |
+| 11 | `androidWorkMode` | `AndroidWorkMode` | also `fwrite /etc/android_work_mode` (0..5) |
+| 12 | `drivePosition` | `CarDrivePosition` | 0=LHD, 1=RHD |
+| 13 | `echoDelay` | `EchoLatency` | WebRTC AEC delay |
+| 14 | `androidAutoSizeW` | `AndroidAutoWidth` | AA video width |
+| 15 | `androidAutoSizeH` | `AndroidAutoHeight` | AA video height |
+| 16 | `screenPhysicalW` | `ScreenPhysicalW` | physical mm → CarPlay DPI |
+| 17 | `screenPhysicalH` | `ScreenPhysicalH` | physical mm → CarPlay DPI |
+| 18 | `brand` | `CarBrand` | OEM brand (special handler rewrites airplay.conf + logo) |
+| 19 | `ScreenDPI` | `ScreenDPI` | CarPlay render density |
+| 20 | `boxName` | `CustomBoxName` | device display name |
+| 21 | `WiFiChannel` | `WiFiChannel` | adapter AP channel (→ `0x5703 WifiConfigInfo`) |
+| 22 | `UseBTPhone` | `UseBTPhone` | route calls via BT-HFP |
+| 23 | `HiCarConnectMode` | `HiCarConnectMode` | HiCar mode |
+| 24 | `GNSSCapability` | `GNSSCapability` | GPS capability advertised |
+| 25 | `AutoResetUSB` | `AutoResetUSB` | USB reset on disconnect |
+| 26 | `DashboardInfo` | `DashboardInfo` | cluster/dashboard capability bitmask |
+| 27 | `DayNightMode` | `DayNightMode` | day/night mode |
+| 28 | `DockPosition` | `DuckPosition` (fw typo) | copies `HU_SCREEN_INFO` → `HU_VIEWAREA_INFO` |
+
+#### BoxSettings special handlers (NOT stored in riddle.conf)
+
+Some JSON fields are intercepted **before** the table above and are **not** written to
+`riddle.conf` — they act directly on the system clock or shared-memory geometry/volume structs:
+
+| JSON field | Target | Mechanism |
+|------------|--------|-----------|
+| `syncTime` | system clock | `settimeofday(val + 28800)` — hardcoded UTC+8 |
+| `mediaVol`/`callVol`/`speechVol`/`ringVol`/`navVol`/`otherVol` | `HU_AUDIOVOLUME_INFO[0..5]` | shared memory |
+| `naviScreenInfo{width,height,fps}` | `HU_NAVISCREEN_INFO` (24 B) | shared memory |
+| `naviScreenInfo.safearea` | `HU_NAVISCREEN_SAFEAREA_INFO` (20 B) + `HU_NAVISCREEN_VIEWAREA_INFO` (24 B) | shared memory |
+
+> **There is no BoxSettings field for the main-screen SafeArea.** `HU_SAFEAREA_INFO` is only
+> settable via `SendFile` (0x99) or SSH — see § *HU_\* Geometry Structs* and *Advanced File
+> Operations*.
+
 ### Open Message
+
+The `Open` (USB type `0x01`) payload is a fixed **28-byte body — 7 × uint32 little-endian**
+(verified from the 2026-05-21 capture and `ARMadb-driver` binary RE):
+
+| Offset | Field | uint32-LE | Notes |
+|--------|-------|-----------|-------|
+| 0x00 | `width` | display width | e.g. 2400 |
+| 0x04 | `height` | display height | e.g. 960 |
+| 0x08 | `fps` | frame rate | sourced from `riddleBoxCfg CustomFrameRate` |
+| 0x0C | `format` | video format ID | `1` = basic IDR, `5` = full H.264 / aggressive IDR |
+| 0x10 | `packetMax` | max packet size | e.g. `0xC000` |
+| 0x14 | `boxVersion` | protocol version | `2` |
+| 0x18 | `phoneMode` | iPhone work mode | `2` = CarPlay |
 
 ```kotlin
 fun sendOpen() {
-    val payload = ByteBuffer.allocate(28)
-        .putInt(displayWidth)    // e.g., 2400
-        .putInt(displayHeight)   // e.g., 960
-        .putInt(fps)             // e.g., 60
-        .putInt(5)               // format=5 for full H.264
-        .putInt(49152)           // packetMax
-        .putInt(2)               // boxVersion
-        .putInt(2)               // phoneMode
+    val payload = ByteBuffer.allocate(28).order(ByteOrder.LITTLE_ENDIAN)
+        .putInt(displayWidth)    // 0x00 width  — e.g., 2400
+        .putInt(displayHeight)   // 0x04 height — e.g., 960
+        .putInt(fps)             // 0x08 fps    — from riddleBoxCfg CustomFrameRate
+        .putInt(5)               // 0x0C format — 1=basic IDR, 5=full H.264 aggressive IDR
+        .putInt(49152)           // 0x10 packetMax
+        .putInt(2)               // 0x14 boxVersion
+        .putInt(2)               // 0x18 phoneMode — 2=CarPlay
 
     send(Open: 0x01, payload)
 }
 ```
+
+**Handler & side effect (`ARMadb-driver`):** `Open` is handled by `ProceessCmdOpen`
+(`fcn.00021cb0`). The handler **compares the `Open` `width`/`height` to the stored
+`HU_VIEWAREA_INFO`**; if they differ it **auto-rewrites `HU_VIEWAREA_INFO` full-screen** to the
+new dimensions. It does **not** touch `HU_SAFEAREA_INFO`. It then broadcasts the *phone's*
+resolution back to the host as USB type `0x1E`. The `Open` message is **re-sent every session**
+(it is not persistent).
 
 ### Android Auto Mode (CRITICAL)
 
@@ -575,6 +699,24 @@ fun enableAndroidAutoMode() {
 - If your host application is compromised, an attacker could overwrite system files
 
 **Secure Implementation Note:** If accepting user-provided paths, validate them thoroughly before passing to SendFile.
+
+#### Capability-Relevant SendFile Targets
+
+Several head-unit capabilities are set by writing specific files via `SendFile` (0x99). The
+firmware stages each upload through `/tmp/uploadFileTmp` before moving it to the target path.
+
+| Target | Type | Purpose |
+|--------|------|---------|
+| `/tmp/screen_dpi` | flat file | CarPlay render density |
+| `/tmp/screen_fps` | flat file | frame rate hint |
+| `/tmp/screen_size` | flat file | display size |
+| `/tmp/night_mode` | flat file | day/night mode |
+| `/tmp/hand_drive_mode` | flat file | LHD/RHD drive position |
+| `/tmp/charge_mode` | flat file | USB charge speed (see § *Charge Mode Control*) |
+| `/tmp/carplay_mode` | flat file | CarPlay mode flag |
+| `/tmp/iphone_work_mode` | flat file | iPhone work mode |
+| `/etc/android_work_mode` | flat file (persistent) | Android Auto enable (see § *Android Auto Mode*) |
+| `/etc/RiddleBoxData/HU_*` | binary structs | display geometry — `HU_SCREEN_INFO`, `HU_VIEWAREA_INFO`, `HU_SAFEAREA_INFO`, etc. (see § *HU_\* Geometry Structs*) |
 
 #### Writable Paths (Live Verified Jan 2026)
 
@@ -634,6 +776,35 @@ sendFile("/tmp/hwfs.tar.gz", createTarGz(files))
 ```
 
 See `03_Security_Analysis/vulnerabilities.md` for complete security implications.
+
+### HU_* Geometry Structs (/etc/RiddleBoxData/)
+
+The adapter stores head-unit display geometry as binary structs under `/etc/RiddleBoxData/`.
+All fields are **uint32 little-endian**. `AppleCarPlay` reads these at session init to build the
+AirPlay `viewAreas` / `displayInfo` descriptor sent to the iPhone.
+
+| Struct | Size | Layout (uint32-LE) |
+|--------|------|--------------------|
+| `HU_SCREEN_INFO` | 24 B | `[width, height, 0, 0, fps, dpi]` |
+| `HU_VIEWAREA_INFO` | 24 B | `[width, height, width, height, originX, originY]` |
+| `HU_SAFEAREA_INFO` | 20 B | `[width, height, originX, originY, drawUIOutsideSafeArea]` |
+
+- `HU_VIEWAREA_INFO` is the file `AppleCarPlay._CopyDisplayDescriptions` reads for
+  `viewAreas.widthPixels` / `heightPixels`.
+- `drawUIOutsideSafeArea = 0` → **hard crop** (UI black outside the SafeArea);
+  `= 1` → **wallpaper fills the full ViewArea**, interactive UI stays inside the SafeArea.
+
+**Config flow:**
+
+```
+host app → ARMadb-driver → /etc/riddle.conf + /etc/RiddleBoxData/HU_*
+                                  │  (MiddleMan IPC)
+                                  ▼
+                    AppleCarPlay / ARMiPhoneIAP2 → iPhone
+```
+
+`HU_VIEWAREA_INFO` is auto-rewritten by `ProceessCmdOpen` from the `Open` (0x01) message;
+`HU_SAFEAREA_INFO` has **no** BoxSettings field and must be written via `SendFile` (0x99) or SSH.
 
 ### Navigation Video Setup (iOS 13+)
 

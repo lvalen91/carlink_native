@@ -48,6 +48,7 @@ import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
 import com.carlink.media.MediaSessionManager
 import com.carlink.util.LogCallback
+import com.carlink.util.WindowMetricsCompat
 import com.carlink.navigation.NavigationStateManager
 import com.carlink.protocol.AdapterConfig
 import com.carlink.protocol.KnownDevices
@@ -389,23 +390,17 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun initializeCarlinkManager() {
-        // Get window metrics to determine USABLE area (excluding system UI)
-        // Using WindowMetrics API (minSdk 32 guarantees API 30+ availability)
-        val windowMetrics = windowManager.currentWindowMetrics
-        val bounds = windowMetrics.bounds
-        val windowInsets = windowMetrics.windowInsets
+        // Get window metrics to determine USABLE area (excluding system UI).
+        // WindowMetricsCompat falls back to Display.getRealMetrics + WindowInsetsCompat
+        // on API 29 (AAOS 10); the API 30+ path is unchanged.
+        val bounds = WindowMetricsCompat.displayBounds(windowManager)
+        val windowInsets = WindowMetricsCompat.stableWindowInsets(windowManager, window.decorView)
 
         // Separate inset sources for per-mode SafeArea computation
         val systemBarInsets =
-            windowInsets.getInsetsIgnoringVisibility(
-                android.view.WindowInsets.Type
-                    .systemBars(),
-            )
+            windowInsets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars())
         val cutoutInsets =
-            windowInsets.getInsetsIgnoringVisibility(
-                android.view.WindowInsets.Type
-                    .displayCutout(),
-            )
+            windowInsets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.displayCutout())
 
         // Compute video resolution and SafeArea insets per display mode
         val videoWidth: Int
@@ -817,6 +812,15 @@ class MainActivity : ComponentActivity() {
     private fun applyDisplayMode(mode: DisplayMode) {
         val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
         val lp = window.attributes
+        // LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS is API 30; SHORT_EDGES (API 28) is the
+        // pre-30 equivalent. gminfo3.7 has no display cutout, so the two are identical
+        // on the target hardware.
+        val edgeToEdgeCutoutMode =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
 
         when (mode) {
             DisplayMode.SYSTEM_UI_VISIBLE -> {
@@ -833,8 +837,7 @@ class MainActivity : ComponentActivity() {
                 // Edge-to-edge: video extends into hidden-bar + cutout regions.
                 // SafeArea metadata tells the phone to keep clickable UI out of those zones.
                 WindowCompat.setDecorFitsSystemWindows(window, false)
-                lp.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                lp.layoutInDisplayCutoutMode = edgeToEdgeCutoutMode
                 window.attributes = lp
                 windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
                 windowInsetsController.show(WindowInsetsCompat.Type.navigationBars())
@@ -844,8 +847,7 @@ class MainActivity : ComponentActivity() {
 
             DisplayMode.NAV_BAR_HIDDEN -> {
                 WindowCompat.setDecorFitsSystemWindows(window, false)
-                lp.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                lp.layoutInDisplayCutoutMode = edgeToEdgeCutoutMode
                 window.attributes = lp
                 windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
                 windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
@@ -855,8 +857,7 @@ class MainActivity : ComponentActivity() {
 
             DisplayMode.FULLSCREEN_IMMERSIVE -> {
                 WindowCompat.setDecorFitsSystemWindows(window, false)
-                lp.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                lp.layoutInDisplayCutoutMode = edgeToEdgeCutoutMode
                 window.attributes = lp
                 windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
                 windowInsetsController.systemBarsBehavior =

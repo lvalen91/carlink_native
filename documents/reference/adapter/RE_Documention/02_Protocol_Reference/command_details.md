@@ -687,3 +687,10 @@ The following command IDs were NOT found in the switch table at `fcn.00019744`:
 - **Forwarding Log:** `"Forward CarPlay control cmd!"` at `0x6d18b`
 - **USB Protocol:** `usb_protocol.md`
 - **Audio Commands:** See AudioData (0x07) in `usb_protocol.md`
+
+### Related Message Types
+
+This file documents the Command (0x08) message payload only. Other USB message types that carry session-relevant data have their wire layouts documented elsewhere:
+
+- **Open (0x01)** — 28-byte payload (7 × uint32-LE: width, height, fps, format, packetMax, boxVersion, phoneMode). See `CAPTURE_SESSION.md` §9.1.1.
+- **BoxSettings (0x19)** — JSON body parsed into `/etc/riddle.conf`. See `CAPTURE_SESSION.md` §9.1.2.

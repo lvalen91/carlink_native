@@ -496,3 +496,15 @@
    - Two reboot tests confirmed fix: card shows placeholder ("Phone rejected configuration") then real track metadata once phone connects.
    - Force-stop+relaunch case still hits documented AOSP rebind gap (PlaybackViewModel.java:306 orphaned-controller TODO) — not addressable app-side.
    - Affected: MediaSessionManager.kt, CarlinkMediaBrowserService.kt, MainActivity.kt.
+
+[131] :: minSdk 32 → 29 — AAOS 10 (Android 10) support for gminfo3.7 head units stuck on sdk29.
+   - New WindowMetricsCompat.kt: currentWindowMetrics + WindowInsets are API 30, crash on API 29.
+   - Helper uses currentWindowMetrics on API 30+, falls back to getRealMetrics + WindowInsetsCompat on API 29.
+   - MainActivity, PlatformDetector, AdapterConfigurationDialog route window bounds/insets through the helper.
+   - Fixes guaranteed NoSuchMethodError launch crash — not caught by existing catch(Exception), it is an Error.
+   - applyDisplayMode guards LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS (API 30), uses SHORT_EDGES (API 28) on API 29.
+   - UsbDeviceWrapper guards PendingIntent.FLAG_MUTABLE (API 31); pre-31 PendingIntents are mutable by default.
+   - API 30+ runtime paths unchanged — zero behavior change on existing AAOS 12 fleet, only API 29 differs.
+   - Verified by 4 agents against official Android docs; no dependency exceeds minSdk 29 (highest is 23).
+   - Build clean: sideloadDebug APK, sideloadRelease APK, playRelease AAB; lintVitalRelease passed, no NewApi errors.
+   - Affected: app/build.gradle.kts, WindowMetricsCompat.kt (new), MainActivity.kt, PlatformDetector.kt, AdapterConfigurationDialog.kt, UsbDeviceWrapper.kt.

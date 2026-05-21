@@ -129,6 +129,8 @@ sed -i "s/name .*/name \"${CustomBluetoothName}\";/" /etc/bluetooth/hcid.conf
 | 36, 40, 44 | 5180-5220 MHz | 5GHz |
 | 149, 157, 161 | 5745-5805 MHz | 5GHz |
 
+**Note:** `wifiChannel` (`WiFiChannel`) is the **SoftAP** (hostapd) channel — default **36**, confirmed by the 2026-05-21 capture (SoftAP on ch36 / 5180 MHz). It is distinct from the WiFi-Direct `p2p_oper_channel` in `wpa_supplicant.conf` (149 since firmware 2024.01), which applies only when `WiFiP2PMode=1`.
+
 ---
 
 ### Connection / USB Settings

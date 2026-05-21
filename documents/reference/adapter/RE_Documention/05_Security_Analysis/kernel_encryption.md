@@ -110,6 +110,21 @@ dd if=/dev/mem of=/mnt/UPAN/kernel.bin bs=4096 skip=$((0x80008000/4096)) count=1
 /proc/modules  - Loaded modules
 ```
 
+### Anti-Debug: ptrace and ftrace Disabled (Verified 2026-05-21)
+
+The kernel **rejects `ptrace` entirely** — every request (`PTRACE_SEIZE`, `PTRACE_ATTACH`, …)
+returns `EINVAL`, kernel-wide. This was verified to fail even when attaching to a self-spawned
+process; there is no yama LSM and nothing else tracing the target. This is a deliberate Carlinkit
+anti-RE hardening measure — it is the mechanism behind the known "blocked strace" behaviour.
+
+There is also **no ftrace** — `/sys/kernel/debug/tracing` is absent.
+
+**Consequence:** no in-place syscall / I²C / function tracing is possible on this firmware. RE
+must instead rely on packet capture, `/proc/<PID>/mem` dumps, static analysis, or `LD_PRELOAD`
+shims.
+
+Source: `MFi_research/CAPTURE_SESSION.md` §2, §8.
+
 ---
 
 ## Alternative Extraction Methods

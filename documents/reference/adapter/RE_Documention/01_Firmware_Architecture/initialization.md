@@ -14,7 +14,7 @@ This document covers the adapter's boot process and host initialization message 
 
 ## Host Initialization Sequence
 
-The host application sends the following messages after USB connection.
+The host application sends the following messages after USB connection. (This section documents only the **USB-side / head-unit-facing** init — i.e. the head unit's host app bringing up the adapter over USB. The separate **iPhone↔adapter wireless flow** that precedes a CarPlay session is documented in "Wireless CarPlay Handshake" below.)
 
 **CRITICAL:** The adapter has a ~10-second watchdog timer. Both init AND first heartbeat must complete within this window.
 
@@ -40,7 +40,7 @@ The host application sends the following messages after USB connection.
 | 2 | 240 | EnableCrypt | CMD_ENABLE_CRYPT — 4-byte random nonce for AES session key derivation |
 | 3 | 153 | SendFile | `/tmp/screen_dpi` - Display DPI |
 | 4 | 153 | SendFile | `/etc/android_work_mode` - Android work mode (1=AA, 2=CarLife, 3=Mirror, 4=HiCar, 5=ICCOA) |
-| 5 | 1 | Open | Session parameters (28 bytes: width, height, fps, format, bitrate, boxVersion, phoneWorkMode) |
+| 5 | 1 | Open | Session parameters (28 bytes: width, height, fps, format, packetMax, boxVersion, phoneMode) |
 | — | — | *Wait* | *Wait for Open response from adapter before proceeding* |
 | 6 | 25 | BoxSettings | JSON configuration (syncTime, mediaDelay, drivePosition, androidAutoSizeW/H, GNSSCapability, DashboardInfo, UseBTPhone) |
 | 7 | 160 | AppInfo | JSON: full app/device info (second send, post-Open) |
@@ -204,13 +204,15 @@ The firmware supports a user-defined initialization script at `/script/custom_in
 
 | Process | Purpose | Started By |
 |---------|---------|------------|
-| **ARMadb-driver** | Main USB protocol handler | start_main_service.sh |
+| **ARMadb-driver** | Main USB protocol handler ("MiddleManServer") | start_main_service.sh |
 | **mdnsd** | CarPlay mDNS/Bonjour discovery | start_main_service.sh |
 | **boxNetworkService** | Network management | start_main_service.sh |
 | **colorLightDaemon** | Red/Blue LED status control | start_main_service.sh |
 | **boa** | Web server for configuration UI (v0.94.101wk) | start_main_service.sh |
 | **hfpd** | Bluetooth HFP daemon | init_bluetooth_wifi.sh |
 | **bluetoothDaemon** | Bluetooth management | init_bluetooth_wifi.sh |
+| **AppleCarPlay** | CarPlay daemon (the `CarPlayDemoApp`, AirPlay/AirTunes 320.17) — runs the AirPlay receiver over RTSP | started on demand when an iPhone connects (not at boot) |
+| **ARMiPhoneIAP2** | iAP2 protocol engine over BT RFCOMM (identify, MFi auth, WiFi handover) | started on demand when an iPhone connects (not at boot) |
 
 ---
 
@@ -241,6 +243,8 @@ These services are started by the CarPlay/AndroidAuto link daemons:
 - `Start Link Deamon: CarPlay` → Starts IAP2/NearBy/HiChain
 - `Start Link Deamon: AndroidAuto` → Starts AAP
 
+**Note (link selection):** Once a link is selected and `IAP2` becomes the active link, all non-active BT services are stopped — the firmware keeps only the active link's listener and tears down the rest (`保留当前连接: IAP2, 其余清除掉` → `Bluetooth StopListen NEARBY!!!`, `Bluetooth StopListen AAP!!!`). Verified in the 2026-05-21 CarPlay capture (`ttyLog` lines 91-93).
+
 ---
 
 ## TCP/IP Tuning Parameters
@@ -256,6 +260,53 @@ These services are started by the CarPlay/AndroidAuto link daemons:
 | `overcommit_memory` | 1 | Allow memory overcommit |
 
 These settings optimize TCP performance for CarPlay's real-time streaming requirements.
+
+---
+
+## Wireless CarPlay Handshake
+
+This section documents the **iPhone↔adapter** side — the wireless pairing/handshake that brings up a CarPlay session, separate from the USB-side host init above. Verified against a fresh wireless pairing captured 2026-05-21 (`carplay-20260521-101016`: BT HCI + WiFi pcap + firmware `ttyLog`). For the consolidated message-level reference see `02_Protocol_Reference/carplay_handshake.md`.
+
+### Phases A–G
+
+**Phase A — Bluetooth + iAP2 link**
+- BT classic connects; an RFCOMM channel for `IAP2` is accepted (→ `/dev/rfcomm0`).
+- iAP2 link bring-up: `ff 55 …` probe (e.g. `ff 55 02 00 ee 10`) → `ff 5a` link-sync. Negotiated: linkVersion 1, maxOutstandingPackets 127, maxRecvPacketLen 2048 (box) / 65535 (phone), retransmit timeout 2000 ms.
+
+**Phase B — iAP2 identification**
+- iPhone → `0x1D00 StartIdentify`.
+- Adapter → `0x1D01 IdentificationInformation` — name `CarLink`, model `Magic-Car-Link-1.00`, manufacturer `Magic Tec.`; advertises `wirelessCarPlayTransportComponent` / `transportSupportsCarPlay` and supported message IDs. Carries **no resolution**.
+- iPhone → `0x1D02 IdentifyAccept` → firmware `OnCarPlayPhase 100`.
+
+**Phase C — MFi authentication over iAP2 (Bluetooth RFCOMM)**
+- iPhone → `0xAA00 ReqAuthCert` → adapter → `0xAA01` 945-byte accessory certificate (PKCS#7 SignedData; cert serial `IPA_3333AA071227AA02AA0011AA003045`).
+- iPhone → `0xAA02 ReqChallenge` (20-byte challenge) → adapter drives the **genuine MFi chip** (I2C bus 1, 7-bit addr 0x11) → `0xAA03` 128-byte RSA signature.
+- iPhone → `0xAA05 AuthSuccess`.
+
+**Phase D — WiFi credential handover**
+- iPhone → `0x5702 ReqWifiConfig` → adapter → `0x5703 WifiConfigInfo`: `ssid`, `passphrase`, security type, **channel** (capture: `0x24` = 36).
+- iPhone → `0x4E0A DeviceLanguageUpdate`, `0x4E0B DeviceTimeUpdate`, `0x4E0D WirelessCarPlayUpdateMsg`, `0x4E0E TransportNotify` (carries iPhone BT MAC + transport id).
+
+**Phase E — iPhone joins the AP, AirPlay discovery**
+- iPhone associates to `wlan0` (HostMlme assoc + EAPOL/WPA), DHCP-leases an address. The BT iAP2 link is then torn down (`kAirPlayCommand_DisableBluetooth`; `ARMiPhoneIAP2` receives SIGTERM).
+- `AppleCarPlay` (`CarPlayDemoApp`, AirPlay 320.17) starts; registers the screen + HID devices.
+- Adapter advertises Bonjour **`_airplay._tcp` on TCP port 5000**, browses, finds the iPhone's `_carplay-ctrl._tcp`, and connects out to it.
+
+**Phase F — AirPlay pairing (RTSP on port 5000)**
+- **3× `POST /pair-setup`** — `X-Apple-HKP: 0` (HomeKit pair-setup; SRP, M1–M6 over 3 round-trips).
+- **2× `POST /pair-verify`** — `X-Apple-HKP: 2`, `X-Apple-PD: 1` (Curve25519).
+- Adapter performs a **second MFi chip signature** (`MFi auth create signature`) after pair-verify — the AirPlay-layer MFi step. No separate `/fp-setup` or `/auth-setup` RTSP endpoint exists.
+
+**Phase G — Session active**
+- `AirPlay session started`; negotiated event/timing ports and `enabledFeatures` (capture: `[viewAreas]`).
+- Video + audio streaming connections open; firmware phases `OnCarPlayPhase 100 → 1 → 103`.
+
+### Notes
+
+- **RTSP control port = 5000** (not 7000).
+- **No FairPlay** — wireless CarPlay on this firmware uses HomeKit `pair-setup`/`pair-verify` plus iAP2/MFi auth; no `/fp-setup`.
+- The **MFi coprocessor is a real Apple chip, exercised twice** per pairing: once in iAP2 `0xAA00`–`0xAA05` (BT), once in the AirPlay-layer `MFi auth create signature` (WiFi). See `hardware_platform.md` → "MFi Authentication Coprocessor".
+- `/var/lib/lockdown/*` records are **usbmuxd USB-trust records, separate from MFi credentials** — do not conflate them with the MFi auth path.
 
 ---
 

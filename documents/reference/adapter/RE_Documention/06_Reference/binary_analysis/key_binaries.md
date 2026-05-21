@@ -16,7 +16,7 @@
 | ARMAndroidAuto | 489KB | 1,489KB | Android Auto protocol handler |
 | ARMHiCar | - | 73KB | Huawei HiCar support |
 | ARMandroid_Mirror | - | 64KB | Android mirroring |
-| bluetoothDaemon | 173KB | 409KB | Bluetooth management |
+| bluetoothDaemon | 173KB | 409KB | Bluetooth management — BT classic RFCOMM/iAP2 channel setup, link-key storage, SDP |
 | mdnsd | - | 141KB | mDNS/Bonjour service (378KB runtime BSS) |
 | boxNetworkService | 45KB | - | Network management (custom LZMA packed, magic `0x55225522`) |
 | riddleBoxCfg | 30KB | 50KB | Configuration CLI |
@@ -282,6 +282,8 @@ initHeader(0x64650) → prepareMessage(0x64670) → buildPayload(0x64768)
 | FUN_00018088 | 0x18088 | Message pre-processor |
 | FUN_000628a4 | 0x628a4 | Message buffer/send wrapper |
 | FUN_00065178 | 0x65178 | JSON field extractor |
+| ProceessCmdOpen (fcn.00021cb0) | 0x21cb0 / 0x22098 | Handles the Open USB message (type `0x01`, 28-byte `7×uint32-LE` payload `[width,height,fps,format,packetMax,boxVersion,phoneMode]`). Auto-rewrites `HU_VIEWAREA_INFO` when the Open width/height differ from the stored values. |
+| FUN_00016c20 | 0x16c20 | BoxSettings USB type `0x19` JSON parser → 29-entry field→`riddle.conf` map at `0x93f90`. |
 
 ### Video-Related Strings (ARMadb-driver)
 
@@ -326,6 +328,8 @@ initHeader(0x64650) → prepareMessage(0x64670) → buildPayload(0x64768)
 | `### H264 data buffer overrun!` | 0x900d9 | Buffer overflow |
 | `### h264 frame data parse error!` | 0x9011d | NAL parsing error |
 | `_create_unix_socket %s SUC` | - | Unix socket IPC |
+| `_CopyDisplayDescriptions` | fcn.0001c0b4 (~2112 B) | Builds the AirPlay `viewAreas`/`displayInfo` plist sent to the iPhone. Reads `HU_VIEWAREA_INFO` (24B) + `HU_SAFEAREA_INFO` (20B); gated by `g_bSupportViewarea` + phone `featureViewAreas`. |
+| `FUN_0001604c` | 0x1604c | AirPlay session init — reads `ScreenPhysicalW`/`H` → `GetBoxConfig` → `FUN_0004fefa` → `widthPhysical`/`heightPhysical` in the displayInfo plist. |
 
 ### Video Processing Note
 
@@ -450,6 +454,12 @@ All engines inherit from `CiAP2Engine` (mangled: `11CiAP2Engine`) with a `BaseEn
 - `CCarPlay_MiddleManInterface` / `CNoAirPlay_MiddleManInterface` — HUD-to-adapter bridge
 - `CMiddleManClient` / `CMiddleManClient_iAPBroadCast` — data relay to host app
 - `CiAP2Session_FileTransfer` — artwork and file transfer sessions
+
+**Identification builder (live-verified 2026-05-21):** `CiAP2IdentifyEngine` + the nested
+`CiAP2UpdateEntity_group_*` builders emit the `0x1D01 IdentificationInformation` message via
+`iAP2Engine::Send_changes("IdentifyInfo", 0x1D01)`. `0x1D01` carries **no resolution** — only
+transports, vehicle identity, and the supported message ids. The `DashboardInfo` bitmask gates
+which capability engines are registered (and therefore which components appear in `0x1D01`).
 
 ### Complete iAP2 Message Dispatch Table (60+ messages)
 
@@ -845,6 +855,36 @@ void process_gnss_data(this, data, len) {
 | 0x1D | bluettoothHIDComponent (firmware typo) |
 | **0x1E** | **routeGuidanceDisplayComponent** |
 
+**Live-Captured 0x1D01 Component Table (carplay-20260521-101016, 2026-05-21)**
+
+Captured on-wire from a live `0x1D01 IdentificationInformation` message (`ttyLog.txt:145-330`,
+on-wire hex at `ttyLog.txt:333`). Parameter ids are decimal here (the table above lists the same
+ids in hex):
+
+| id (dec) | Component / parameter | Captured value |
+|---|---|---|
+| 0 | name | `CarLink` |
+| 1 | modelIdentifier | `Magic-Car-Link-1.00` |
+| 2 | manufacturer | `Magic Tec.` |
+| 3 | serialNumber | `2025.02.25.1521626a` |
+| 4 | firmwareVersion | `1.0.0` |
+| 5 | hardwareVersion | `1.0.0` |
+| 6 | messagesSentByAccessory | BT pass: `5703` |
+| 7 | messagesReceivedFromDevice | BT pass: `4E0A 4E0B 5702 4E0D 4E0E` |
+| 8 | powerProvidingCapability | `2` |
+| 9 | maximumCurrentDrawnFromDevice | `0` |
+| 12 | currentLanguage | `en` |
+| 13 | supportedLanguage | `en` |
+| 17 | **bluetoothTransportComponent** | id 0 `=1`; id 1 `IAP2-Bluetooth`; id 2 `transportSupportsiAP2Connection`(none); id 3 BT MAC `38:BA:B0:7D:D3:8D` |
+| 20 | **vehicleInformationComponent** | id 0 identifier `=1`; id 1 name `CarLink`; id 2 engineType `=0`; id 6 displayName `CarLink` |
+| 24 | **wirelessCarPlayTransportComponent** | id 0 transportComponentIdentifier `=2`; id 1 `IAP2-Wireless`; id 2 `transportSupportsiAP2Connection`(none); id 4 **`transportSupportsCarPlay`(none)** |
+| 30 | **routeGuidanceDisplayComponent** | *(WiFi re-identify pass only)* id 0 identifier `=42`; id 1 `RouteGuidance` |
+
+**`transportSupportsCarPlay`** (sub-param id 4 inside component 24
+`wirelessCarPlayTransportComponent`) is the single iAP2 flag that enables wireless CarPlay — an
+iAP2 "none"-type parameter (a 4-byte TLV `[00 04][00 04]`, no payload; its *presence* is the
+boolean `true`). Live-verified `ttyLog.txt:145-330`, on-wire `ttyLog.txt:333`.
+
 **VirtualBoxGPS (libdmsdpgpshandler.so, 10KB, r2 fully analyzed):**
 
 C++ class implementing the HiCar/DMSDP GPS handler:
@@ -878,6 +918,47 @@ VirtualGPSBusinessControl(uint, char*, uint, char*, uint);
 This library exports GPS service functions (`GpsReceiveLocationData`, `GpsSendServiceData`, etc.) visible in the symbol table, but the `.text` section is **high-entropy encrypted/obfuscated** — no valid ARM/Thumb instructions in function bodies. The entry point and function prologues are invalid opcodes. Analysis requires runtime memory dump from the adapter.
 
 **Critical Configuration:** `GNSSCapability` defaults to `0`, which **disables** the entire GPS pipeline at two points. Must be set to `≥ 1` via `riddleBoxCfg -s GNSSCapability 3` for GPS forwarding to work.
+
+---
+
+## MFi Authentication (live-verified 2026-05-21)
+
+**The adapter uses a REAL Apple MFi authentication coprocessor — it is NOT software-spoofed.**
+This is the CPC200-CCPA (A15W); the software-spoofing path documented for the older CPC200-U2W
+(`g_iphone.ko` / `fakeiOSDevice`) does **not** apply here.
+
+| Property | Value |
+|---|---|
+| Coprocessor | Real Apple MFi authentication IC |
+| Bus | I2C bus 1 (`/dev/i2c-1`) |
+| Address | 7-bit `0x11` (8-bit `0x22`) |
+| Driver | `ARMiPhoneIAP2` — `mfi_auth_processchallenge` |
+| Firmware log evidence | `mfi ic is from APPLE`, `MFi get addr: 22 from cache file`, `Cache MFI CERT ...` |
+
+The firmware explicitly logs `mfi ic is from APPLE`; the `0xAA01` 945-byte accessory certificate
+and the `0xAA03` 128-byte RSA signature are produced **by the chip**, not synthesized in software.
+
+**Driver flow:** `ARMiPhoneIAP2 mfi_auth_processchallenge` writes
+`MFI_AUTH_COP_REG_ADDR_AUTH_CTRL_AND_STATUS` (register `0x10`), then polls
+`...SIGNATURE_LEN` / `...SIGNATURE_DATA` until the chip finishes signing (the chip NACKs while
+busy, ~1.6 s).
+
+**Exercised twice per wireless pairing** (`carplay-20260521-101016`):
+1. **iAP2 layer (over Bluetooth RFCOMM):** `0xAA00 ReqAuthCert` → `0xAA01` 945-byte cert →
+   `0xAA02 ReqChallenge` (20-byte challenge) → chip RSA-signs → `0xAA03` 128-byte signature →
+   `0xAA05 AuthSuccess`.
+2. **AirPlay layer (over WiFi/RTSP):** after `/pair-verify`, the firmware does a second chip
+   signature — log line `MFi auth create signature` → another 128-byte signature. No separate
+   `/fp-setup` or `/auth-setup` RTSP endpoint exists; the AirPlay-side MFi material rides inside
+   the HomeKit pairing exchange. **No FairPlay layer on this firmware.**
+
+**Not MFi credentials:** The `/var/lib/lockdown/*` RSA-2048 records are separate usbmuxd /
+lockdown USB-trust data (host-pairing records), unrelated to the MFi authentication IC.
+
+**RE constraint:** A register-level I2C trace of the MFi chip could not be captured in-place —
+this firmware's **kernel rejects `ptrace` (`EINVAL`, kernel-wide)** and has **no ftrace**
+(`/sys/kernel/debug/tracing` absent). The cryptographic material was instead recovered from the
+Bluetooth `0xAA00`-`0xAA05` stream and the firmware log.
 
 ---
 

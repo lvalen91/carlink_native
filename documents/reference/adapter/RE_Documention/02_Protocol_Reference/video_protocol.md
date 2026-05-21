@@ -164,7 +164,7 @@ Verified from firmware switch statement at fcn.00017b74.
 
 **Requirements (Corrected Feb 2026):**
 - iOS 13+
-- Host must send `naviScreenInfo` in BoxSettings JSON — this is the **primary activation mechanism**. The firmware parses `naviScreenInfo` at `0x16e5c` and branches directly to the `HU_SCREEN_INFO` path, **bypassing** the `AdvancedFeatures` config check.
+- Host must send `naviScreenInfo` in BoxSettings JSON (USB type 0x19) — this is the **primary activation mechanism**. The firmware parses `naviScreenInfo` at `0x16e5c` and branches directly to the `HU_SCREEN_INFO` path, **bypassing** the `AdvancedFeatures` config check. For the BoxSettings wire layout see `CAPTURE_SESSION.md` §9.1.2; for the navigation-screen geometry path see §9.4.
 - `AdvancedFeatures=1` is **NOT required** when `naviScreenInfo` is provided (disproven by testing)
 - Command 508 handshake: **inconclusive** — the `pi-carplay` reference echoes 508 back, but testing could not isolate this as a requirement. Recommended as precaution.
 
@@ -179,10 +179,14 @@ Verified from firmware switch statement at fcn.00017b74.
 
 **Stream Types (AirPlay Protocol):**
 
-| Type | Purpose | Example Resolution |
-|------|---------|-------------------|
-| 110 | Main screen video | 1200×480 @ 60 FPS |
+`110` / `111` are the `type` field of the `displayInfo` / `viewAreas` descriptor in the AirPlay SETUP plist (`110` = main display, `111` = alt / cluster display). They originate in the `viewAreas` plist and are reused as the AirPlay `streams[].type`. The resolution is **not** a protocol constant — it is whatever the head unit advertised.
+
+| Type | Purpose | Example (varies by HU) |
+|------|---------|------------------------|
+| 110 | Main screen video | 2400×960 @ 60 FPS (2026-05-21 capture); 1200×480 @ 60 FPS (Jan 2026 capture) |
 | 111 | Alt screen (cluster/navigation) | 1000×400 @ 24 FPS (configurable 10-60, recommended 24-60) |
+
+Stream `type 111` is set up **only** when the head unit advertises an alt view area / `g_bSupportNaviScreen=1`. On the 2026-05-21 capture `g_bSupportNaviScreen` was 0, so only `type 110` was negotiated (`enabledFeatures:[viewAreas]`).
 
 **TTY Log Evidence (Jan 2026 Wireless CarPlay Capture):**
 ```
@@ -221,6 +225,63 @@ When capturing USB packets from a wireless CarPlay session:
 - USB capture only shows Type 6 (main video) going to the car's head unit
 - Navigation video goes directly via WiFi TCP to the adapter's AirPlay receiver
 - The adapter handles the two streams internally and may merge or route separately
+
+---
+
+## How the Head-Unit Resolution Reaches the iPhone
+
+**The iPhone renders CarPlay video to the resolution advertised in the AirPlay SETUP `viewAreas` / `displayInfo` plist** — specifically `viewAreas.widthPixels` / `viewAreas.heightPixels`. iAP2 carries **no** resolution; the resolution travels only on the AirPlay/RTSP channel (wireless) or is implied by the Open message (wired).
+
+### Path
+
+```
+host app Open(0x01) width/height ─▶ ARMadb-driver ProceessCmdOpen ─▶ auto-writes /etc/RiddleBoxData/HU_VIEWAREA_INFO
+   (or host SendFile(0x99) writes HU_VIEWAREA_INFO directly)
+                                              │
+AppleCarPlay._CopyDisplayDescriptions ────────┘  reads uint32[0]/uint32[1] of HU_VIEWAREA_INFO
+   (fcn.0001c0b4)
+                                              ▼
+   AirPlay SETUP  displayInfo/viewAreas{ widthPixels, heightPixels, safeArea{…} }  ─▶ iPhone
+```
+
+1. `AppleCarPlay._CopyDisplayDescriptions` (`fcn.0001c0b4`) reads `uint32[0]` (width) and `uint32[1]` (height) from `/etc/RiddleBoxData/HU_VIEWAREA_INFO`.
+2. `HU_VIEWAREA_INFO` is **auto-written by `ARMadb-driver` `ProceessCmdOpen`** from the host's Open (0x01) `width`/`height` fields whenever they differ from the stored value, **or** written directly via the `SendFile` (0x99) USB message.
+3. iAP2 (`IdentificationInformation`, msg `0x1D01`) carries **no resolution** — it advertises transports and message IDs only.
+
+### `viewAreas` / `displayInfo` plist schema
+
+The descriptor sent in the AirPlay SETUP request (`type` = 110 main / 111 alt):
+
+```
+displayInfo = [ {
+    type               : 110            ← 110 = main display, 111 = alt / cluster
+    uuid               : "<screen UUID>"
+    widthPixels        : <horizontal resolution the iPhone renders to>
+    heightPixels       : <vertical resolution the iPhone renders to>
+    maxFPS             : <e.g. 60>
+    widthPhysical      : <mm; 0 ⇒ iPhone derives DPI itself>
+    heightPhysical     : <mm; 0 ⇒ iPhone derives DPI itself>
+    features           : <display feature bitmask>
+    primaryInputDevice : <0 = touch is primary>
+    initialViewArea    : <index>
+    adjacentViewAreas  : [ … ]
+    viewAreas : [ {
+        widthPixels  : …   heightPixels : …
+        originXPixels : …  originYPixels : …
+        viewAreaStatusBarEdge     : <edge index>
+        viewAreaTransitionControl : <bool>
+        safeArea : {
+            widthPixels  : …   heightPixels : …
+            originXPixels : …  originYPixels : …
+            drawUIOutsideSafeArea : <bool>
+        }
+    } ]
+} ]
+```
+
+**2026-05-21 capture values:** `type:110`, `widthPixels:2400`, `heightPixels:960`, `maxFPS:60`, `widthPhysical:0`, `heightPhysical:0`, `features:10`, `primaryInputDevice:0`; nested `viewAreas[0]` = 2400×960 at origin (0,0), `safeArea` = 2400×960 at origin (0,0), `drawUIOutsideSafeArea:false`.
+
+See `CAPTURE_SESSION.md` §9.3.2 (the `viewAreas`/`displayInfo` descriptor) and §9.4 (resolution path, end to end).
 
 ---
 
@@ -292,11 +353,11 @@ When capturing USB packets from a wireless CarPlay session:
 | Parameter | Value |
 |-----------|-------|
 | **Profile** | High Profile (100) |
-| **Level** | 5.0 (Level IDC = 50) |
+| **Level** | Negotiated per session — not a fixed adapter constant (see note) |
 | **NAL Format** | Annex B (00 00 00 01 start codes) |
 | **SPS/PPS** | In-band with IDR frames |
 
-**Note:** Level 5.0 supports up to 4096×2304 @ 30fps, providing headroom for 2400×960 @ 60fps.
+**Note:** The H.264 level is **negotiated per session**, not hardcoded by the adapter. The iPhone advertises up to `h.264Level5.1` in the AirPlay SETUP `features` array; the level used depends on the resolution/FPS chosen for that session. The 2026-05-21 capture (2400×960 @ 60 FPS) used **Level 5.0** (avcc `01 64 00 32` — `level_idc = 0x32 = 50`). Level 5.0 supports up to 4096×2304 @ 30fps, providing headroom for 2400×960 @ 60fps.
 
 ### iPhone AVE Encoder Identity (iPhone Syslog, Mar 2026)
 
@@ -584,10 +645,20 @@ The 2,735B IDR encodes the AA startup animation — a nearly uniform dark backgr
 
 ### Open Message Format Field
 
+The `format` value is the **4th of 7 uint32 little-endian fields** in the Open (USB type 0x01) 28-byte payload, at **payload offset 0xC**:
+
+```
+Open payload (28 B, 7 × uint32-LE):
+  0x00 width   0x04 height   0x08 fps   0x0C format
+  0x10 packetMax   0x14 boxVersion   0x18 phoneMode
+```
+
 | Value | Name | IDR Behavior |
 |-------|------|--------------|
 | 1 | Basic | Minimal IDR insertion (stream start only) |
 | 5 | Full H.264 | Responsive to Frame sync, aggressive IDR |
+
+See `CAPTURE_SESSION.md` §9.1.1 for the full Open message wire layout.
 
 ### Keyframe Recovery Flow
 
@@ -926,16 +997,16 @@ PPS: 68ca8f20 (4 bytes)
 
 **Main Video Header (20 bytes):**
 ```
-Offset  Field    CarPlay        Android Auto
-------  -----    -------        ------------
-0x00    Width    1280           1280
-0x04    Height   720            720
-0x08    Flags    0x007fdbaf     0x00000003
-0x0C    PTS      Variable       Variable
-0x10    Reserved 0              0
+Offset       Field         CarPlay        Android Auto
+-----------  ------------  -------        ------------
+0x00 (0x10)  Width         1280           1280
+0x04 (0x14)  Height        720            720
+0x08 (0x18)  EncoderState  0x007fdbaf     0x00000003
+0x0C (0x1C)  PTS           Variable       Variable
+0x10 (0x20)  Flags         0              0
 ```
 
-The Flags field differs significantly between protocols.
+Offsets in parentheses are relative to USB message start. The `EncoderState` field (offset 0x18) differs significantly between protocols — see the EncoderState Field Analysis above. (Earlier revisions of this table mislabeled offset 0x18 as "Flags"; the consistent name is **EncoderState**. "Flags" is offset 0x20.)
 
 ---
 

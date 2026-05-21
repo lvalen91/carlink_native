@@ -566,38 +566,78 @@ Packet 2: decode=2 audio=0 flags=0x00000001 cmd=11 (MEDIA_STOP)
 
 ---
 
-## CarPlay WiFi Audio Format Codes (NEW Jan 2026)
+## CarPlay WiFi Audio Format Codes
 
-During wireless CarPlay setup, the adapter and iPhone negotiate audio formats via WiFiAudioFormats. These format codes are bitmasks:
+`WifiAudioFormats` is emitted by `AppleCarPlay` during the AirPlay session **SETUP** over **RTSP port 5000** (wireless CarPlay only), via the `_getWifiAudioLatencies` path. When `HUDinfo.plist` is empty (`filesize=0 err=kSizeErr`), the adapter falls back to firmware defaults — that default array is what is captured here.
 
-| Format Code | Codec | Sample Rate | Channels | Use Case |
-|-------------|-------|-------------|----------|----------|
-| 16 | PCM | 16000 Hz | 1 | Telephony input |
-| 32768 | PCM | 48000 Hz | 2 | Compatibility output |
-| 32784 | PCM | Various | 2 | Compatibility I/O |
-| 8388608 | AAC | 48000 Hz | 2 | Media output |
-| 33554432 | AAC-ELD | 48000 Hz | 2 | Alt audio (low latency) |
-| 67108864 | AAC-ELD | 48000 Hz | 2 | Default/telephony/speech |
+Each `WifiAudioFormats` entry is a **4-field** dictionary: `{ audioType, type, audioInputFormats, audioOutputFormats }`. The `type` field is part of the AirPlay-side negotiation namespace:
 
-**TTY Log Evidence (Jan 2026 Wireless CarPlay):**
+- `type 100` = main audio
+- `type 101` = alt audio
+- `type 102` = media audio
+
+> **Earlier documentation omitted the `type` field** and the paraphrased TTY excerpt dropped it. It is present in every entry — see the verified 8-entry array below.
+
+### Format codes — single-bit selectors
+
+The `audioInputFormats` / `audioOutputFormats` values are **single-bit selectors**, not enumerated codec IDs. A value can be a **bitwise-OR** of several selectors (e.g. `32784 = 0x8010 = 0x10 | 0x8000`).
+
+| Value | Hex | Bit | Codec / format |
+|-------|-----|-----|----------------|
+| 16 | `0x10` | 4 | PCM 16-bit, 16 kHz mono — mic / telephony input |
+| 32768 | `0x8000` | 15 | PCM 16-bit, 48 kHz stereo |
+| 32784 | `0x8010` | 4+15 | `0x10 \| 0x8000` — **combination** of 16 kHz-mono and 48 kHz-stereo PCM (NOT a separate "Various" codec) |
+| 8388608 | `0x800000` | 23 | **AAC-LC** 48 kHz stereo — media (the `type:102` stream) |
+| 33554432 | `0x2000000` | 25 | AAC-ELD 48 kHz stereo — alert / alt-audio |
+| 67108864 | `0x4000000` | 26 | AAC-ELD 48 kHz stereo — default / telephony / speechRecognition (duplex) |
+
+### Verified WifiAudioFormats array — 2026-05-21 wireless CarPlay capture
+
+Captured `carplay-20260521-101016/ttyLog.txt:570-615` — 8 entries:
+
+| audioType | type | audioInputFormats | audioOutputFormats |
+|-----------|------|-------------------|--------------------|
+| compatibility | 100 | 16 (`0x10`) | 32784 (`0x8010`) |
+| compatibility | 101 | — | 32768 (`0x8000`) |
+| alert | 100 | — | 33554432 (`0x2000000`) |
+| default | 100 | 67108864 (`0x4000000`) | 67108864 (`0x4000000`) |
+| telephony | 100 | 67108864 (`0x4000000`) | 67108864 (`0x4000000`) |
+| speechRecognition | 100 | 67108864 (`0x4000000`) | 67108864 (`0x4000000`) |
+| default | 101 | — | 33554432 (`0x2000000`) |
+| media | 102 | — | 8388608 (`0x800000`) |
+
+**TTY Log Evidence (2026-05-21 Wireless CarPlay, `ttyLog.txt:570-615`):**
 ```
 [AirPlay] #### WifiAudioFormats = [
-    audioType : "compatibility" - audioInputFormats : 16, audioOutputFormats : 32784
-    audioType : "alert" - audioOutputFormats : 33554432
-    audioType : "default" - audioInputFormats : 67108864, audioOutputFormats : 67108864
-    audioType : "telephony" - audioInputFormats : 67108864, audioOutputFormats : 67108864
-    audioType : "speechRecognition" - audioInputFormats : 67108864, audioOutputFormats : 67108864
-    audioType : "media" - audioOutputFormats : 8388608
+    { audioType : "compatibility"       type : 100  audioInputFormats : 16        audioOutputFormats : 32784 }
+    { audioType : "compatibility"       type : 101                                audioOutputFormats : 32768 }
+    { audioType : "alert"               type : 100                                audioOutputFormats : 33554432 }
+    { audioType : "default"             type : 100  audioInputFormats : 67108864  audioOutputFormats : 67108864 }
+    { audioType : "telephony"           type : 100  audioInputFormats : 67108864  audioOutputFormats : 67108864 }
+    { audioType : "speechRecognition"   type : 100  audioInputFormats : 67108864  audioOutputFormats : 67108864 }
+    { audioType : "default"             type : 101                                audioOutputFormats : 33554432 }
+    { audioType : "media"               type : 102                                audioOutputFormats : 8388608 }
 ]
+```
+
+**TTY Log Evidence (Jan 2026 Wireless CarPlay — session-specific):**
+```
 > stream info: channel = 2  sample_rate = 48000  frame_size = 480  aot = 39  bitrate = 0
 [AirPlay] Alt audio setting up AAC-ELD/48000/2
 ```
+The `frame_size = 480 aot = 39` line above is **Jan-2026-session-specific** (an AAC-ELD alt-audio stream that was negotiated in that particular capture). The authoritative format-negotiation reference is the verified 8-entry 2026-05-21 array above.
 
 **AAC Audio Object Types (aot):**
 | aot | Name | Use |
 |-----|------|-----|
 | 2 | AAC-LC | Standard media (44.1/48kHz) |
 | 39 | AAC-ELD | Enhanced Low Delay (wireless CarPlay) |
+
+### AirPlay `type` vs USB-side audio IDs — two unrelated namespaces
+
+The AirPlay-side `type` (100/101/102, carried inside `WifiAudioFormats`) is the **iPhone ↔ adapter** negotiation namespace. It is **not** the same ID space as the USB-side `audio_type` (1/2/3) and `decode_type` (2/4/5) documented earlier in this file.
+
+The adapter terminates the AirPlay audio, **decodes AAC → PCM**, and **re-tags** the resulting streams with the USB-side `audio_type` / `decode_type` before forwarding to the host. There is no fixed numeric correspondence between the AirPlay `type` and the USB `audio_type` — the two ID spaces are unrelated.
 
 ---
 

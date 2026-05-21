@@ -18,6 +18,8 @@ This is **completely separate** from USB communication encryption (CMD_ENABLE_CR
 
 See `03_Security_Analysis/crypto_stack.md` for complete cryptographic stack documentation.
 
+**See also:** The firmware-image AES here is also distinct from the **MFi authentication coprocessor** (a genuine Apple IC on I2C bus 1) — see the "MFi Authentication Coprocessor" subsection in `hardware_platform.md`. Do not conflate the firmware-image AES key with MFi credentials.
+
 ---
 
 ## File Format Overview

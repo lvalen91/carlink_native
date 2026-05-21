@@ -7,6 +7,7 @@ import android.os.Build
 import android.util.Log
 import android.view.WindowManager
 import com.carlink.BuildConfig
+import com.carlink.util.WindowMetricsCompat
 
 /**
  * PlatformDetector - Detects hardware platform characteristics for configuration selection.
@@ -176,8 +177,8 @@ object PlatformDetector {
         try {
             val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
             if (windowManager != null) {
-                // minSdk 32 >= API 30 (R), so currentWindowMetrics is always available
-                val bounds = windowManager.currentWindowMetrics.bounds
+                // WindowMetricsCompat: currentWindowMetrics on API 30+, getRealMetrics on API 29.
+                val bounds = WindowMetricsCompat.displayBounds(windowManager)
                 Pair(bounds.width(), bounds.height())
             } else {
                 Pair(0, 0)

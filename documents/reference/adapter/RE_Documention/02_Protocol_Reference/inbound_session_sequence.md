@@ -29,10 +29,10 @@ Observed in macOS CarLink client session 2026-04-20 (FW `2025.10.15.1127CAY`, iP
 |---|---------|---------|---------|
 | +0.124s | Heartbeat timer started (first fire at t=+2s) | 0xAA | — |
 | +0.381s | `SENDFILE /tmp/screen_dpi` | 0x99 | 4B (DPI, e.g. `a0 00 00 00` = 160) |
-| +0.510s | `OPEN 2400x960@60fps mode=2` | 0x01 | 28B (W,H,fps,format,phoneWorkMode,audioTransMode,mediaDelay) |
+| +0.510s | `OPEN 2400x960@60fps mode=2` | 0x01 | 28B = 7×uint32-LE: width, height, fps, format, packetMax, boxVersion, phoneMode (2=CarPlay) |
 | +0.636s | `BOXSETTINGS (host JSON)` | 0x19 | ~280B JSON (CallQuality, DashboardInfo, GNSSCapability, box/bt/wifiName, androidAutoSize, etc.) |
 | +0.764s | `SENDFILE /etc/RiddleBoxData/HU_VIEWAREA_INFO` | 0x99 | 24B (W,H,viewW,viewH,offX,offY) |
-| +0.890s | `SENDFILE /etc/RiddleBoxData/HU_SAFEAREA_INFO` | 0x99 | 20B (W,H,insetT,insetB,insetL,insetR) |
+| +0.890s | `SENDFILE /etc/RiddleBoxData/HU_SAFEAREA_INFO` | 0x99 | 20B (w, h, originX, originY, drawUIOutsideSafeArea) |
 | +2.364s | `SENDFILE /etc/android_work_mode` | 0x99 | 4B (LE; `01 00 00 00` = Android Auto enabled, `00 00 00 00` = disabled) |
 | +2.523s | `CMD WIFI_ENABLE` | 0x08 | cmdId=1000 |
 | +2.523s | `CMD WIFI_CONNECT` (if autoConn) | 0x08 | cmdId=1002 |
@@ -91,13 +91,21 @@ BT paging and RFCOMM connection to the phone.
 
 ### Phase 4 — CarPlay Session Setup (~1s after BT connect)
 
-WiFi Direct handshake and CarPlay protocol negotiation.
+WiFi SoftAP association + AirPlay/RTSP negotiation.
 
 | # | Message | Type ID | Meaning |
 |---|---------|---------|---------|
 | 20 | `BoxSettings(phone: )` | 0x19 | WiFi handshake starting (model still empty) |
 | 21 | `Plugged(phoneType=CARPLAY, wifi=1)` | 0x02 | **CarPlay session active, wireless mode** |
 | 22 | `Phase(7=connecting)` | 0x03 | AirPlay protocol negotiation in progress |
+
+> **Note (iAP2 / MFi / AirPlay activity in the Phase 3→4 window):** between BT connect and
+> `Plugged`, the adapter and iPhone run — over Bluetooth RFCOMM — the iAP2 identification
+> (`0x1D00/0x1D01/0x1D02`), MFi authentication (`0xAA00–0xAA05`), WiFi credential handover
+> (`0x5702/0x5703`) and device update messages (`0x4E0A/0B/0D/0E`); then, over WiFi, AirPlay
+> `/pair-setup` ×3 + `/pair-verify` ×2. The long Phase-4 delay corresponds to iPhone-side trust
+> (the "Use This Car" prompt) plus pair-setup. None of this appears on the USB control channel.
+> See `device_identification.md` and `carplay_handshake.md` for the full ordered handshake.
 
 ### Phase 5 — Streaming Active (~2s after Plugged)
 
@@ -145,8 +153,8 @@ Follows immediately after streaming begins.
    string (`iPhone18,4`) at streaming start.
 
 3. **BT is transient** — Bluetooth is only used for initial device discovery and
-   RFCOMM handshake. Once WiFi Direct is established, `DISABLE_BLUETOOTH` and
-   `BT_DISCONNECTED` are sent. The actual CarPlay stream runs entirely over WiFi.
+   RFCOMM handshake. Once the iPhone has joined the adapter's WiFi SoftAP, `DISABLE_BLUETOOTH`
+   and `BT_DISCONNECTED` are sent. The actual CarPlay stream runs entirely over WiFi.
 
 4. **`WIFI_DISCONNECTED` is informational** — Does NOT indicate session end.
    Real disconnects come via `Unplugged` (0x04) or `Phase(0)`.

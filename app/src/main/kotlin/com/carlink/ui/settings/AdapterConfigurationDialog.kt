@@ -70,11 +70,13 @@ import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.carlink.CarlinkManager
 import com.carlink.logging.logInfo
 import com.carlink.logging.logWarn
 import com.carlink.ui.theme.AutomotiveDimens
+import com.carlink.util.WindowMetricsCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -146,11 +148,14 @@ fun AdapterConfigurationDialog(
     // Other modes: Subtract system bar insets from bounds
     val context = LocalContext.current
     val activity = context as? ComponentActivity
-    val windowManager = activity?.windowManager
     val (usableWidth, usableHeight) =
-        if (windowManager != null) {
-            val windowMetrics = windowManager.currentWindowMetrics
-            val bounds = windowMetrics.bounds
+        if (activity != null) {
+            // WindowMetricsCompat falls back to getRealMetrics + WindowInsetsCompat on
+            // API 29 (AAOS 10); the API 30+ path is unchanged.
+            val windowManager = activity.windowManager
+            val bounds = WindowMetricsCompat.displayBounds(windowManager)
+            val windowInsets =
+                WindowMetricsCompat.stableWindowInsets(windowManager, activity.window.decorView)
 
             when (currentDisplayMode) {
                 DisplayMode.FULLSCREEN_IMMERSIVE -> {
@@ -161,9 +166,8 @@ fun AdapterConfigurationDialog(
                 DisplayMode.STATUS_BAR_HIDDEN -> {
                     // Only subtract navigation bar (bottom), not status bar
                     val insets =
-                        windowMetrics.windowInsets.getInsetsIgnoringVisibility(
-                            android.view.WindowInsets.Type
-                                .navigationBars(),
+                        windowInsets.getInsetsIgnoringVisibility(
+                            WindowInsetsCompat.Type.navigationBars(),
                         )
                     val w = bounds.width() - insets.left - insets.right
                     val h = bounds.height() - insets.bottom
@@ -173,9 +177,8 @@ fun AdapterConfigurationDialog(
                 DisplayMode.NAV_BAR_HIDDEN -> {
                     // Only subtract status bar (top), not navigation bar
                     val insets =
-                        windowMetrics.windowInsets.getInsetsIgnoringVisibility(
-                            android.view.WindowInsets.Type
-                                .statusBars(),
+                        windowInsets.getInsetsIgnoringVisibility(
+                            WindowInsetsCompat.Type.statusBars(),
                         )
                     val w = bounds.width()
                     val h = bounds.height() - insets.top
@@ -185,11 +188,9 @@ fun AdapterConfigurationDialog(
                 DisplayMode.SYSTEM_UI_VISIBLE -> {
                     // Subtract all system bar insets
                     val insets =
-                        windowMetrics.windowInsets.getInsetsIgnoringVisibility(
-                            android.view.WindowInsets.Type
-                                .systemBars() or
-                                android.view.WindowInsets.Type
-                                    .displayCutout(),
+                        windowInsets.getInsetsIgnoringVisibility(
+                            WindowInsetsCompat.Type.systemBars() or
+                                WindowInsetsCompat.Type.displayCutout(),
                         )
                     val w = bounds.width() - insets.left - insets.right
                     val h = bounds.height() - insets.top - insets.bottom

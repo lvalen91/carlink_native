@@ -31,6 +31,11 @@ The adapter uses a `decodeType` value (4-byte LE integer) in AudioData messages 
 | 6 | 24000 Hz | 1 (mono) | 16 | Voice recognition | **[Not observed on USB]** |
 | 7 | 16000 Hz | 2 (stereo) | 16 | Stereo voice | **[Not observed on USB]** |
 
+> **[Two distinct audio-format encodings — do not conflate]** There are two separate audio-format numbering schemes in the system:
+> (a) the **USB `decodeType` integer** (1–7, the table above) on the host↔adapter USB link;
+> (b) the **AirPlay `WifiAudioFormats` bitmask** advertised adapter→iPhone during AirPlay SETUP (single-bit selectors — see new § *AirPlay Audio Capability Advertisement (WifiAudioFormats)* below).
+> These are **NOT** the same numbering. Do **not** conflate `decodeType=5` (USB) with bitmask `0x10` (AirPlay) — they happen to be unrelated values that both relate to 16 kHz audio but are independent encodings on different links.
+
 ### Semantic Context (from firmware analysis)
 
 The decodeType also indicates semantic context for audio commands:
@@ -63,6 +68,8 @@ Processing: Minimal - primarily pass-through with format signaling
 **Key Difference from Microphone Input:** Unlike mic input where WebRTC AECM explicitly validates sample rates (only 8kHz/16kHz accepted), **playback audio has no strict firmware validation**. The adapter passes through whatever format CarPlay/Android Auto sends.
 
 **Format Negotiation:** The phone/CarPlay determines the playback format during session setup. The adapter signals the format to the host via `decodeType` but does not reject or validate incoming audio.
+
+> **[AirPlay-side wire format vs USB-side `decodeType`]** The phone→adapter media stream is **not** PCM — over AirPlay/WiFi it is compressed: **AAC-LC** (`WifiAudioFormats` bitmask `0x800000`, the `type:102` media stream) for media, and **AAC-ELD** (`0x2000000` alert / `0x4000000` telephony, speech) for the other streams. The adapter **decodes AAC→PCM** internally before forwarding over USB. The USB `decodeType` is therefore **always PCM** — the host never sees AAC. See § *AirPlay Audio Capability Advertisement (WifiAudioFormats)* for the full bitmask table.
 
 **Resampling Capability (Binary Evidence):**
 The firmware includes format conversion functions if needed:
@@ -281,8 +288,63 @@ wifiFormat is same as BTFormat %s!!!!!!
 ```
 
 The adapter tracks separate formats for:
-- **WiFi (CarPlay wireless)**: Typically higher quality
-- **Bluetooth (HFP)**: 8kHz or 16kHz narrowband
+- **WiFi (CarPlay wireless / AirPlay)**: the full `WifiAudioFormats` capability set advertised
+  during AirPlay SETUP — PCM 16 kHz mono (`0x10`), PCM 48 kHz stereo (`0x8000`/`0x8010`),
+  AAC-LC 48 kHz stereo media (`0x800000`), AAC-ELD 48 kHz stereo alert/telephony/speech
+  (`0x2000000`/`0x4000000`). Concrete captured values are in § *AirPlay Audio Capability
+  Advertisement (WifiAudioFormats)* below.
+- **Bluetooth (HFP/SCO)**: 8 kHz or 16 kHz narrowband PCM only — the BT-HFP voice path used
+  for Android Auto phone calls (and CarPlay calls when `UseBTPhone` is set).
+
+The `wifiFormat is same as BTFormat` log line is a diagnostic emitted when the two negotiated
+format sets coincide; normally the WiFi/AirPlay set is a strict superset.
+
+---
+
+## AirPlay Audio Capability Advertisement (WifiAudioFormats)
+
+> **[Capture-verified 2026-05-21]** During AirPlay SETUP (RTSP on TCP **5000**, after the
+> BT→WiFi handover) the `AppleCarPlay` daemon advertises a **`WifiAudioFormats` array** to the
+> iPhone. This is the AirPlay-layer audio capability declaration — **distinct from the USB
+> `decodeType` integer** (see the note under *Audio Format Mapping (decodeType)*).
+
+Each array entry is a struct `{ audioType, type, audioInputFormats, audioOutputFormats }`:
+
+- **`audioType`** — semantic role: `compatibility`, `alert`, `default`, `telephony`,
+  `speechRecognition`, `media`.
+- **`type`** — stream selector: **100 = main audio**, **101 = alt audio**, **102 = media audio**.
+- **`audioInputFormats` / `audioOutputFormats`** — single-bit format bitmasks (see table).
+
+### WifiAudioFormats bitmask values
+
+| Value (dec) | Value (hex) | Codec / format |
+|-------------|-------------|----------------|
+| 16 | `0x10` | PCM 16-bit, 16 kHz mono — mic / telephony input |
+| 32768 | `0x8000` | PCM 16-bit, 48 kHz stereo |
+| 32784 | `0x8010` | `0x10 \| 0x8000` combined (16 kHz mono + 48 kHz stereo) |
+| 8388608 | `0x800000` | **AAC-LC** 48 kHz stereo — media (the `type:102` stream) |
+| 33554432 | `0x2000000` | **AAC-ELD** 48 kHz stereo — alert / alt-audio |
+| 67108864 | `0x4000000` | **AAC-ELD** 48 kHz stereo — default / telephony / speechRecognition (duplex) |
+
+### Captured 8-entry array (`carplay-20260521-101016/ttyLog.txt:570-615`)
+
+| audioType | type | audioInputFormats | audioOutputFormats |
+|-----------|------|-------------------|--------------------|
+| compatibility | 100 | `0x10` | `0x8010` |
+| compatibility | 101 | — | `0x8000` |
+| alert | 100 | — | `0x2000000` |
+| default | 100 | `0x4000000` | `0x4000000` |
+| telephony | 100 | `0x4000000` | `0x4000000` |
+| speechRecognition | 100 | `0x4000000` | `0x4000000` |
+| default | 101 | — | `0x2000000` |
+| media | 102 | — | `0x800000` |
+
+**Source path:** built by `AppleCarPlay` via `_getWifiAudioLatencies` / the HUDinfo path. On this
+unit `HUDinfo.plist` is empty, so the array shown is the **firmware default** capability set.
+
+The mic uplink is advertised via `audioInputFormats`: `0x4000000` (AAC-ELD duplex) on the
+`default`/`telephony`/`speechRecognition` rows, plus `0x10` (PCM 16 kHz mono) on
+`compatibility/100`.
 
 ---
 

@@ -264,6 +264,19 @@ Format notation: `codec/sampleRate/bitDepth/channels`
 
 **Additional Bonjour service**: `_mfi-config._tcp.` (MFi configuration, alongside `_carplay._tcp` and `_airplay._tcp`)
 
+### Live Capture — RTSP Control Channel and Endpoints (2026-05-21)
+
+A fresh wireless CarPlay pairing was captured (`MFi_research/capture/carplay-20260521-101016/`):
+
+- AirPlay/RTSP control runs on **TCP port 5000** — live-verified: `_airplay._tcp` is registered
+  on 5000 and the iPhone connects `:49374` → `:5000`.
+- On-wire RTSP endpoints observed during a fresh pairing: **`POST /pair-setup` ×3**
+  (`X-Apple-HKP: 0`), **`POST /pair-verify` ×2** (`X-Apple-HKP: 2`, `X-Apple-PD: 1`), and
+  `POST /command`.
+- **No `/fp-setup` or `/auth-setup` endpoint** appears — there is no FairPlay code path.
+- `_mfi-config._tcp` appears only as a binary string; it was **not** observed advertised on-wire.
+- Version banners: adapter AirPlay/AirTunes **320.17**, iPhone AirPlay **950.7.1**.
+
 ---
 
 ## DMSDP Framework
@@ -907,6 +920,14 @@ list_trust_peers();
 delete_local_auth_info();
 ```
 
+**Note — this is not CarPlay/MFi authentication.** `libauthagent.so` is the DMSDP/HiCar
+paired-device trust store. Apple-side wireless-CarPlay authentication is performed by two separate
+mechanisms: (1) the **hardware MFi 2.0C coprocessor** on I²C bus 1 (`/dev/i2c-1:0x11`), which
+drives the iAP2 `0xAA00`–`0xAA05` certificate + RSA-1024 challenge-response, and (2)
+**HomeKit-style pair-setup / pair-verify** on the AirPlay channel. See
+`05_Security_Analysis/crypto_stack.md` → "MFi Authentication Coprocessor" and the "MFi
+Authentication — Firmware Internals" section below.
+
 ---
 
 ## iAP2 Protocol Engines (ARMiPhoneIAP2)
@@ -914,6 +935,62 @@ delete_local_auth_info();
 **[CarPlay]** 9 iAP2 engines run in parallel with AirPlay, parsing structured metadata (Identify, MediaPlayer, CallState, Communication, RouteGuidance, Location, Power, VehicelStat, WiFiConfig).
 
 See `binary_analysis/key_binaries.md` for complete engine class hierarchy, field catalogs, message dispatch table, and data relay architecture.
+
+---
+
+## MFi Authentication — Firmware Internals
+
+**[CarPlay] [Firmware]** The adapter drives a **real hardware MFi 2.0C authentication
+coprocessor** — there is no software emulation.
+
+### Bus and GPIO
+
+| Property | Value |
+|----------|-------|
+| **I²C bus** | `/dev/i2c-1`, slave `0x11` (7-bit) / `0x22` (8-bit), via Linux `i2c-dev` |
+| **Address probe** | Probed at session init; result cached to `/tmp/mfi_i2c_addr` |
+| **Reset/power GPIO** | A pin in the i.MX6UL **GPIO2** bank (base `0x020A0000`), driven via direct `/dev/mem` mmap — function `mfi_auth_setupgpio` |
+| **Bus mutex** | `/tmp/.mfi_auth_lock` — arbitrates the bus between `ARMiPhoneIAP2` and `AppleCarPlay` |
+
+### Function Chain
+
+```
+APSMFiPlatform_CopyCertificate  (cert read)
+APSMFiPlatform_CreateSignature  (sign)
+        │
+        ▼
+mfi_auth_processchallenge       (low-level register sequence)
+        │
+        ▼
+_DoI2C                          (I²C transfers against /dev/i2c-1)
+```
+
+### Register Map (summary)
+
+| Register | Size | Purpose |
+|----------|------|---------|
+| `0x30` / `0x31` | 2 / N | AccessoryCertLen / AccessoryCertData (945 bytes) |
+| `0x20` / `0x21` | 2 / N | ChallengeDataLen / ChallengeData (20 bytes) |
+| `0x10` | 1 | AuthControlStatus — trigger / status |
+| `0x11` / `0x12` | 2 / N | SignatureLen / SignatureData (128-byte RSA-1024) |
+
+Full register map: `MFi_research/docs/register_map.md`.
+
+### iAP2 Message Flow
+
+```
+0xAA00 ReqAuthCert  →  0xAA01 Cert (945 B)  →  0xAA02 ReqChallenge (20 B)
+   →  0xAA03 ChallengeResponse (128 B)  →  0xAA05 AuthSuccess
+```
+
+### When Exercised
+
+The coprocessor is exercised **twice per wireless CarPlay pairing**: once for the
+iAP2-over-Bluetooth challenge-response above, and once for the AirPlay-over-WiFi
+`MFi auth create signature` step (after pair-setup / pair-verify).
+
+The files under `/var/lib/lockdown/` are **NOT** MFi files — they are the iOS host-pairing
+identity (see `05_Security_Analysis/vulnerabilities.md` §5). There is **no FairPlay** path.
 
 ---
 

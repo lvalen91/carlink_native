@@ -9,6 +9,22 @@
 
 ---
 
+## USB Message Types — Pointer Table
+
+Command (0x08) is one of several USB message types in the `0x55AA55AA` bulk protocol. The table below routes each message type to its canonical documentation. **This file (`command_ids.md`) documents only the 0x08 Command payload** — the 4-byte command IDs.
+
+| Type | Name | Documented in |
+|------|------|---------------|
+| `0x01` | Open | `usb_protocol.md` / `CAPTURE_SESSION.md` §9.1.1 |
+| `0x06` | VideoData | `video_protocol.md` |
+| `0x07` | AudioData | `audio_protocol.md` |
+| `0x08` | Command | **this file** |
+| `0x19` | BoxSettings | `usb_protocol.md` / `CAPTURE_SESSION.md` §9.1.2 |
+| `0x2C` | NaviVideo (AltVideoFrame) | `video_protocol.md` |
+| `0x99` | SendFile | `usb_protocol.md` / `CAPTURE_SESSION.md` §9.1.3 |
+
+---
+
 ## Overview
 
 The Command message type (0x08) is **bidirectional** - commands flow in both directions between host and adapter. The adapter acts as a bridge, forwarding many commands between the host application and the connected phone (CarPlay/Android Auto).
@@ -207,7 +223,7 @@ The Command IDs `SiriButtonDown(5)` and `SiriButtonUp(6)` are for the **host to 
 | 6 | 0x06 | SiriButtonUp | H→A→P | Siri button released |
 | 7 | 0x07 | UseCarMic | H→A | Use car's microphone |
 | 8 | 0x08 | UseBoxMic | H→A | Use adapter's microphone |
-| 12 | 0x0C | RequestKeyFrame | H→A | Request video IDR frame |
+| 12 | 0x0C | RequestKeyFrame | H→A | Request video IDR frame (IDR aggressiveness is set by the Open `format` field — 1=basic, 5=aggressive; see `video_protocol.md`) |
 | 14 | 0x0E | Hide | P→A→H | Hide/minimize projection |
 | 15 | 0x0F | UseBoxI2SMic | H→A | Use adapter's I2S microphone |
 | 16 | 0x10 | StartNightMode | H→A | Enable night/dark mode |

@@ -48,6 +48,9 @@ Payload Structure:
 
 **Total payload length:** `4 + (N+1) + 4 + M = N + M + 9`
 
+**Staging:** the firmware buffers each `SendFile` upload through `/tmp/uploadFileTmp` before
+moving it to the destination path given in the payload.
+
 #### Update Image Naming Convention
 
 The firmware auto-detects update images by checking for **"Update.img"** in the filename:
