@@ -508,3 +508,5 @@
    - Verified by 4 agents against official Android docs; no dependency exceeds minSdk 29 (highest is 23).
    - Build clean: sideloadDebug APK, sideloadRelease APK, playRelease AAB; lintVitalRelease passed, no NewApi errors.
    - Affected: app/build.gradle.kts, WindowMetricsCompat.kt (new), MainActivity.kt, PlatformDetector.kt, AdapterConfigurationDialog.kt, UsbDeviceWrapper.kt.
+
+[132] :: Removed command injection from MessageSerializer.kt

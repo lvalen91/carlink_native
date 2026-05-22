@@ -408,6 +408,12 @@ object MessageSerializer {
     }
 
     /**
+     * DISABLED 2026-05-21 — not wired into any init path (the call site in addFullSettings is
+     * commented out). Kept visible for future use against firmware KNOWN to be shell-vulnerable.
+     * Re-enable caveat: `config.boxName` is interpolated UNESCAPED into the inner `sed` command
+     * below — a boxName containing `"`, `;`, `/`, `$()` or backticks corrupts the payload and
+     * can run unintended commands as root; sanitize/escape it before re-enabling.
+     *
      * Serialize a one-shot BoxSettings frame that exploits the CustomWifiName shell-injection
      * vulnerability in the adapter firmware to persist safe audio quality values via riddleBoxCfg.
      *
@@ -434,6 +440,7 @@ object MessageSerializer {
      * Only the fields needed to deliver the injection are included. The full config (DashboardInfo,
      * GNSSCapability, androidAutoSizeW/H, etc.) is written by the normal BoxSettings that follows.
      */
+    @Suppress("unused", "detekt:UnusedPrivateMember")
     private fun serializeQualityRescueBoxSettings(config: AdapterConfig): ByteArray {
         // Closes firmware's unsanitized sed double-quote, runs riddleBoxCfg as root,
         // restores the real SSID, then comments out the firmware's trailing sed fragment.
@@ -654,14 +661,15 @@ object MessageSerializer {
         val wifiCommand = if (config.wifiType == "5ghz") CommandMapping.WIFI_5G else CommandMapping.WIFI_24G
         messages.add(serializeCommand(wifiCommand))
 
-        // Quality rescue: exploit CustomWifiName shell injection to persist VoiceQuality=1 and
-        // CallQuality=1 via riddleBoxCfg on the adapter. Must run before the normal BoxSettings
-        // so the SSID is restored cleanly by the time the normal frame writes wifiName with the
-        // correct value. Value 2 (24kHz / 960B frames) overflows the adapter's hardcoded 640B
-        // mic input buffer, dropping all mic audio — fire this on every FULL to guarantee the
-        // adapter is never left in that state regardless of prior web-UI tampering or partial
-        // factory-reset that failed to clear /etc/riddle.conf. See serializeQualityRescueBoxSettings.
-        messages.add(serializeQualityRescueBoxSettings(config))
+        // Quality rescue — DISABLED 2026-05-21. Was: exploit the CustomWifiName shell injection
+        // to persist VoiceQuality=1 / CallQuality=1 via riddleBoxCfg, sent before the normal
+        // BoxSettings so the real wifiName would overwrite the poisoned SSID afterward.
+        // Why disabled: on adapters whose firmware is NOT shell-vulnerable on wifiName, the
+        // payload is stored verbatim and the garbage string sticks as the live SSID — the
+        // following normal BoxSettings does not reliably overwrite it (confirmed by a user's
+        // adapter web-portal screenshot). VoiceQuality / CallQuality are now never sent.
+        // Kept for future use — re-enable ONLY against firmware known to be shell-vulnerable.
+        // messages.add(serializeQualityRescueBoxSettings(config))
 
         // Box settings JSON — includes DashboardInfo=7 and GNSSCapability=3 always.
         // These are persisted to riddle.conf by the firmware's ConfigFileUtils.
