@@ -501,7 +501,7 @@ enum class MultiTouchAction(
 /**
  * Known Carlinkit USB device identifiers (vendorId, productId).
  *
- * Sourced from pi-carplay USB captures and observed CPC200-CCPA variants. Consumed
+ * Sourced from USB captures and observed CPC200-CCPA variants. Consumed
  * by UsbDeviceWrapper.isKnownDevice at attach time; only these VID/PID pairs are
  * accepted. Add new pairs here if a newer adapter SKU ships with a different ID.
  */

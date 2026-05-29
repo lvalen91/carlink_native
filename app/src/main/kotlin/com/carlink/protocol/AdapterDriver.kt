@@ -35,10 +35,6 @@ import java.util.concurrent.atomic.AtomicLong
  *  - [isRunning] is the single gate: after [stop], every [send] silently returns
  *    false. Callers that need to distinguish "not running" from "send failed" must
  *    track state externally.
- *
- * External references: "pi-carplay" cited in several comments is an out-of-tree
- * project whose USB captures are mirrored under documents/reference/ — not a vendored
- * dependency. Treat it as the empirical source for timing and sequence decisions.
  */
 class AdapterDriver(
     private val usbDevice: UsbDeviceWrapper,
@@ -133,8 +129,8 @@ class AdapterDriver(
         val allSent = initFailures == 0
         log("Initialization sequence completed (${initMessagesCount - initFailures}/$initMessagesCount sent)")
 
-        // Schedule wifiConnect with timeout (matches pi-carplay behavior; see
-        // documents/reference/ for the capture traces that pin down the 600 ms delay).
+        // Schedule wifiConnect with timeout (600 ms delay derived from capture traces
+        // under documents/reference/).
         wifiConnectTimer =
             Timer().apply {
                 schedule(
@@ -332,7 +328,7 @@ class AdapterDriver(
      * Send graceful teardown sequence. Must be called BEFORE stop()
      * since send() requires isRunning==true.
      *
-     * Sequence (from pi-carplay USB captures — see documents/reference/):
+     * Sequence (from USB captures — see documents/reference/):
      * 1. DisconnectPhone (0x0F) — end phone's CarPlay/AA session
      * 2. CloseDongle (0x15) — stop adapter internal processes
      * 3. RebootAdapter (0xCD) — optional full adapter reboot

@@ -296,7 +296,7 @@ These commands manage audio/video/navigation focus for Android Auto sessions onl
 | 505 | 0x1F9 | ReleaseAudioFocus | A→H | Release audio focus |
 | 506 | 0x1FA | RequestNaviFocus | A→H | Request navigation audio focus |
 | 507 | 0x1FB | ReleaseNaviFocus | A→H | Release navigation focus |
-| 508 | 0x1FC | RequestNaviScreenFocus | BOTH | Navigation screen focus handshake (echo back to adapter) |
+| 508 | 0x1FC | RequestNaviScreenFocus | BOTH | Three-step handshake: host sends, adapter replies, host echoes. On wireless CarPlay the adapter never initiates, so host must send first. See video_protocol.md "Handshake Sequence". |
 | 509 | 0x1FD | ReleaseNaviScreenFocus | H→A | Release navigation screen focus |
 
 **Audio Focus Types (from OpenAuto TTY logs):**

@@ -34,7 +34,7 @@ The heartbeat mechanism serves as a **connection supervision watchdog**. The fir
 | **Wrong** | After init completes + 2s delay | May exceed watchdog timeout |
 | **Correct** | Timer starts before init, first HB fires after interval | Stable |
 
-**Correct initialization sequence (matches pi-carplay & carlink_native):**
+**Correct initialization sequence (observed in capture sessions):**
 ```
 1. USB Reset
 2. 3-second mandatory wait
@@ -279,7 +279,7 @@ The firmware implements a watchdog pattern: if no heartbeat is seen within the 1
 
 **Total time budget:** ~10 seconds from USB open to stable heartbeat
 
-### Implementation Pattern (Matches pi-carplay & carlink_native)
+### Implementation Pattern (Observed in Capture Sessions)
 
 ```python
 def start():

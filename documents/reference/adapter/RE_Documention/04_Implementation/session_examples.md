@@ -1,7 +1,7 @@
 # Captured Session Examples
 
 **Status:** VERIFIED via USB capture analysis
-**Source:** Pi-Carplay session captures (Jan 2026); wireless pairing capture `carplay-20260521-101016`
+**Source:** USB session captures (Jan 2026); wireless pairing capture `carplay-20260521-101016`
 **Last Updated:** 2026-05-21
 
 ---
@@ -384,7 +384,7 @@ The adapter sends these WiFi credentials to the phone:
 | `channeltype` | 0 | Channel type |
 | `ip` | 192.168.43.1 | Adapter's IP address |
 | `port` | 54321 | TCP port for AA streaming |
-| `ssid` | pi-carplay | WiFi network name |
+| `ssid` | CarPlay-Adapter | WiFi network name (example) |
 | `passwd` | 12345678 | WiFi password |
 | `bssid` | 00:E0:4C:98:0A:6C | Adapter's WiFi MAC |
 | `securityMode` | 8 | WPA2-PSK |
@@ -392,7 +392,7 @@ The adapter sends these WiFi credentials to the phone:
 **TTY Log Example:**
 ```
 [BoxRFCOMMService] initWifiInfo, channelfreq: 5180, channeltype: 0,
-  ip: 192.168.43.1, port: 54321, ssid: pi-carplay, passwd: 12345678,
+  ip: 192.168.43.1, port: 54321, ssid: CarPlay-Adapter, passwd: 12345678,
   bssid: 00:E0:4C:98:0A:6C, securityMode: 8
 [BoxRFCOMMService] sendRFCOMMData type: 4
 [BoxRFCOMMService] recv msg size: 22, type: 5
@@ -460,7 +460,7 @@ Both CarPlay and Android Auto sessions include a single Type 163 packet:
 
 > **Newer capture device info (2026-05-21):** iPhone `iPhone18,4` on iOS `26.5`, AirPlay
 > `950.7.1`; adapter AirPlay/AirTunes `320.17`. The detailed CarPlay Session Example above is
-> the older Jan 2026 pi-carplay USB capture and retains its own session metadata.
+> the older Jan 2026 USB capture and retains its own session metadata.
 
 ---
 
@@ -598,8 +598,8 @@ These are internal to the adapter - the host receives simplified PhoneLinkInfo v
 
 ## References
 
-- Captures: `/Users/zeno/.pi-carplay/usb-logs/`, `/Users/zeno/.pi-carplay/usb-capture/`
-- Adapter logs: `/Users/zeno/.pi-carplay/adapter-logs/`
+- Captures: USB log + capture directories
+- Adapter logs: adapter log directory
 - Protocol: `02_Protocol_Reference/usb_protocol.md`
 - Commands: `02_Protocol_Reference/command_ids.md`
 - Audio: `02_Protocol_Reference/audio_protocol.md`
@@ -607,6 +607,6 @@ These are internal to the adapter - the host receives simplified PhoneLinkInfo v
 - Host guide: `04_Implementation/host_app_guide.md`
 
 **Capture Sessions:**
-- Jan 2026 CarPlay (iPhone 18,4 - wireless): `picarplay-capture_26JAN22_02-45-40`
+- Jan 2026 CarPlay (iPhone 18,4 - wireless): USB capture `26JAN22_02-45-40`
 - Jan 2026 Android Auto (Pixel 10 - wired): Same adapter log session
 - Adapter TTY log: `adapter-ttylog_26JAN22_02-45-44.log`

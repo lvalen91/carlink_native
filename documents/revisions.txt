@@ -522,3 +522,38 @@
    - DisplayMode default is now platform-conditional via PlatformDetector.requiresImmersiveDefaults() (gminfo37 + AAOS emulator → FULLSCREEN_IMMERSIVE; all other platforms → SYSTEM_UI_VISIBLE as before). User's prior persisted choice still wins; only first-install / post-uninstall defaults change.
    - oemIcon hidden by default on the same platform set — MessageSerializer.generateAirplayConfig now honors AdapterConfig.oemIconVisible (was a constant "1"); MainActivity sets it to !requiresImmersiveDefaults().
    - Platform check for gminfo3.7 hides CarPlay OEMicon and defaults DisplayMode to Fullscreen on that platform.
+
+[134] :: Attempting to generate CarPlay Nav Icons with in-app compose based on rcvd iAP2 information.
+
+[135] :: AAOS Emulator Only. With custom ClusterHome pro-app, integrate Nav Video into emulator cluster.
+
+[136] :: Compose icon feature wrap-up: LEFT_TURN bbox-centering fix + Bug A solved via iAP2 0x5201 parsing.
+   - Bug A (cluster maneuver out of sync with iPhone): five prior attempts v1-v5 inferred cursor from sparse signals.
+   - Root: patched ARMiPhoneIAP2 (133) forwards full 21-field 0x5201 as _iap2 hex; app logged but never parsed it.
+   - Cursor lived in field 0x000d (RouteGuidanceManeuverCurrentList per Apple R14G17 SDK) on every ~1Hz tick.
+   - v6.1 fix: new Iap2StateParser.kt parses _iap2 hex; NavigationStateManager reads cursor authoritatively, no inference needed.
+   - CarlinkManager.kt sets parsed state via setLastIap2State before onNaviJson; nulls on absent _iap2 or parse failure.
+   - v6.1 cursor body inserted between burst block and existing v5 Tier C body; v5 remains as fallback.
+   - v5 fallback covers len=2 _iap2 frames (depart and arrival) and non-Apple-Maps apps that omit _iap2 field.
+   - Reset lastIap2State on flush (NaviStatus 0|2) and clear() — prevents stale-cursor reuse after route end.
+   - maneuverCount sanity check: v6.1 skips when iap2 ManeuverCount disagrees with loaded route plan size.
+   - Zero LAG_DETECTED across both routes; zero V6_DISCREPANCY events; cluster maneuver now matches iPhone exactly.
+   - LEFT_TURN icon centering fix shipped earlier this cycle: IconBitmapRenderer.kt bbox-centers union of paths.
+   - Apple LEFT_TURN bbox center_x = -21.07 (49pt left of canvas center); old (28,28) translation caused severe clipping.
+   - Documented full 0x5201 + 0x5202 field catalog with Apple R14G17 SDK names; saved to /tmp/iap2_message_catalog.md.
+   - Discovered 7 new maneuverType integers used by Apple Maps: 14 (continue on road), 24/25 (arrival on left/right).
+   - Also seen: 29 (post-roundabout multi-direction), 30 (roundabout take-Nth-exit), 49 (slight left), 50 (slight right).
+   - Affected: Iap2StateParser.kt (new), NavigationStateManager.kt, CarlinkManager.kt, IconBitmapRenderer.kt.
+
+[137] :: Roundabout icons solved + cursor-stuck fix + finer (36-way) continuous arrows with real-arm spokes.
+   - Root cause: AppleManeuverPaths.roundaboutMap was corrupt — 144 cells but only 7 distinct arrow strings, with the bucket index uncorrelated with exit direction (bucket 8 / "straight" drew a sharp-right). Verified 3/3 independent agents + 5 parsers; old table had 362/1080 direction inversions, straight in 0/9 groups.
+   - Apple RE MapKit: MKJunction getRoundaboutArrowPath: SNAPS the exit to 8 cardinal 45° slots (entry pinned at bottom, drawn endAngle = slot*45-90); the core primitive roundaboutArrowWithSize:metrics:outerRadius:endAngle:pivot: draws ANY continuous angle (measured bearing = 90 - endAngle°). Apple ships no static roundabout assets — all runtime vector.
+   - iAP2 angle convention live-verified (3-agent, captured _iap2m): 0x000b JunctionElementExitAngle = signed int16 driver-relative degrees (0=straight, +90=right, -90=left, ±180=back); 0x000a JunctionElementAngle = the other arms in the same frame. Refutes the adapter-doc "-90=right / relative-to-entry" claim and the prior "subtract the entry arm" hypothesis — the wire angle is fed straight in.
+   - CarPlay's own card also snaps: measured from iPhone screenshots, exits -6/-13/-3 all drew an identical straight-up arrow. Per user preference the cluster is intentionally rendered FINER than Apple's card.
+   - Regenerated roundaboutMap from genuine MapKit output, then went finer: 36-way (10°) buckets, white exit arrow = continuous core-primitive render (AppleManeuverPaths.kt, 324 cells). roundaboutPaths() bucket math changed 22.5°/16 → 10°/36.
+   - Ring + spokes now drawn at RUNTIME from the REAL junction arms (ManeuverComposer.buildRingAndSpokes consumes iAP2 entryAngles) instead of a generic snapped schematic; the white arrow shows entry (stem) + exit (head), so no grey exit-stub diverges from the fine arrow.
+   - AA-seam fix: ring donut + spoke quads overlapped, and IconBitmapRenderer fills the background as one anti-aliased drawPath, leaving a notch where the ring's outer edge crossed each spoke; Path.op(UNION) merges ring+spokes into a single outline (no internal edges, no seam).
+   - Cursor-stuck fix (Bug A on len-2 routes): Iap2StateParser assigned a length-2 0x000d value to nextManeuverIdx, leaving currentManeuverIdx null → v6.1 gate failed → cluster stranded on a stuck Tier C fallback. Live data proved the len-2 single value IS the current maneuver index (0x000d=6 matched CarPlay's current idx6 @1.4mi; monotonic 3→10; depart=len-4 [0,1], arrival=len-2 [last]). Fixed to currentManeuverIdx; 3/3 verified, len-4 path byte-identical, never out of bounds across 961 frames.
+   - Live-validated on Carmel routes (Veterans Way / Arbor Dr through City Center, S Guilford, W Carmel, E Main / E 116th, Hazel Dell roundabouts): correct exit directions, fine 10° arrows, real-arm grey spokes, and the cursor now tracks CarPlay through every roundabout (V6_FIRED cursor 3→4→5→6→7).
+   - Caveat: iAP2 frequently sends an INCOMPLETE arm list (cp29/30 often report 1-2 arms for 3-4-arm junctions), so spokes show only the arms present on the wire.
+   - Affected: AppleManeuverPaths.kt (regenerated table + 36-way bucket math), ManeuverComposer.kt (runtime ring/spokes from real arms + Path.op union), Iap2StateParser.kt (len-2 0x000d = current), NavigationStateManager.kt (gate comment), ManeuverComposerTest.kt (real-arm render test).

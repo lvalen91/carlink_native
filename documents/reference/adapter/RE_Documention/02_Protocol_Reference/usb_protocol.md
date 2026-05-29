@@ -1,7 +1,7 @@
 # CPC200-CCPA USB Protocol Reference
 
 **Status:** VERIFIED against 25+ capture sessions + firmware binary analysis
-**Consolidated from:** All research projects (GM_research, carlink_native, pi-carplay)
+**Consolidated from:** Firmware binary analysis, USB captures, and live RE
 **Firmware Version:** 2025.10.15.1127 (binary analysis reference version)
 **Last Updated:** 2026-02-19 (Added: Inbound Message Handling Reference with firmware-verified classifications, Phase 0 session teardown proof, cmd 1000-1013 all confirmed pure status notifications, AudioCmd 14 PHONECALL_Incoming, FactorySetting 0x77 corrected to BOTH direction, app handling gap audit, Messages-That-MUST-NEVER-Trigger-Disconnect table. Prior: dual magic, CMD_ENABLE_CRYPT lifecycle, all undocumented types, corrected RemoteDisplay→BroadCastRemoteCxCy)
 
@@ -1582,12 +1582,12 @@ Navigation video (Type 0x2C AltVideoFrame) is activated by **sending `naviScreen
 
 ### Command 508 Handshake (INCONCLUSIVE)
 
-The firmware binary shows a 508 (RequestNaviScreenFocus) command path where the adapter sends 508 to the host, and the `pi-carplay` reference implementation echoes 508 back. However, **live testing with CarLink Native could not conclusively determine whether the 508 echo is required** for navigation video to start.
+The firmware binary shows a 508 (RequestNaviScreenFocus) command path where the adapter sends 508 to the host, and an echo-only host pattern has been observed externally. However, **live testing with CarLink Native could not conclusively determine whether the 508 echo is required** for navigation video to start.
 
 **What the binary shows:**
 - Adapter sends cmd 508 to host during session setup
 - If host echoes 508 back, adapter emits `HU_NEEDNAVI_STREAM` D-Bus signal
-- `pi-carplay` implementation does echo 508 back
+- Echo-only host implementations are known to send 508 back
 
 **What testing showed:**
 - Navigation video worked with `naviScreenInfo` configured
@@ -1595,7 +1595,7 @@ The firmware binary shows a 508 (RequestNaviScreenFocus) command path where the 
 
 **Recommendation:** Echo 508 back if received (low cost, may be required in some firmware paths), but do not consider it the primary activation mechanism. The primary mechanism is `naviScreenInfo` in BoxSettings.
 
-**Reference implementation** (`pi-carplay-main/src/main/carplay/services/CarplayService.ts:270-277`):
+**Echo-only handler pattern (illustrative):**
 ```typescript
 if ((msg.value as number) === 508 && this.config.naviScreen?.enabled) {
   this.driver.send(new SendCommand('requestNaviScreenFocus'))
@@ -2335,7 +2335,7 @@ Cross-referencing firmware binary analysis with the CarLink Native app code (`Ca
 | Gap | Severity | Details |
 |-----|----------|---------|
 | ~~**Phase 0 not detected**~~ | ~~HIGH~~ FIXED | ~~The app does not check for Phase value 0.~~ **Corrected Mar 2026:** CarlinkManager.kt handles Phase 0 in multiple scenarios (negotiation rejection, streaming teardown, normal disconnect). |
-| **NaviFocus 508 not echoed** | LOW | Adapter sends cmd 508 (RequestNaviScreenFocus). The `pi-carplay` reference implementation echoes 508 back, but **live testing could not conclusively confirm this is required**. Navigation video activation is primarily driven by `naviScreenInfo` in BoxSettings. Echoing 508 back is recommended as a low-cost precaution. |
+| **NaviFocus 508 not echoed** | LOW | Adapter sends cmd 508 (RequestNaviScreenFocus). An echo-only host pattern has been observed externally, but **live testing could not conclusively confirm this is required**. Navigation video activation is primarily driven by `naviScreenInfo` in BoxSettings. Echoing 508 back is recommended as a low-cost precaution. |
 | ~~**AudioCmd 14 not handled**~~ | ~~LOW~~ FIXED | ~~Missing handler.~~ **Corrected Mar 2026:** CarlinkManager.kt handles `AUDIO_INCOMING_CALL_INIT` (command 14) for incoming call ring routing. |
 | **0x0F/0x15 defined but never sent** | INFO | `DISCONNECT_PHONE` (0x0F) and `CLOSE_DONGLE` (0x15) are defined in MessageTypes but are H→A only commands. The app should never receive them. They can be removed from the inbound parser. |
 
@@ -2410,9 +2410,7 @@ Source: Switch statement at `fcn.00017b74` (0x17b74 - 0x17d48).
 
 ## References
 
-- Source: `carlink_native/documents/reference/Firmware/firmware_protocol_table.md`
-- Source: `GM_research/cpc200_research/CLAUDE.md`
-- Source: `pi-carplay-4.1.3/firmware_binaries/PROTOCOL_ANALYSIS.md`
+- Source: Firmware binary analysis
 - **Session examples: `../04_Implementation/session_examples.md` - Real captured packet sequences**
 - Verification: 25+ controlled CarPlay capture sessions
 - Android Auto verification: Jan 2026 capture (Pixel 10, YouTube Music)

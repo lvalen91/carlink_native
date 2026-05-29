@@ -1,7 +1,7 @@
 # CPC200-CCPA Hardware Platform
 
 **Model:** CPC200-CCPA / Carlinkit A15W Wireless CarPlay/Android Auto Adapter
-**Consolidated from:** GM_research, carlink_native, pi-carplay firmware analysis
+**Consolidated from:** Firmware analysis and live RE
 **Last Updated:** 2026-01-16
 
 ---

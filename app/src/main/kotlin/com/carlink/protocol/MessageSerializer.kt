@@ -13,6 +13,50 @@ import java.nio.charset.StandardCharsets
  */
 object MessageSerializer {
     /**
+     * Gate for the `naviScreenInfo` field in BoxSettings JSON.
+     *
+     * Set ONCE by CarlinkManager.start() from `BuildConfig.DEBUG &&
+     * PlatformDetector.isAaosEmulator()`. When true, [serializeBoxSettings]
+     * emits the `naviScreenInfo` JSON object (width/height/fps), which is the
+     * adapter-side trigger for USB MsgType 0x2C (NAVI_VIDEO_DATA / AltVideo)
+     * streaming. When false, the field is omitted and the adapter never emits
+     * 0x2C — production APKs and real-device debug APKs are bit-identical to
+     * pre-feature behavior. See [com.carlink.ipc.NaviVideoSingleton.enabled] —
+     * the same boolean is mirrored there for the UsbDeviceWrapper demux split.
+     */
+    @Volatile
+    var includeNaviScreenInfo: Boolean = false
+
+    /**
+     * Cluster-display Surface geometry for AltVideo. Constants because the
+     * AAOS emulator's instrument-cluster VirtualDisplay is 1920×620 — separate
+     * from the main display config. Real-truck IC sizing is TBD; change here
+     * when targeting the Silverado. fps is the rate we request from the
+     * adapter and the rate the consumer initializes its MediaCodec at.
+     */
+    private const val NAVI_SCREEN_WIDTH = 1920
+    private const val NAVI_SCREEN_HEIGHT = 620
+    private const val NAVI_SCREEN_FPS = 30
+
+    /**
+     * Safe-area insets in pixels.
+     *
+     * AAOS emulator cluster has design elements (gauge cluster arcs) on the left and
+     * right edges; the horizontal inset reserves space for those. Top/bottom have no
+     * obstructions inside the 1920×620 VirtualDisplay (ClusterOsDouble's 100 px gauge
+     * strip sits below our sandbox, not inside it), so vertical inset stays at 0.
+     *
+     * The iPhone keeps interactive CarPlay UI (turn cards, lane guidance, speed limit
+     * chips, etc.) inside the safe rect. With `outside=0` below, the area outside the
+     * safe rect stays host-rendered (the map background still bleeds through because
+     * the iPhone treats the map as non-UI). See video_protocol.md §SafeArea and
+     * configuration.md:898-915 for the firmware path (writes
+     * /etc/RiddleBoxData/HU_NAVISCREEN_SAFEAREA_INFO).
+     */
+    private const val NAVI_SCREEN_SAFEAREA_INSET_X = 100
+    private const val NAVI_SCREEN_SAFEAREA_INSET_Y = 0
+
+    /**
      * Create a protocol header for the given message type and payload length.
      */
     fun createHeader(
@@ -401,9 +445,56 @@ object MessageSerializer {
                 // comes from /etc/airplay.conf (oemIconLabel), which the app writes separately.
                 put("autoConn", true) // Auto-connect when device detected
                 put("autoPlay", false) // Don't auto-play media on connection
+                // naviScreenInfo — adapter trigger for AltVideo (USB MsgType 0x2C).
+                // Firmware (configuration.md:765,974-1024 / video_protocol.md:684-687) parses
+                // this at address 0x16e5c; presence emits HU_NEEDNAVI_STREAM and starts 0x2C
+                // streaming for iOS 13+ CarPlay sessions, bypassing the AdvancedFeatures gate.
+                // Adapter also needs a one-time persistent unlock via
+                //   riddleBoxCfg -s AdvancedFeatures 1 && riddleBoxCfg --upConfig
+                // (creates /etc/RiddleBoxData/HU_NAVISCREEN_INFO); without that file, sending
+                // naviScreenInfo here is a no-op on the adapter. Gated to debug+emulator only:
+                // ClusterHomeDisplay (the consumer priv-app) currently runs on the AAOS
+                // emulator; production GM IHU support is a separate work item.
+                if (includeNaviScreenInfo) {
+                    // safearea ships unconditionally even when no real inset is desired
+                    // (empirically required on some firmware revisions for the adapter to
+                    // fully complete _AltScreenSetup). RE_Documention/configuration.md:898-915
+                    // documents the field; firmware persists it to
+                    // /etc/RiddleBoxData/HU_NAVISCREEN_SAFEAREA_INFO.
+                    //
+                    // Horizontal inset reserves space for AAOS emulator cluster's gauge
+                    // chrome on the left/right edges; vertical inset is 0 since the 1920×620
+                    // VirtualDisplay has no top/bottom obstructions. iPhone keeps interactive
+                    // CarPlay UI inside the resulting safe rect; map background extends
+                    // beyond it.
+                    val safeW = NAVI_SCREEN_WIDTH - 2 * NAVI_SCREEN_SAFEAREA_INSET_X
+                    val safeH = NAVI_SCREEN_HEIGHT - 2 * NAVI_SCREEN_SAFEAREA_INSET_Y
+                    put(
+                        "naviScreenInfo",
+                        JSONObject().apply {
+                            put("width", NAVI_SCREEN_WIDTH)
+                            put("height", NAVI_SCREEN_HEIGHT)
+                            put("fps", NAVI_SCREEN_FPS)
+                            put(
+                                "safearea",
+                                JSONObject().apply {
+                                    put("x", NAVI_SCREEN_SAFEAREA_INSET_X)
+                                    put("y", NAVI_SCREEN_SAFEAREA_INSET_Y)
+                                    put("width", safeW)
+                                    put("height", safeH)
+                                    put("outside", 0)
+                                },
+                            )
+                        },
+                    )
+                }
             }
 
         val payload = json.toString().toByteArray(StandardCharsets.US_ASCII)
+        com.carlink.logging.logInfo(
+            "[BOX_SETTINGS_JSON] naviGate=$includeNaviScreenInfo size=${payload.size}B json=$json",
+            tag = "ADAPTR",
+        )
         return serializeWithPayload(MessageType.BOX_SETTINGS, payload)
     }
 

@@ -13,10 +13,10 @@ import com.carlink.logging.logWarn
  * Maps CarPlay CPManeuverType values (0-53) to AAOS Car App Library Maneuver.TYPE_* constants
  * and provides resource-based maneuver icons for cluster display.
  *
- * Derived externally from LIVI's translateNavigation.ts, cross-referenced against iAP2
- * spec "Table 15-16" and GM's RouteStateMachine.mapManeuverType() (decompiled from
- * DelayedWKSApp). None of those artefacts are checked into this repo — the mapping
- * table here is the only in-tree source of truth.
+ * Derived from live RE of the CPC200-CCPA NaviJSON wire format, cross-referenced
+ * against iAP2 spec "Table 15-16" and GM's RouteStateMachine.mapManeuverType()
+ * (decompiled from DelayedWKSApp). Neither artefact is checked into this repo —
+ * the mapping table here is the only in-tree source of truth.
  *
  * Icon source is protocol-dependent:
  *   AA      → adapter-forwarded NAVI_IMAGE bitmap (Google Maps pre-rendered PNG)
@@ -300,7 +300,23 @@ object ManeuverMapper {
     fun buildManeuver(
         state: NavigationState,
         context: Context,
-    ): Maneuver = buildManeuverForType(state.maneuverType, state.turnSide, context)
+    ): Maneuver {
+        // Composer path (D16): when ComposedIconStore.enabled and a route is loaded, look
+        // up a pre-composed bitmap keyed by (cpType, roadName) for the current step. If
+        // present, use it as a one-shot AA-style override and fall through to the existing
+        // builder. Composer is OFF by default — flip via ComposedIconStore.setEnabled(true).
+        val composed = com.carlink.navigation.compose.ComposedIconStore
+            .lookup(state.maneuverType, state.roadName)
+        if (composed != null) {
+            return buildManeuverForType(
+                cpType = state.maneuverType,
+                turnSide = state.turnSide,
+                context = context,
+                composedIcon = composed,
+            )
+        }
+        return buildManeuverForType(state.maneuverType, state.turnSide, context)
+    }
 
     /**
      * Build a Maneuver from explicit CPManeuverType and turnSide values.
@@ -312,12 +328,19 @@ object ManeuverMapper {
         cpType: Int,
         turnSide: Int,
         context: Context,
+        composedIcon: android.graphics.Bitmap? = null,
     ): Maneuver {
+        // Priority: composed (D16, CarPlay+composer enabled) > AA pre-rendered (Android Auto)
+        //         > static VectorDrawable (everything else).
         val aaIcon =
-            NavigationStateManager.currentManeuverIcon
-                ?.takeIf { NavigationStateManager.canUseAaManeuverIcon() }
+            composedIcon
+                ?: NavigationStateManager.currentManeuverIcon
+                    ?.takeIf { NavigationStateManager.canUseAaManeuverIcon() }
         val aaIconHash = aaIcon?.let { System.identityHashCode(it) } ?: 0
-        val cacheKey = (cpType shl 16) or (turnSide shl 8) or (if (aaIcon != null) 1 else 0)
+        // Composed bitmaps participate in the same cacheKey scheme so the maneuver cache
+        // doesn't return a stale Maneuver built from the wrong icon source.
+        val composedFlag = if (composedIcon != null) 2 else 0
+        val cacheKey = (cpType shl 16) or (turnSide shl 8) or (if (aaIcon != null) 1 else 0) or composedFlag
 
         maneuverCache[cacheKey]?.let { cached ->
             if (aaIcon == null || aaIconHash == lastCachedAaIconHash) {

@@ -111,6 +111,18 @@ class CarlinkManager(
 ) {
     init {
         NavigationStateManager.initialize(context.applicationContext)
+        // Enable the composer debug PNG dumper so every composed maneuver bitmap is also
+        // written to /sdcard/Android/data/zeno.carlink/files/composer_test/ for offline
+        // eyeball-check via `adb pull`. The pure compose path is unaffected by the dumper —
+        // it's a pass-through side channel triggered from ComposedIconStore.populateFromIap2m.
+        // Strip together with the [NAVI_JSON_RX] debug logging when this stabilizes.
+        com.carlink.navigation.compose.ManeuverIconDebugDumper.enable(context.applicationContext)
+        // Enable the runtime composer (D16). Without this, lookups return null and the
+        // existing static-XML / AA-bitmap paths handle the cluster icon — same behavior as
+        // before D16. Turning this ON activates the per-route precompose + cluster icon
+        // override pipeline. Validation pathway: PNGs written by ManeuverIconDebugDumper
+        // continue regardless of this flag.
+        com.carlink.navigation.compose.ComposedIconStore.setEnabled(true)
     }
 
     // Config can be updated when actual surface dimensions are known
@@ -842,6 +854,31 @@ class CarlinkManager(
         log("Device found, opening")
         usbDevice = device
         setStatusText("Adapter found — opening...")
+
+        // AltVideo (USB 0x2C) gate — evaluated each session start (cheap; PlatformDetector
+        // is not cached). Both checks must pass:
+        //   1. BuildConfig.DEBUG — production APKs are bit-identical to pre-feature behavior.
+        //   2. PlatformDetector.isAaosEmulator() — Build.PRODUCT starts with "sdk_gcar".
+        //      Real GM IHU + Pixel + everything else stays inert. ClusterHomeDisplay
+        //      (the consumer priv-app) currently runs only on the AAOS emulator.
+        // The same boolean is mirrored to MessageSerializer (gates naviScreenInfo JSON
+        // -> adapter never emits 0x2C without it) and to NaviVideoSingleton (gates the
+        // UsbDeviceWrapper demux split — defense in depth).
+        val naviGateEnabled =
+            BuildConfig.DEBUG && PlatformDetector.detect(context).isAaosEmulator()
+        MessageSerializer.includeNaviScreenInfo = naviGateEnabled
+        com.carlink.ipc.NaviVideoSingleton.enabled = naviGateEnabled
+        logInfo(
+            if (naviGateEnabled) {
+                "[NAVI_GATE] AltVideo (0x2C) forwarding ENABLED — debug build on AAOS emulator. " +
+                    "naviScreenInfo will be sent in BoxSettings; 0x2C frames will be forwarded to " +
+                    "zeno.carlink.ipc.NaviVideoSourceService consumers."
+            } else {
+                "[NAVI_GATE] AltVideo (0x2C) forwarding disabled (debug=${BuildConfig.DEBUG}, " +
+                    "emulator=${PlatformDetector.detect(context).isAaosEmulator()})"
+            },
+            tag = Logger.Tags.VIDEO,
+        )
 
         if (!device.openWithPermission()) {
             logError("Failed to open USB device", tag = Logger.Tags.USB)
@@ -1765,6 +1802,34 @@ class CarlinkManager(
 
                 setState(State.DEVICE_CONNECTED)
                 setStatusText("Phone connected — starting session...")
+
+                // Proactively kick AltVideo (0x2C) streaming — step 1 of the three-step 508
+                // handshake (see RE_Documention/02_Protocol_Reference/video_protocol.md
+                // "Handshake Sequence"). On wireless CarPlay the adapter never initiates with
+                // 508 — it sends only 506 (audio nav focus) — so without this proactive send
+                // the handshake never starts and _AltScreenSetup is never invoked.
+                // Step 3 (echo the adapter's 508 reply) lives in the CommandMessage handler.
+                // Gated on debug+emulator + CarPlay (AA has no 0x2C path).
+                if (com.carlink.ipc.NaviVideoSingleton.enabled &&
+                    (message.phoneType == PhoneType.CARPLAY ||
+                        message.phoneType == PhoneType.CARPLAY_WIRELESS)
+                ) {
+                    scope.launch {
+                        // Small delay lets the adapter finish its post-PLUGGED handshake
+                        // (REQUEST_VIDEO_FOCUS / REQUEST_NAVI_FOCUS arrive ~3-4s after PLUGGED).
+                        // Send 508 after that so the adapter's session-init has set
+                        // g_bSupportNaviScreen and the iPhone has registered featureAltScreen.
+                        delay(2000)
+                        val sent = adapterDriver?.sendCommand(
+                            CommandMapping.REQUEST_NAVI_SCREEN_FOCUS,
+                        ) ?: false
+                        logInfo(
+                            "[NAVI_FWD] Proactive REQUEST_NAVI_SCREEN_FOCUS (508) sent=$sent " +
+                                "— kicking 0x2C AltVideo streaming",
+                            tag = Logger.Tags.VIDEO,
+                        )
+                    }
+                }
             }
 
             is UnpluggedMessage -> {
@@ -1853,6 +1918,41 @@ class CarlinkManager(
                 ) {
                     setStatusText("Phone found — connecting...")
                     logDebug("[CMD] ${message.command.name}", tag = Logger.Tags.ADAPTR)
+                } else if (message.command == CommandMapping.REQUEST_NAVI_SCREEN_FOCUS) {
+                    // Step 3 of the three-step 508 handshake: adapter sent 508 back in reply to
+                    // our proactive step-1 send (CommandMessage handler in PluggedMessage at ~L1805).
+                    // Echo another 508 to confirm; the adapter then completes _AltScreenSetup
+                    // and starts emitting Type 0x2C. See RE_Documention/02_Protocol_Reference/
+                    // video_protocol.md "Handshake Sequence" for the wire diagram.
+                    // Gated on NaviVideoSingleton.enabled so production APKs stay inert.
+                    logDebug(
+                        "[CMD] REQUEST_NAVI_SCREEN_FOCUS (id=508) received from adapter",
+                        tag = Logger.Tags.ADAPTR,
+                    )
+                    if (com.carlink.ipc.NaviVideoSingleton.enabled) {
+                        val sent = adapterDriver?.sendCommand(
+                            CommandMapping.REQUEST_NAVI_SCREEN_FOCUS,
+                        ) ?: false
+                        logInfo(
+                            "[NAVI_FWD] Echoed 508 back to adapter sent=$sent — completing focus handshake",
+                            tag = Logger.Tags.VIDEO,
+                        )
+                    }
+                } else if (message.command == CommandMapping.RELEASE_NAVI_SCREEN_FOCUS) {
+                    // Adapter signaled end of nav video. Echo 509 back and notify the
+                    // forwarder so consumer overlays hide deterministically.
+                    logDebug(
+                        "[CMD] RELEASE_NAVI_SCREEN_FOCUS (id=509) received from adapter",
+                        tag = Logger.Tags.ADAPTR,
+                    )
+                    if (com.carlink.ipc.NaviVideoSingleton.enabled) {
+                        adapterDriver?.sendCommand(CommandMapping.RELEASE_NAVI_SCREEN_FOCUS)
+                        com.carlink.ipc.NaviVideoSingleton.forwarder.onStreamStop()
+                        logInfo(
+                            "[NAVI_FWD] Echoed 509 back + stopped forwarder",
+                            tag = Logger.Tags.VIDEO,
+                        )
+                    }
                 } else if (message.command == CommandMapping.INVALID) {
                     unknownCommandCount++
                     unknownCommandIds.add(message.rawId)
@@ -1999,6 +2099,10 @@ class CarlinkManager(
                 } else {
                     logDebug("[NAVI] Navigation video focus released — echoing 509", tag = Logger.Tags.ADAPTR)
                     adapterDriver?.sendCommand(CommandMapping.RELEASE_NAVI_SCREEN_FOCUS)
+                    // Tell forwarder to broadcast onStreamEnded to bound consumers. Idempotent
+                    // and safe to call when gate is false (the forwarder no-ops on !streamActive,
+                    // and on prod/non-emulator no sinks are ever registered anyway).
+                    com.carlink.ipc.NaviVideoSingleton.forwarder.onStreamStop()
                 }
             }
 
@@ -2360,26 +2464,77 @@ class CarlinkManager(
         }
     }
 
+    // DEBUG helper: emit a possibly-long iAP2 hex string across multiple log lines so the
+    // full payload survives logcat's per-line ~4000 char cap. Single short strings fit in
+    // one line. Strip together with processMediaMetadata's [NAVI_JSON_RX] block before
+    // production release.
+    private fun logIap2Field(
+        name: String,
+        hex: String,
+    ) {
+        val chunkSize = 3500
+        val total = (hex.length + chunkSize - 1) / chunkSize
+        if (total <= 1) {
+            logInfo("[NAVI_JSON_RX:$name len=${hex.length}] $hex", tag = Logger.Tags.NAVI)
+            return
+        }
+        for (i in 0 until total) {
+            val s = i * chunkSize
+            val e = minOf(s + chunkSize, hex.length)
+            logInfo(
+                "[NAVI_JSON_RX:$name len=${hex.length} chunk=${i + 1}/$total] ${hex.substring(s, e)}",
+                tag = Logger.Tags.NAVI,
+            )
+        }
+    }
+
     private fun processMediaMetadata(message: MediaDataMessage) {
         // Route NaviJSON to NavigationStateManager for cluster display (only if enabled)
         if (message.type == MediaType.NAVI_JSON) {
             // DEBUG: log full NaviJSON receipt so we can confirm the patched ARMiPhoneIAP2
-            // is emitting `_iap2` / `_iap2m` recovery fields. Logs all keys; truncates `_iap2*`
-            // string values (which are hex-encoded raw iAP2 bytes ~100-400 chars) to keep the
-            // line manageable but visible. Strip before production-grade release.
+            // is emitting `_iap2` / `_iap2m` recovery fields. Each _iap2* hex payload (up to
+            // ~3KB for 0x5202 maneuver bursts) is emitted on its own log line and chunked at
+            // 3500 chars to stay under Android's per-line logcat limit (~4000). Decoder-side
+            // re-assembly: concatenate all "[NAVI_JSON_RX:_iap2m] chunk=N/M payload=..." lines
+            // for the same timestamp. Strip before production-grade release.
             val keys = message.payload.keys.sorted()
-            val iap2 = (message.payload["_iap2"] as? String)?.let {
-                "_iap2[${it.length}ch]=${it.take(64)}${if (it.length > 64) "…" else ""}"
+            // Dump primitive Navi* values (skip _iap2/_iap2m which are huge hex — those go on
+            // their own chunked lines below). Lets us correlate per-step events against the
+            // 0x5202 maneuver list during the cursor-walk-matcher design pass.
+            val naviPrimitives = message.payload
+                .filterKeys { it.startsWith("Navi") }
+                .entries
+                .joinToString(", ") { (k, v) ->
+                    val s = v.toString()
+                    "$k=${if (s.length > 80) s.take(80) + "…" else s}"
+                }
+            logInfo("[NAVI_JSON_RX] keys=$keys${if (naviPrimitives.isNotEmpty()) " | $naviPrimitives" else ""}", tag = Logger.Tags.NAVI)
+            // v6.1: parse raw 0x5201 RouteGuidanceUpdate for the wire cursor + state and
+            // feed NavigationStateManager BEFORE onNaviJson runs (same USB read thread).
+            // Set null on absent _iap2 OR parse failure to prevent stale-cursor reuse —
+            // see Iap2StateParser.parse contract.
+            val iap2Hex = message.payload["_iap2"] as? String
+            if (iap2Hex != null) {
+                logIap2Field("_iap2", iap2Hex)
+                com.carlink.navigation.NavigationStateManager.setLastIap2State(
+                    com.carlink.navigation.Iap2StateParser.parse(iap2Hex)
+                )
+            } else {
+                com.carlink.navigation.NavigationStateManager.setLastIap2State(null)
             }
-            val iap2m = (message.payload["_iap2m"] as? String)?.let {
-                "_iap2m[${it.length}ch]=${it.take(64)}${if (it.length > 64) "…" else ""}"
+            (message.payload["_iap2m"] as? String)?.let { iap2m ->
+                logIap2Field("_iap2m", iap2m)
+                // Populate the runtime icon composer cache. Parses the burst into a
+                // List<ManeuverData> and pre-composes every maneuver's bitmap up front;
+                // per-step events later call ComposedIconStore.lookup with zero compose
+                // latency. Gated by ComposedIconStore.enabled — when off, lookup returns
+                // null and the existing static-XML / AA-bitmap paths handle the cluster
+                // icon. See app/src/main/kotlin/com/carlink/navigation/compose/.
+                val composed = com.carlink.navigation.compose.ComposedIconStore.populateFromIap2m(iap2m)
+                if (composed != null) {
+                    logInfo("[NAVI_JSON_RX] Composer populated $composed maneuver icons", tag = Logger.Tags.NAVI)
+                }
             }
-            logInfo(
-                "[NAVI_JSON_RX] keys=$keys" +
-                    (iap2?.let { " $it" } ?: "") +
-                    (iap2m?.let { " $it" } ?: ""),
-                tag = Logger.Tags.NAVI,
-            )
             // NOTE: getClusterNavigationSync() is read at message time, NOT cached —
             // a user toggling cluster navigation in AdapterConfigurationDialog takes effect
             // on the next NAVI_* message, no restart needed.

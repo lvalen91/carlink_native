@@ -17,7 +17,7 @@ android {
         applicationId = "zeno.carlink"
         minSdk = 29
         targetSdk = 36
-        versionCode = 133
+        versionCode = 137
         versionName = "1.0.0"
 
 //###############################################
@@ -84,11 +84,18 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true  // Enable BuildConfig generation for debug checks
+        aidl = true         // INaviVideoSink / INaviVideoSource for ClusterHomeDisplay AltVideo (0x2C)
     }
 
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
         }
     }
 
@@ -178,6 +185,9 @@ dependencies {
 
     // Testing
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.7.0")
+    testImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation(platform("androidx.compose:compose-bom:2026.03.00"))

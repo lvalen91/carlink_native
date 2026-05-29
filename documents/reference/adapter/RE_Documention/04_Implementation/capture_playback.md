@@ -68,11 +68,11 @@ Captures consist of two files:
 - `capture.json` - Packet metadata (sequence, type, timestamp, offset, length)
 - `capture.bin` - Raw binary packet data
 
-### Format Differences: pi-carplay vs carlink_native vs carlink_macOS
+### Format Differences: alternate-host vs carlink_native vs carlink_macOS
 
 **CRITICAL:** The capture format differs between implementations. This affects header parsing.
 
-#### pi-carplay format (with 12-byte record prefix)
+#### Alternate-host format (with 12-byte record prefix)
 
 ```
 Offset  Size  Description
@@ -119,15 +119,15 @@ Per-packet record:
 
 **Total header size (protocol + video header, for injection back into carlink_native decode path):** 0 — the recorder has already stripped them. When replaying through a carlink_native-style pipeline, you must re-synthesize the 16-byte protocol header and (for video) the 20-byte video header before feeding the decoder.
 
-**⚠ Video payload truncation (recorder-side lossy capture):** the macOS recorder **truncates every `type=0x06` VideoData payload to the first 512 bytes of H.264 plus the 20B video header**, yielding 532-byte records regardless of actual frame size. Confirmed: 65,374 / 65,377 video frames in a reference 2026-04-20 capture were exactly 532 B. **Full-frame replay is impossible from macOS captures** — only header + NAL-prefix inspection is reliable. For full-payload analysis, use carlink_native or pi-carplay recorders.
+**⚠ Video payload truncation (recorder-side lossy capture):** the macOS recorder **truncates every `type=0x06` VideoData payload to the first 512 bytes of H.264 plus the 20B video header**, yielding 532-byte records regardless of actual frame size. Confirmed: 65,374 / 65,377 video frames in a reference 2026-04-20 capture were exactly 532 B. **Full-frame replay is impossible from macOS captures** — only header + NAL-prefix inspection is reliable. For full-payload analysis, use carlink_native or alternate-host recorders.
 
 Audio (`0x07`), heartbeat (`0xAA`), command (`0x08`), and other non-video payloads are captured in full.
 
 ### Format Detection
 
-For the pi-carplay vs carlink_native split (both start with protocol magic), check the first 4 bytes of the binary:
+For the alternate-host vs carlink_native split (both start with protocol magic), check the first 4 bytes of the binary:
 - If `aa 55 aa 55` (little-endian magic) → carlink_native format (36-byte video header)
-- If NOT magic → pi-carplay format (48-byte video header, skip 12-byte prefix)
+- If NOT magic → alternate-host format (48-byte video header, skip 12-byte prefix)
 
 For the carlink_macOS format, check the first 4 bytes for the ASCII magic `"CLNK"` (`43 4c 4e 4b`).
 
@@ -136,13 +136,13 @@ val firstFour = ByteBuffer.wrap(data, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int
 val format = when {
     firstFour == 0x4B4E4C43 -> CaptureFormat.CARLINK_MACOS       // "CLNK" ASCII
     firstFour == 0x55AA55AA -> CaptureFormat.CARLINK_NATIVE       // protocol magic
-    else                    -> CaptureFormat.PI_CARPLAY           // with 12-byte record prefix
+    else                    -> CaptureFormat.ALTERNATE_HOST       // with 12-byte record prefix
 }
 ```
 
 ### Header Size Summary
 
-| Packet Type | pi-carplay | carlink_native | carlink_macOS |
+| Packet Type | alternate-host | carlink_native | carlink_macOS |
 |-------------|------------|----------------|---------------|
 | **File preamble** | 0 | 0 | 256 bytes (CLNK + ts + fwver) |
 | **Per-record prefix** | 12 | 0 | 13 (dir + ts + type + len) |
@@ -181,7 +181,7 @@ if (caps.isFeatureSupported(CodecCapabilities.FEATURE_LowLatency)) {
 
 **Symptom:** Video received but decoder produced no output (R:161/D:0)
 
-**Cause:** Code stripped only 36 bytes (protocol + video header), but pi-carplay capture files include a 12-byte prefix
+**Cause:** Code stripped only 36 bytes (protocol + video header), but alternate-host capture files include a 12-byte prefix
 
 **Investigation:**
 ```
@@ -196,7 +196,7 @@ The H.264 start code (`00 00 00 01`) appears at offset 48, not 36.
 
 **Fix:** Detect format and use correct header size:
 ```kotlin
-val headerSize = if (isPiCarplayFormat) 12 + 16 + 20 else 16 + 20
+val headerSize = if (isAlternateHostFormat) 12 + 16 + 20 else 16 + 20
 ```
 
 ### Issue 4: Audio Not Initialized for Playback
@@ -279,11 +279,11 @@ manager.resumeAdapterMode()
 
 Playing back carlink_native captures resulted in video freezing at the exact same timestamp every time. NAL types showed `-1` (parsing failure), indicating data corruption.
 
-Pi-carplay captures played back without issues.
+Alternate-host captures played back without issues.
 
 ### Root Cause: Capture Point Too Late in Pipeline
 
-**Pi-carplay** captures data at USB boundary, BEFORE processing:
+**Alternate-host recorders** capture data at USB boundary, BEFORE processing:
 ```
 USB Read → [CAPTURE HERE] → Ring Buffer → Video Processing
 ```

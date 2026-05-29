@@ -15,6 +15,16 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="androidx.car.app.NAVIGATION_TEMPLATES" />
 
+    <!-- AltVideo (USB 0x2C) IPC permission. Protects NaviVideoSourceService so only
+         co-signed priv-apps (ClusterHomeDisplay) can bind and consume the stream.
+         signature|privileged: caller must share our signing cert AND live in
+         /system/priv-app/. uses-permission is required because the service-protecting
+         permission is declared and used by the same app. -->
+    <permission
+        android:name="com.carlink.permission.NAVI_VIDEO_STREAM"
+        android:protectionLevel="signature|privileged" />
+    <uses-permission android:name="com.carlink.permission.NAVI_VIDEO_STREAM" />
+
     <!-- USB Host Feature (required) -->
     <uses-feature
         android:name="android.hardware.usb.host"
@@ -151,6 +161,22 @@
             <meta-data android:name="androidx.car.app.minCarApiLevel" android:value="6" />
             <meta-data android:name="com.gm.homescreen.visibility" android:value="HIDDEN" />
         </service>
+
+        <!-- AltVideo (USB 0x2C) producer Service. ClusterHomeDisplay binds to
+             ComponentName("zeno.carlink", "zeno.carlink.ipc.NaviVideoSourceService"),
+             so the class FQN must be the applicationId-prefixed form (NOT the
+             namespace-prefixed .ipc.NaviVideoSourceService shorthand). The class
+             lives at app/src/main/kotlin/zeno/carlink/ipc/NaviVideoSourceService.kt
+             to match.
+
+             Service is exported and present in all builds; it is inert on release
+             APKs and on real devices because the gate in CarlinkManager prevents
+             naviScreenInfo from being sent — without that, the adapter never emits
+             0x2C and no consumer binds. Cost of leaving it exported on prod: zero. -->
+        <service
+            android:name="zeno.carlink.ipc.NaviVideoSourceService"
+            android:exported="true"
+            android:permission="com.carlink.permission.NAVI_VIDEO_STREAM" />
 
         <meta-data
             android:name="com.android.automotive"

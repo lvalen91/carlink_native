@@ -1,7 +1,7 @@
 # CPC200-CCPA Key Binaries Reference
 
 **Purpose:** Reference for firmware binary analysis
-**Consolidated from:** GM_research, pi-carplay firmware extraction
+**Consolidated from:** Firmware extraction and binary analysis
 **Last Updated:** 2026-02-19 (Added: process architecture, MiddleMan IPC protocol, outbound send pipeline, 7 MiddleMan interfaces)
 
 ---
@@ -1161,8 +1161,5 @@ Ver = Version code character
 
 ## References
 
-- Source: `GM_research/cpc200_research/docs/analysis/`
-- Source: `pi-carplay-4.1.3/firmware_binaries/`
-- Source: `cpc200_ccpa_firmware_binaries/analysis/`
-- Source: `cpc200_ccpa_firmware_binaries/A15W_extracted/`
+- Source: Firmware binary analysis (extracted A15W rootfs)
 - External: ludwig-v/wireless-carplay-dongle-reverse-engineering

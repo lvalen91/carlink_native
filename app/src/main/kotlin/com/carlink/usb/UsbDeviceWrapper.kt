@@ -500,18 +500,36 @@ class UsbDeviceWrapper(
                         continue
                     }
 
-                    // Handle VIDEO_DATA and NAVI_VIDEO_DATA with direct handoff to codec.
+                    // Demux split for 0x06 (VIDEO_DATA) and 0x2C (NAVI_VIDEO_DATA / AltVideo):
+                    //   0x06 → main IHU video pipeline (videoProcessor → H264Renderer → Surface).
+                    //   0x2C → ClusterHomeDisplay forwarder (com.carlink.ipc.NaviVideoForwarder),
+                    //          which strips the 20B video header and broadcasts H.264 Annex-B
+                    //          payloads to bound consumer sinks over AIDL.
+                    //
+                    // Both paths share the chunked USB read into videoBuffer + the source-PTS
+                    // extraction below; dispatch happens after totalRead == header.length.
+                    //
+                    // Previously both types OR'd into the same videoProcessor call — a latent
+                    // bug: a 0x2C frame would stomp the main-video MediaCodec with nav-resolution
+                    // SPS/PPS and stall the decoder. The split fixes that.
+                    //
+                    // 0x2C is only accepted when NaviVideoSingleton.enabled is true (debug build
+                    // on AAOS emulator); on prod/non-emulator the adapter doesn't emit 0x2C
+                    // anyway because MessageSerializer skips naviScreenInfo BoxSettings, and any
+                    // unexpected 0x2C is drained via the non-video branch below.
+                    //
                     // Gated on header.length > 0: zero-length video headers fall through to
                     // the non-video branch below where payload ends up null and callback.onMessage
                     // fires with dataLength=0 — this is the VideoStreamingSignal sentinel path
                     // consumed by MessageParser.kt (see the VideoStreamingSignal object for
                     // the synthetic-message contract).
-                    if ((
-                            header.type == com.carlink.protocol.MessageType.VIDEO_DATA ||
-                                header.type == com.carlink.protocol.MessageType.NAVI_VIDEO_DATA
-                        ) &&
-                        header.length > 0 && videoProcessor != null
-                    ) {
+                    val isMainVideo =
+                        header.type == com.carlink.protocol.MessageType.VIDEO_DATA &&
+                            videoProcessor != null
+                    val isNaviVideo =
+                        header.type == com.carlink.protocol.MessageType.NAVI_VIDEO_DATA &&
+                            com.carlink.ipc.NaviVideoSingleton.enabled
+                    if ((isMainVideo || isNaviVideo) && header.length > 0) {
                         val conn = connection
                         val endpoint = inEndpoint
                         if (conn != null && endpoint != null) {
@@ -564,7 +582,16 @@ class UsbDeviceWrapper(
                                     }
 
                                 if (totalRead == header.length) {
-                                    videoProcessor.processVideoDirect(videoBuffer, totalRead, sourcePts)
+                                    if (isMainVideo) {
+                                        videoProcessor.processVideoDirect(videoBuffer, totalRead, sourcePts)
+                                    } else {
+                                        // isNaviVideo — gate already enforced upstream.
+                                        // Forwarder copies the Annex-B payload out before AIDL
+                                        // broadcast, so the shared videoBuffer is safe to reuse
+                                        // for the next read immediately.
+                                        com.carlink.ipc.NaviVideoSingleton.forwarder
+                                            .onUsbFrame(videoBuffer, totalRead)
+                                    }
                                 } else {
                                     logDebug(
                                         "[VIDEO_READ] Partial frame dropped: got=$totalRead/${header.length} " +

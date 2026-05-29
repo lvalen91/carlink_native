@@ -1,7 +1,7 @@
 # CPC200-CCPA Firmware Encryption
 
 **Purpose:** Reverse engineering of Carlinkit .img firmware format
-**Consolidated from:** pi-carplay firmware analysis (January 2026)
+**Consolidated from:** firmware image extraction and analysis (January 2026)
 
 ---
 

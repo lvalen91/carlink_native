@@ -1,7 +1,7 @@
 # CPC200-CCPA Cryptographic Stack
 
 **Purpose:** Security analysis of cryptographic implementations
-**Consolidated from:** GM_research binary analysis, pi-carplay firmware extraction
+**Consolidated from:** Binary analysis and firmware extraction
 **Last Updated:** 2026-02-19 (CORRECTED: Protocol encryption uses AES-128-CBC with key SkBRDy3gmrw1ieH0. Added full CMD_ENABLE_CRYPT operational lifecycle: trigger/ack protocol, key/IV derivation formulas, state machine, bypass rules, security assessment)
 
 ---
@@ -544,6 +544,5 @@ From `libHwKeystoreSDK.so`:
 
 ## References
 
-- Source: `GM_research/cpc200_research/docs/analysis/ANALYSIS_UPDATE_2025_01_15.md`
-- Source: `pi-carplay-4.1.3/firmware_binaries/PROTOCOL_ANALYSIS.md`
+- Source: Firmware binary analysis (2025.10 firmware)
 - Binary analysis: `libdmsdpplatform.so`, `libdmsdpcrypto.so`

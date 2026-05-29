@@ -30,7 +30,7 @@ The host application sends the following messages after USB connection. (This se
 7. First heartbeat fires at t=2000ms (after init completes)
 ```
 
-**Note:** Do NOT send heartbeat at t=0. The timer should start before init, but the first heartbeat should fire AFTER the init messages are sent. This matches the working pattern in pi-carplay and carlink_native.
+**Note:** Do NOT send heartbeat at t=0. The timer should start before init, but the first heartbeat should fire AFTER the init messages are sent. This matches the working pattern observed in capture sessions.
 
 ### Initialization Messages
 

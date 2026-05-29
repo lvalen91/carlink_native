@@ -1,7 +1,7 @@
 # CPC200-CCPA Configuration Reference
 
 **Purpose:** Complete riddleBoxCfg **[Firmware]** configuration keys reference — these are CPC200-CCPA adapter firmware settings (`/etc/riddle.conf`), not Android host app settings.
-**Consolidated from:** pi-carplay firmware analysis, carlink_native research
+**Consolidated from:** Firmware analysis and live RE
 **Last Updated:** 2026-02-19 (deduplicated heartbeat deep dive and D-Bus signal table; added direction/context labels)
 
 ---
@@ -1425,7 +1425,7 @@ Each riddle.conf parameter can be set through different mechanisms. Understandin
 
 | Mechanism | Description | When Used |
 |-----------|-------------|-----------|
-| **Host App (0x19)** | BoxSettings JSON sent via USB message type 0x19 | Host app (pi-carplay, AutoKit) sends config during session |
+| **Host App (0x19)** | BoxSettings JSON sent via USB message type 0x19 | Host app (e.g. AutoKit) sends config during session |
 | **riddleBoxCfg CLI** | Command-line tool on adapter: `riddleBoxCfg -s Key Value` | SSH access, scripts, OEM provisioning |
 | **Auto (Connect)** | Firmware sets automatically when device connects | DevList, LastConnectedDevice, LastPhoneSpsPps |
 | **Auto (Pair)** | Firmware sets automatically during Bluetooth pairing | DevList entries, PHONE_INFO |
@@ -1741,7 +1741,7 @@ Set via web interface at `http://192.168.43.1` (or `http://192.168.50.2`). User-
 **Examples**: WiFiChannel, MediaLatency, MediaQuality, MicType, MouseMode, BackgroundMode, CustomWifiName
 
 ### Protocol Init Parameters
-Set by host applications (carlink_native, pi-carplay, AutoKit) during USB protocol initialization. These are sent as BoxSettings and may override riddle.conf values.
+Set by host applications (e.g. AutoKit) during USB protocol initialization. These are sent as BoxSettings and may override riddle.conf values.
 
 **Examples**: SpsPpsMode, RepeatKeyframe, VideoBitRate, VideoResolutionWidth/Height, FastConnect, NeedKeyFrame, AndroidWorkMode, CustomFrameRate, ScreenDPI
 
@@ -2146,8 +2146,6 @@ Runtime Configuration Changes:
 
 ## References
 
-- Source: `pi-carplay-4.1.3/firmware_binaries/CONFIG_KEYS_REFERENCE.md`
-- Source: `carlink_native/documents/reference/Firmware/firmware_configurables.md`
 - Source: Binary analysis of `riddleBoxCfg_unpacked` (49KB, 2025.10 firmware)
 - Source: Binary analysis of `ARMadb-driver_2025.10_unpacked` (478KB)
 - Firmware strings analyzed using: `strings -t x`, `objdump -d`, `radare2`

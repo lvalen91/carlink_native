@@ -434,7 +434,7 @@ All must be 0xFFFF for end marker detection
 
 ## Captured Audio Analysis (Jan 2026)
 
-**Source:** Pi-Carplay USB captures
+**Source:** USB captures
 **Date:** 2026-01-19
 
 ### CarPlay Session Audio Summary
@@ -740,8 +740,8 @@ The app pre-creates 8 AudioTrack instances covering all decode_type × stream_ty
 - Source: `GM_research/cpc200_research/docs/protocol/AUDIO_PROTOCOL.md`
 - Source: `carlink_native/documents/reference/Firmware/firmware_audio.md`
 - CarPlay Verification: 21 controlled capture sessions
-- 44.1kHz Evidence: `pi-carplay_raw_capture/audio/44.1Khz_playback/` (2025-12-29)
-- 48kHz Evidence: `pi-carplay_raw_capture/audio/48Khz_playback/` (2025-12-29)
+- 44.1kHz Evidence: raw audio capture, 44.1kHz playback (2025-12-29)
+- 48kHz Evidence: raw audio capture, 48kHz playback (2025-12-29)
 - Android Auto Verification: Jan 2026 capture (Pixel 10, YouTube Music)
-- Captures: `/Users/zeno/.pi-carplay/usb-logs/`
+- Captures: USB log captures
 - Live Incoming Call: Feb 2026 AAOS emulator + CPC200-CCPA capture (adb logcat)

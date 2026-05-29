@@ -245,9 +245,9 @@ When a device is connected, the `infos` response includes real-time session data
 ```json
 {
   "BoxInfo": {
-    "bt": "pi-carplay",
-    "wifi": "pi-carplay",
-    "boxName": "pi-carplay",
+    "bt": "CarPlay-Adapter",
+    "wifi": "CarPlay-Adapter",
+    "boxName": "CarPlay-Adapter",
     "MDLinkType": "AndroidAuto",
     "HULinkType": "AutoPlay",
     "MDModel": "Google Pixel 10",

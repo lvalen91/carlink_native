@@ -812,15 +812,35 @@ Include `naviScreenInfo` in BoxSettings to activate navigation video (type 0x2C)
 
 **Note:** Only include `naviScreenInfo` when your host app handles NaviVideoData (Type 0x2C). This causes a second H.264 video stream that increases USB bandwidth and processing load.
 
-1. **Optionally handle Command 508**:
+1. **Handle Command 508 — three-step handshake** (discovered 2026-05-28 via live RE; see `02_Protocol_Reference/video_protocol.md` "Handshake Sequence" for the wire diagram):
+
    ```kotlin
-   // When receiving Command 508 from adapter — echo it back (recommended precaution)
-   // Testing was INCONCLUSIVE on whether this is strictly required.
-   // The pi-carplay reference implementation does echo 508 back.
+   // (a) Step 1 — proactive send.
+   //     Host kicks the handshake ~2 s after PLUGGED for CarPlay. Wireless CarPlay
+   //     sessions especially need this because the adapter never sends 508 on its own —
+   //     it sends only 506 (audio nav focus). Without this kick, _AltScreenSetup never
+   //     starts even when all three documented gates clear (persistent unlock file +
+   //     naviScreenInfo BoxSettings + features=naviScreen in boxInfo).
+   onPlugged { phoneType ->
+       if (phoneType.isCarPlay && naviScreenForwardingEnabled) {
+           launch {
+               delay(2000)
+               send(Command(value = 508))   // REQUEST_NAVI_SCREEN_FOCUS, step 1
+           }
+       }
+   }
+
+   // (b) Step 3 — echo the adapter's step-2 reply.
+   //     The adapter replies with Command(508) shortly after step 1. Echo it back to
+   //     confirm; the adapter then completes _AltScreenSetup and starts emitting 0x2C.
+   //     Repeated 508s are idempotent — this also covers wired CarPlay where the
+   //     adapter has been observed to initiate at step 2 on its own (echo-only pattern).
    if (commandId == 508) {
-       send(Command: 0x08, payload = 508)
+       send(Command(value = 508))   // step 3 (or echo-on-receive for wired)
    }
    ```
+
+   Live-verified 2026-05-28 on carlink_native + CPC200-CCPA firmware 2025.10.15.1127 (wireless CarPlay).
 
 2. **Handle NaviVideoData (Type 0x2C)**:
    ```kotlin
@@ -1234,9 +1254,179 @@ See `02_Protocol_Reference/usb_protocol.md` > SendFile for GPIO charge mode beha
 
 ---
 
+## AltVideo → Cluster Display (USB 0x2C)
+
+**Verified end-to-end on AAOS emulator, 2026-05-28.** Host app + a system-priv companion app on the cluster sandbox can render the iPhone's CarPlay navigation video onto the AAOS instrument cluster, parallel to the main 0x06 video feed on the IHU.
+
+### Two-app split
+
+The integration uses two processes on the head unit, not one:
+
+```
+                                CPC200-CCPA adapter
+                                        │ USB
+                                        ▼
+                        ┌──────────────────────────────────┐
+                        │ zeno.carlink (host app, 3P APK)  │
+                        │  • Owns USB                      │
+                        │  • Sends naviScreenInfo +        │
+                        │    safearea in BoxSettings (0x19)│
+                        │  • Demuxes 0x06 → main video     │
+                        │  • Demuxes 0x2C → NaviVideo      │
+                        │      Forwarder                   │
+                        │        ↓                         │
+                        │      AIDL Service                │
+                        │      (NaviVideoSourceService,    │
+                        │       sig|priv permission)       │
+                        └──────────────────────────────────┘
+                                        │ Binder
+                                        ▼
+                  ┌────────────────────────────────────────┐
+                  │ ClusterHomeDisplay (priv-app on        │
+                  │  /system/priv-app/, cluster sandbox)   │
+                  │  • Binds NaviVideoSourceService        │
+                  │  • Registers INaviVideoSink            │
+                  │  • Receives Annex-B NAL access units   │
+                  │  • MediaCodec decode → SurfaceView     │
+                  │    at native 1:1 (1920×620 on emu)     │
+                  └────────────────────────────────────────┘
+                                        │
+                                        ▼
+                          AAOS cluster VirtualDisplay
+                       (display 3, ClusterOsDouble-VD)
+```
+
+Why split: the host app owns USB but cannot reach the cluster sandbox without platform-signed privileges; the cluster app is a priv-app with `CAR_INSTRUMENT_CLUSTER_CONTROL` but cannot touch USB. Bridging them with an AIDL `Service` + a `Surface`-or-`byte[]` IPC keeps each app at minimum privilege.
+
+### Wire format on AIDL
+
+Producer sends, per access unit, **raw Annex-B H.264** (start-code prefixed) with NO USB or video-header bytes — those have already been stripped by the host. The consumer receives the same payload the iPhone emitted, just with the 36 B carrier removed.
+
+```aidl
+oneway interface INaviVideoSink {
+    void onStreamConfigured(int width, int height, int fps);
+    void onFrame(in byte[] h264AnnexB, long ptsUs, boolean isKeyFrame);
+    void onStreamEnded();
+}
+
+interface INaviVideoSource {
+    void registerSink(INaviVideoSink sink);
+    void unregisterSink(INaviVideoSink sink);
+    boolean isStreamActive();
+}
+```
+
+Bandwidth at 1920×620@30 nav-UI content is ~3–6 Mbps → ~12–25 KB per access unit average. Binder `oneway` calls handle this comfortably; the default 1 MB transaction buffer dwarfs per-frame size, and the consumer's binder threadpool drains at rate.
+
+### Late-bind keyframe replay (critical)
+
+The iPhone emits SPS+PPS+IDR **once at session start**, then refreshes every ~2–7 seconds. A consumer that binds *after* the initial keyframe has been broadcast will receive only P-frames and never lock its decoder.
+
+The producer MUST cache the last keyframe access unit and replay it to any sink that registers mid-session:
+
+```kotlin
+private var cachedKeyframe: Pair<ByteArray, Long>? = null
+
+fun onUsbFrame(payload: ByteArray, ptsUs: Long, isKey: Boolean) {
+    if (isKey) cachedKeyframe = payload to ptsUs
+    broadcastToSinks { it.onFrame(payload, ptsUs, isKey) }
+}
+
+fun registerSink(sink: INaviVideoSink) {
+    sinks.register(sink)
+    if (streamActive) {
+        sink.onStreamConfigured(lastW, lastH, lastFps)
+        cachedKeyframe?.let { (b, pts) -> sink.onFrame(b, pts, true) }
+    }
+}
+```
+
+Without this, a cluster app that boots, gets preempted, or rebinds after a producer reinstall waits 2–7 seconds with a black overlay before its decoder configures.
+
+### Keyframe detection
+
+The producer must scan the Annex-B payload for **any** NAL of type 5 (IDR), not just look at the first NAL. A typical CarPlay keyframe access unit is `[SPS (7), PPS (8), IDR (5)]` concatenated — first NAL is SPS, not IDR. A first-NAL-only check returns false negatives 100% of the time.
+
+```kotlin
+fun annexBContainsIdr(buf: ByteArray): Boolean {
+    var i = 0
+    while (i < buf.size - 4) {
+        if (buf[i] == 0.toByte() && buf[i+1] == 0.toByte()
+            && buf[i+2] == 0.toByte() && buf[i+3] == 1.toByte()
+            && i + 4 < buf.size) {
+            if ((buf[i + 4].toInt() and 0x1F) == 5) return true
+            i += 4
+        } else i++
+    }
+    return false
+}
+```
+
+### Consumer MediaCodec configure
+
+On the cluster side, the consumer extracts SPS (NAL type 7) and PPS (NAL type 8) from the first keyframe access unit and supplies them as `csd-0` / `csd-1` in the `MediaFormat`. Some MediaCodec implementations (notably the AAOS emulator's software AVC decoder) reject inband CSD; explicit `csd-0` / `csd-1` is the spec-compliant path.
+
+After configure, the decoder feeds the same keyframe access unit as a regular input buffer with `BUFFER_FLAG_KEY_FRAME`, then continues with subsequent P-frames. Output renders directly to a `SurfaceView`-provided `Surface` — zero per-frame IPC, zero shared-memory ceremony.
+
+### Pixel mapping (no distortion)
+
+For 1:1 mapping with no SurfaceFlinger scaling:
+1. Producer announces `naviScreenInfo {width, height, fps}` matching the **usable** cluster sandbox (not the physical panel — on the AAOS emulator that's 1920×620, not 1920×720).
+2. Consumer's SurfaceView is sized to match the same dimensions: root-level `FrameLayout` with `match_parent`, **no parent padding**, **no insets**.
+3. Consumer calls `holder.setFixedSize(streamW, streamH)` so the surface buffer ties to stream geometry.
+4. Result: source → MediaCodec output → surface buffer → composited pixels are all the same dimensions. SurfaceFlinger does a 1:1 blit.
+
+If any link in that chain has different dimensions (e.g., the SurfaceView is inside a parent with padding), SurfaceFlinger rescales — typically asymmetrically — and the user sees stretched text and oval circles. Verified failure mode: a 1888×572 View receiving a 1920×620 stream produces ~5.5% horizontal stretch.
+
+### SafeArea
+
+The host advertises a safe rect inside the announced screen geometry; the iPhone keeps interactive CarPlay UI (turn cards, lane guidance, speed-limit chips, search affordances) inside it. Map backgrounds may still extend beyond. See `02_Protocol_Reference/video_protocol.md` §SafeArea for the JSON shape and firmware path.
+
+```json
+"naviScreenInfo": {
+  "width": 1920, "height": 620, "fps": 30,
+  "safearea": {
+    "x": 100, "y": 0, "width": 1720, "height": 620, "outside": 0
+  }
+}
+```
+
+100 px horizontal inset accounts for the AAOS emulator's gauge arcs on left/right; zero vertical inset because the VirtualDisplay has no top/bottom obstructions (ClusterOsDouble's gauge strip sits below the VirtualDisplay, in the 100 px of physical-panel that's not part of the sandbox).
+
+### Lifecycle resilience
+
+Cross-process bindings can die from multiple angles. The consumer must handle:
+
+| Event | Producer side | Consumer side |
+|---|---|---|
+| Cluster activity preempted by Templates Host | unchanged | existing keep-alive re-foregrounds |
+| Producer process killed / reinstalled | sinks list cleared | both `onServiceDisconnected` and `linkToDeath` fire — schedule rebind with backoff |
+| USB disconnect / CarPlay session end | broadcast `onStreamEnded` | hide SurfaceView, release decoder |
+| Resolution change mid-session | rebroadcast `onStreamConfigured` | `setFixedSize` updates buffer; next IDR reconfigures decoder |
+
+A simple `1s → 2s → 4s → ... → 30s` exponential backoff on the consumer's rebind path covers all transient outages without per-second polling.
+
+### What the user sees
+
+- Cluster default state: 60/40 cards (nav left, media right) rendered by the cluster app.
+- iPhone connects + CarPlay session starts: nothing changes until the iPhone emits a 0x2C frame.
+- First 0x2C frame: cluster overlay flips visible (~50 ms), shows iPhone's CarPlay nav UI at native 1:1, identical aspect to what CarPlay would render on a 1920×620 panel.
+- CarPlay session ends / iPhone disconnects: overlay flips back to hidden, cards return.
+
+Visual regression checklist: turn cards land inside the safe area, road labels are round (no oval stretch), speed limit chips are square (not rectangular). All three indicate a clean pipeline.
+
+### Reference implementation
+
+Working implementation in `documents/reference/android_studio_emulator/ClusterHomeDisplay/` (consumer side) and `app/src/main/kotlin/com/carlink/ipc/` in carlink_native (producer side). The `INTEGRATION_CARLINK_NATIVE.md` document inside the cluster app's directory specifies the producer-side contract in full.
+
+The two-app split is specific to AAOS: the cluster sandbox is platform-walled, so a 3P APK can talk to USB but not to the cluster display; a priv-app can render to the cluster but cannot touch USB. The AIDL `Service` + per-frame `oneway` `byte[]` bridge ties the two together at minimum privilege per app.
+
+---
+
 ## References
 
 - Source: `GM_research/cpc200_research/docs/implementation/`
 - Source: `carlink_native/documents/reference/Firmware/`
 - Protocol reference: See `02_Protocol_Reference/` in this documentation
 - **Session examples: See `session_examples.md` for real captured CarPlay/Android Auto packet sequences**
+- **AltVideo cluster integration:** `documents/reference/android_studio_emulator/ClusterHomeDisplay/` (consumer side, AIDL, MediaCodec) + `INTEGRATION_CARLINK_NATIVE.md` (producer-side spec)

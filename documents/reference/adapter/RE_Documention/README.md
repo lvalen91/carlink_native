@@ -2,7 +2,7 @@
 
 **Model:** Carlinkit CPC200-CCPA (A15W) Wireless CarPlay/Android Auto Adapter
 **Consolidated:** 2026-01-16
-**Sources:** GM_research, carlink_native, pi-carplay session capture firmware analysis
+**Sources:** Firmware extraction, session captures, and live RE
 
 ---
 
@@ -99,6 +99,10 @@ RE_Documention/
 │   ├── audio_protocol.md               # Audio streaming and commands
 │   ├── video_protocol.md               # H.264 video and keyframes
 │   ├── wireless_carplay.md             # WiFi, RTSP, HomeKit pairing
+│   ├── carplay_handshake.md            # CarPlay session/HomeKit pairing handshake
+│   ├── iap2_message_catalog.md         # iAP2 0x5201/0x5202 RouteGuidance field map (Apple R14G17 SDK + RE)
+│   ├── iap2_sdk_delta_r14g17_to_ios26.md # Hybrid changelog R14G17 (2017) → iOS 26.5 — covers post-2017 fields + capability negotiation
+│   ├── carkit_ios26_master.md          # iOS 26.5 CarPlay/CarKit master capability surface — 60+ feature flags, gating model, patching recipes, 3-agent verified
 │   ├── command_ids.md                  # Command ID reference (0x08 payloads)
 │   ├── command_details.md              # Command binary verification details
 │   └── inbound_session_sequence.md     # Observed session message ordering
@@ -216,19 +220,10 @@ This consolidation drew from:
 
 | Source | Content |
 |--------|---------|
-| `GM_research/cpc200_research/` | Protocol captures, binary analysis, CLAUDE.md reference |
-| `carlink_native/documents/` | Subsystem docs, audio/video analysis, configuration |
-| `pi-carplay/firmware_binaries/` | Firmware encryption, navigation protocol, config keys |
-| `cpc200_ccpa_firmware_binaries/` | Extracted firmware, unpacked binaries, boot scripts |
-
-### Original Source Paths
-
-```
-~/Downloads/GM_research/cpc200_research/
-~/Downloads/carlink_native/documents/
-~/Downloads/misc/pi-carplay-4.1.3/firmware_binaries/
-~/Downloads/misc/cpc200_ccpa_firmware_binaries/
-```
+| Protocol captures + binary analysis | USB protocol, command IDs |
+| Subsystem documentation | Audio/video analysis, configuration |
+| Firmware extraction | Encryption, navigation protocol, config keys |
+| Extracted firmware images | Unpacked binaries, boot scripts |
 
 ---
 
@@ -264,7 +259,6 @@ This consolidation drew from:
 ## External References
 
 - [ludwig-v/wireless-carplay-dongle-reverse-engineering](https://github.com/ludwig-v/wireless-carplay-dongle-reverse-engineering)
-- [Pi-carplay](https://github.com/f-io/pi-carplay)
 
 ---
 

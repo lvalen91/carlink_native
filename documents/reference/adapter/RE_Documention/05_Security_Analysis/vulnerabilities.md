@@ -762,6 +762,5 @@ This documentation is for authorized security research purposes in the context o
 
 ## References
 
-- Source: `GM_research/cpc200_research/docs/analysis/ANALYSIS_UPDATE_2025_01_15.md`
-- Source: `pi-carplay-4.1.3/firmware_binaries/PROTOCOL_ANALYSIS.md`
+- Source: Firmware binary analysis (2025.10 firmware)
 - Binary analysis using Ghidra 12.0, radare2
